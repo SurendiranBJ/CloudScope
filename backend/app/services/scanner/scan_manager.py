@@ -136,7 +136,15 @@ class ScanManager:
             
             # Format Dashboard Data
             critical_risks = [
-                {"id": x['id'], "identity": x.get('username') or x.get('name'), "identityType": x['type'], "issue": "Over-privileged permissions mapping", "severity": "critical", "riskScore": x['riskScore'], "recommendation": "Review inline policies"}
+                {
+                    "id": x['id'],
+                    "identity": x.get('name') or x.get('username') or "unknown",
+                    "identityType": x.get('type') or ("User" if "user" in x.get('arn', '').lower() else ("Role" if "role" in x.get('arn', '').lower() else "Resource")),
+                    "issue": "Over-privileged permissions mapping",
+                    "severity": "critical",
+                    "riskScore": x['riskScore'],
+                    "recommendation": "Review inline policies"
+                }
                 for x in self.inventory.users + self.inventory.roles + self.inventory.s3 + self.inventory.secrets if x.get('riskScore', 0) >= 80
             ]
             cache.set("v1:risks", critical_risks)
