@@ -1,0 +1,12 @@
+{
+  "developer_path": {
+    "title": "Developer Path Exposure Analysis",
+    "description": "developer-session assumed AWSAdminRole to access bucket S3-Customer-PII-DB.",
+    "analysis": "A local developer session lacks Multi-Factor Authentication conditions, allowing sts:AssumeRole bypass and inheritance of administrative policies.",
+    "remediation": "Update the trust policy document of AWSAdminRole to validate MFA presence and source IP ranges."
+  },
+  "public_buckets": {
+    "title": "Public Buckets Policy Block",
+    "command": "aws s3api put-public-access-block --bucket s3-customer-pii-db-production --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+  }
+}
