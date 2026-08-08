@@ -8,7 +8,7 @@ The platform features a highly responsive, glassmorphism-styled React dashboard,
 
 ### Backend (FastAPI + Python)
 *   **Modular Architecture**: Cleanly separated into endpoints, services (AWS scanners), and utility modules.
-*   **Live AWS Resource Scanning**: Integration with `boto3` to scan IAM (Users/Roles), S3 Buckets, EC2 instances, and Secrets Manager.
+*   **Live AWS Resource Scanning**: Integration with `boto3` to actively scan IAM (Users/Roles), S3 Buckets, EC2 instances, Secrets Manager, and **Lambda Functions** across all active AWS regions.
 *   **Risk Engine**: Evaluates security risks dynamically based on public exposure, missing encryption, lack of MFA, and excessive inline policies.
 *   **Attack Path Analysis**: Uses in-memory graph models (`NetworkX`) to map blast radiuses and potential privilege escalations (e.g., User -> Role -> S3 Bucket).
 *   **Caching Layer**: Built-in support for Redis caching to accelerate dashboard data loading, with a seamless fallback to local in-memory caching.
@@ -16,6 +16,7 @@ The platform features a highly responsive, glassmorphism-styled React dashboard,
 ### Frontend (React + Vite)
 *   **Premium Glassmorphism Design**: An aesthetically pleasing, fully responsive dark-mode UI powered by Tailwind CSS.
 *   **Real-time Dashboard**: Displays your overall security score, risk distribution, and aggregate resource counts.
+*   **Advanced Identity Graph**: A fully interactive, full-screen graph visualization powered by Cytoscape and Dagre, featuring hierarchical layouts, real-time risk highlighting, and integrated filtering.
 *   **Interactive Visualizations**: 
     *   Risk Distribution charts powered by `recharts`.
     *   Top Critical Attack paths and recent security alerts.
@@ -26,7 +27,7 @@ The platform features a highly responsive, glassmorphism-styled React dashboard,
 *   **Local Execution**: Uses local AWS profiles (`identityscope-scanner`) for safe, read-only authentication to AWS accounts.
 
 ## 🛠️ Tech Stack
-*   **Frontend**: React, TypeScript, Vite, Tailwind CSS, Lucide React, Recharts.
+*   **Frontend**: React, TypeScript, Vite, Tailwind CSS, Lucide React, Recharts, Cytoscape.
 *   **Backend**: Python, FastAPI, Uvicorn, Boto3 (AWS SDK), NetworkX, Redis.
 
 ---
@@ -38,7 +39,7 @@ While the core mechanics are operational, several features are planned for futur
 1.  **Persistent Graph Database (Neo4j)**
     *   Migrate the in-memory `NetworkX` attack path graphs to Neo4j to support complex Cypher queries on massive cloud environments.
 2.  **Expanded AWS Coverage**
-    *   Add scanners for RDS, VPCs, EKS Clusters, Lambda functions, and CloudTrail configurations.
+    *   Add scanners for RDS, VPCs, EKS Clusters, and CloudTrail configurations.
 3.  **Multi-Cloud Support**
     *   Expand beyond AWS to support Azure (Azure RM) and Google Cloud (GCP) configurations.
 4.  **Authentication & RBAC**

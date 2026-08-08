@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
+    "@types/cytoscape-dagre": "^2.3.4",
     "axios": "^1.18.1",
     "cytoscape": "^3.34.0",
+    "cytoscape-dagre": "^4.0.0",
     "framer-motion": "^12.42.2",
     "lucide-react": "^1.26.0",
     "react": "^19.2.7",

@@ -4,6 +4,8 @@ from app.config import settings
 
 logger = logging.getLogger("backend")
 
+_cached_account_id: str | None = None
+
 def get_aws_session() -> boto3.Session:
     try:
         # Check if profile is active
@@ -18,3 +20,19 @@ def get_aws_session() -> boto3.Session:
         except Exception as err:
             logger.error(f"Failed to create default AWS session: {str(err)}")
             raise err
+
+def get_account_id() -> str:
+    """Retrieve and cache the real AWS account ID via STS GetCallerIdentity."""
+    global _cached_account_id
+    if _cached_account_id is not None:
+        return _cached_account_id
+    try:
+        session = get_aws_session()
+        sts = session.client('sts')
+        identity = sts.get_caller_identity()
+        _cached_account_id = identity['Account']
+        logger.info(f"Resolved AWS Account ID: {_cached_account_id}")
+        return _cached_account_id
+    except Exception as e:
+        logger.error(f"Failed to resolve AWS account ID: {str(e)}")
+        return "unknown"

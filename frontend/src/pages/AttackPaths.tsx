@@ -63,9 +63,19 @@ export const AttackPaths: FC = () => {
 
       {/* Pathways List */}
       <div className="space-y-6">
-        {attackPaths.map((path) => {
-          const isAIExpanded = selectedPathForAI === path.id;
-          const isAILoading = loadingAI === path.id;
+        {attackPaths.length === 0 ? (
+          <div className="flex flex-col items-center justify-center p-12 border border-dashed border-enterprise-border rounded-xl bg-enterprise-card/50">
+            <Sparkles className="w-12 h-12 text-enterprise-subtext mb-4" />
+            <h3 className="text-lg font-bold text-white mb-2">No Attack Paths Detected</h3>
+            <p className="text-sm text-enterprise-subtext text-center max-w-md">
+              IdentityScope scanned your AWS environment and found no critical lateral movement paths from identities to core resources based on current permissions.
+            </p>
+          </div>
+        ) : (
+          attackPaths.map((path) => {
+            const isAIExpanded = selectedPathForAI === path.id;
+            const isAILoading = loadingAI === path.id;
+
 
           return (
             <div
@@ -205,7 +215,8 @@ export const AttackPaths: FC = () => {
               )}
             </div>
           );
-        })}
+        })
+        )}
       </div>
     </div>
   );
