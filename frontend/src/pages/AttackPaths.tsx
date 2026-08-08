@@ -28,7 +28,7 @@ export const AttackPaths: FC = () => {
     refetchInterval: 10000
   });
 
-  const attackPaths = data || mockAttackPaths;
+  const attackPaths = data || [];
 
   const handleHighlightInGraph = (path: AttackPath) => {
     const nodeIds = path.nodes.map((n) => n.id).join(',');

@@ -83,6 +83,16 @@ def build_local_graph(inventory) -> nx.DiGraph:
         G.add_node(sec['id'], type='Secrets', label=sec['name'], riskScore=sec.get('riskScore', 0),
                    arn=sec['arn'], description=f"Secret: {sec['name']}")
 
+    # 9. Add RDS nodes
+    for rds in inventory.rds:
+        G.add_node(rds['id'], type='RDS', label=rds['name'], riskScore=rds.get('riskScore', 0),
+                   arn=rds['arn'], description=f"RDS Instance: {rds['name']}")
+
+    # 10. Add DynamoDB nodes
+    for ddb in inventory.dynamodb:
+        G.add_node(ddb['id'], type='DynamoDB', label=ddb['name'], riskScore=ddb.get('riskScore', 0),
+                   arn=ddb['arn'], description=f"DynamoDB Table: {ddb['name']}")
+
     # --- Build Relationships ---
 
     # Group name -> Group ID lookup
@@ -151,7 +161,7 @@ def build_local_graph(inventory) -> nx.DiGraph:
         if role_name != 'None' and G.has_node(role_name):
             G.add_edge(l['id'], role_name, label='EXECUTES_WITH')
 
-    # Roles -> Resources (connect roles with broad access policies to S3/Secrets)
+    # Roles -> Resources (connect roles with broad access policies to S3/Secrets/DBs)
     # Heuristic: if a role has policies with 's3' or 'secretsmanager' in name, connect to those resources
     for r in inventory.roles:
         for p_name in r.get('attachedPolicies', []):
@@ -162,8 +172,14 @@ def build_local_graph(inventory) -> nx.DiGraph:
             if 'secret' in p_lower or 'admin' in p_lower:
                 for sec in inventory.secrets:
                     G.add_edge(r['name'], sec['id'], label='ALLOWS')
+            if 'rds' in p_lower or 'database' in p_lower or 'admin' in p_lower:
+                for rds in inventory.rds:
+                    G.add_edge(r['name'], rds['id'], label='ALLOWS')
+            if 'dynamo' in p_lower or 'database' in p_lower or 'admin' in p_lower:
+                for ddb in inventory.dynamodb:
+                    G.add_edge(r['name'], ddb['id'], label='ALLOWS')
 
-    # Users -> Resources (connect users with broad access policies to S3/Secrets)
+    # Users -> Resources (connect users with broad access policies to S3/Secrets/DBs)
     for u in inventory.users:
         for p_name in u.get('policies', []):
             p_lower = p_name.lower()
@@ -173,6 +189,12 @@ def build_local_graph(inventory) -> nx.DiGraph:
             if 'secret' in p_lower or 'admin' in p_lower:
                 for sec in inventory.secrets:
                     G.add_edge(u['id'], sec['id'], label='ALLOWS')
+            if 'rds' in p_lower or 'database' in p_lower or 'admin' in p_lower:
+                for rds in inventory.rds:
+                    G.add_edge(u['id'], rds['id'], label='ALLOWS')
+            if 'dynamo' in p_lower or 'database' in p_lower or 'admin' in p_lower:
+                for ddb in inventory.dynamodb:
+                    G.add_edge(u['id'], ddb['id'], label='ALLOWS')
 
     logger.info(f"Built local NetworkX Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G

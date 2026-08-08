@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, Bell, ChevronDown, User, Globe, AlertOctagon } from 'lucide-react';
-import { mockAlerts } from '../data/alerts';
+import { useQuery } from '@tanstack/react-query';
+import { getDashboardSummary } from '../api/dashboard';
 
 interface NavbarProps {
   onSearchChange?: (val: string) => void;
@@ -15,6 +16,14 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+
+  const { data } = useQuery({
+    queryKey: ['dashboardSummary'],
+    queryFn: getDashboardSummary,
+    refetchInterval: 10000
+  });
+
+  const alerts = data?.recentAlerts || [];
 
   const regions = [
     { code: 'ap-south-1', name: 'Asia Pacific (Mumbai)' },
@@ -71,11 +80,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div className="p-3 border-b border-enterprise-border bg-enterprise-bg/40 flex justify-between items-center">
                 <span className="font-semibold text-sm">Security Alerts</span>
                 <span className="text-xs px-2 py-0.5 rounded bg-enterprise-critical/20 text-enterprise-critical font-bold">
-                  2 Open
+                  {(alerts || []).length} Open
                 </span>
               </div>
               <div className="divide-y divide-enterprise-border max-h-60 overflow-y-auto">
-                {mockAlerts.map((alert) => (
+                {(alerts || []).map((alert: any) => (
                   <div key={alert.id} className="p-3 hover:bg-gray-800/20 transition-colors flex gap-2">
                     <AlertOctagon className={`w-5 h-5 shrink-0 ${alert.severity === 'critical' ? 'text-enterprise-critical' : 'text-enterprise-warning'}`} />
                     <div className="min-w-0">

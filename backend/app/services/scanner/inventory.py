@@ -10,6 +10,8 @@ class AWSInventory:
         self.s3: List[Dict[str, Any]] = []
         self.lambdas: List[Dict[str, Any]] = []
         self.secrets: List[Dict[str, Any]] = []
+        self.rds: List[Dict[str, Any]] = []
+        self.dynamodb: List[Dict[str, Any]] = []
         self.findings: List[Dict[str, Any]] = []
         self.alerts: List[Dict[str, Any]] = []
 
@@ -22,5 +24,7 @@ class AWSInventory:
         self.s3.clear()
         self.lambdas.clear()
         self.secrets.clear()
+        self.rds.clear()
+        self.dynamodb.clear()
         self.findings.clear()
         self.alerts.clear()

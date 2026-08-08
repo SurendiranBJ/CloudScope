@@ -4,26 +4,34 @@ CloudScope is a modern, real-time Cloud Security Posture Management (CSPM) platf
 
 The platform features a highly responsive, glassmorphism-styled React dashboard, backed by a fast, asynchronous FastAPI backend capable of building complex relationships between your AWS resources.
 
-## 🚀 Currently Implemented Features
+## 🚀 Two-Phase Security Architecture
+
+CloudScope is designed around a powerful two-phase architecture to distinguish between **Potential Risk** and **Active Exploitation**:
+
+### Phase A: Configuration Baseline (Static)
+The initial fast-scanner enumerates your AWS environment (IAM, EC2, S3, RDS, DynamoDB, Lambda, Secrets Manager, etc.) to build a static identity graph. This answers: *"What dangerous permissions exist right now?"*
+
+### Phase B: Activity Monitoring (Dynamic)
+CloudScope uses a dedicated CloudTrail event processor to capture actual activity (e.g., `AssumeRole`). By correlating observed activity with the static graph, CloudScope can detect and alert on active attack paths in real-time.
+
+---
+
+## ✨ Features
 
 ### Backend (FastAPI + Python)
-*   **Modular Architecture**: Cleanly separated into endpoints, services (AWS scanners), and utility modules.
-*   **Live AWS Resource Scanning**: Integration with `boto3` to actively scan IAM (Users/Roles), S3 Buckets, EC2 instances, Secrets Manager, and **Lambda Functions** across all active AWS regions.
-*   **Risk Engine**: Evaluates security risks dynamically based on public exposure, missing encryption, lack of MFA, and excessive inline policies.
-*   **Attack Path Analysis**: Uses in-memory graph models (`NetworkX`) to map blast radiuses and potential privilege escalations (e.g., User -> Role -> S3 Bucket).
-*   **Caching Layer**: Built-in support for Redis caching to accelerate dashboard data loading, with a seamless fallback to local in-memory caching.
+*   **Blazing Fast Multithreading**: Wraps all AWS service collectors into a `ThreadPoolExecutor` and uses a centralized region cache, drastically reducing scan times to mere seconds.
+*   **Comprehensive AWS Resource Scanning**: Integration with `boto3` to actively scan IAM (Users/Roles), S3 Buckets, EC2 instances, Secrets Manager, Lambda Functions, **RDS Databases**, and **DynamoDB Tables**.
+*   **Advanced Risk Engine**: Evaluates security risks dynamically based on public exposure, missing encryption, lack of MFA, and explicitly parses raw JSON IAM policies for wildcard permissions (`Action: *`).
+*   **Attack Path Analysis**: Maps blast radiuses and potential privilege escalations (e.g., User -> Role -> S3 Bucket) into a graph model.
 
 ### Frontend (React + Vite)
 *   **Premium Glassmorphism Design**: An aesthetically pleasing, fully responsive dark-mode UI powered by Tailwind CSS.
-*   **Real-time Dashboard**: Displays your overall security score, risk distribution, and aggregate resource counts.
-*   **Advanced Identity Graph**: A fully interactive, full-screen graph visualization powered by Cytoscape and Dagre, featuring hierarchical layouts, real-time risk highlighting, and integrated filtering.
-*   **Interactive Visualizations**: 
-    *   Risk Distribution charts powered by `recharts`.
-    *   Top Critical Attack paths and recent security alerts.
-*   **Live Data Integration**: Connects seamlessly with the backend REST APIs to present live data from your AWS environment.
+*   **Asynchronous Scan Polling**: The dashboard never freezes. Manual scans run asynchronously with a beautiful progress banner, polling the server for live status updates.
+*   **Advanced Identity Graph**: A fully interactive, full-screen graph visualization powered by Cytoscape and Dagre. Features a **collapsible legend**, hierarchical layouts, real-time risk highlighting, and integrated filtering.
+*   **Interactive Visualizations**: Risk Distribution charts (`recharts`), critical attack paths, and recent security alerts.
 
 ### Infrastructure & Operations
-*   **Organized Repository**: Codebase cleanly partitioned into `frontend`, `backend`, `aws` (for IaC/scripts), and `copilot` directories.
+*   **Auto-Scan Scheduling**: Safely manages recurring background scans using APScheduler with concurrency locks to prevent pile-ups.
 *   **Local Execution**: Uses local AWS profiles (`identityscope-scanner`) for safe, read-only authentication to AWS accounts.
 
 ## 🛠️ Tech Stack
@@ -34,23 +42,14 @@ The platform features a highly responsive, glassmorphism-styled React dashboard,
 
 ## 🗺️ Roadmap / Future Work
 
-While the core mechanics are operational, several features are planned for future development to make CloudScope an enterprise-ready CSPM:
-
 1.  **Persistent Graph Database (Neo4j)**
-    *   Migrate the in-memory `NetworkX` attack path graphs to Neo4j to support complex Cypher queries on massive cloud environments.
+    *   Migrate the in-memory attack path graphs to Neo4j to support complex Cypher queries on massive cloud environments.
 2.  **Expanded AWS Coverage**
-    *   Add scanners for RDS, VPCs, EKS Clusters, and CloudTrail configurations.
+    *   Add scanners for VPCs, EKS Clusters, and further CloudTrail configurations.
 3.  **Multi-Cloud Support**
     *   Expand beyond AWS to support Azure (Azure RM) and Google Cloud (GCP) configurations.
 4.  **Authentication & RBAC**
     *   Implement user authentication (e.g., via Cognito, Auth0, or JWT) to secure the dashboard and introduce Role-Based Access Control.
-5.  **Automated Remediation**
-    *   Add safe, click-to-remediate workflows that trigger Lambda functions to automatically revoke over-privileged policies or close public buckets.
-6.  **Infrastructure as Code (IaC) & Deployment**
-    *   Provide Terraform/CloudFormation templates to quickly deploy the CloudScope backend inside an AWS account.
-    *   Provide Dockerfiles and Kubernetes Helm charts for easy containerized deployments.
-7.  **Reporting & Compliance**
-    *   Automated mapping to compliance frameworks (CIS, SOC2, PCI-DSS) and exportable PDF/CSV reports for auditing.
 
 ---
 

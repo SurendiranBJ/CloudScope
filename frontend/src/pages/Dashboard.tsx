@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   PieChart,
@@ -22,29 +22,90 @@ import {
 } from 'lucide-react';
 import { IdentityGraph } from '../components/IdentityGraph';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
-import { mockAlerts } from '../data/alerts';
-import { mockAttackPaths } from '../data/attackPaths';
+import { rebuildGraph, getScanStatus } from '../api/graph';
 import type { SecurityAlert, AttackPath } from '../types';
 
 export const Dashboard: React.FC = () => {
+  const queryClient = useQueryClient();
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanSuccess, setScanSuccess] = useState(false);
   const [selectedNode, setSelectedNode] = useState<any>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ['dashboardSummary'],
     queryFn: getDashboardSummary,
-    refetchInterval: 10000 // keep stats synchronized
+    refetchInterval: 5000
   });
 
-  const stats = data?.stats || {
-    users: 32,
-    roles: 18,
-    policies: 47,
-    risks: 5,
-    paths: 11,
-    resources: 126
-  };
+  // On first mount, check if a scan is already running (e.g. auto-scan or startup scan)
+  useEffect(() => {
+    getScanStatus().then((status) => {
+      if (status.is_scanning) {
+        setIsScanning(true);
+        startPolling();
+      }
+    }).catch(() => {});
+    return () => stopPolling();
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await getScanStatus();
+        if (!status.is_scanning) {
+          // Scan finished!
+          stopPolling();
+          setIsScanning(false);
+          setScanSuccess(true);
+          // Refresh all dashboard data
+          queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
+          queryClient.invalidateQueries({ queryKey: ['graphElements'] });
+          queryClient.invalidateQueries({ queryKey: ['cloudResources'] });
+          setTimeout(() => setScanSuccess(false), 4000);
+        }
+      } catch {
+        // Ignore network blips during polling
+      }
+    }, 2000); // Poll every 2 seconds
+  }, [queryClient, stopPolling]);
+
+  const handleScanClick = useCallback(async () => {
+    if (isScanning) return;
+    setIsScanning(true);
+    setScanSuccess(false);
+    try {
+      await rebuildGraph(); // Returns immediately (async on backend)
+      startPolling(); // Start polling for completion
+    } catch (err) {
+      console.error('Failed to trigger scan:', err);
+      setIsScanning(false);
+    }
+  }, [isScanning, startPolling]);
+
+  // Show loading spinner when initial data is loading OR a scan is in progress
+  if (isLoading || !data) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-enterprise-bg">
+        <div className="flex flex-col items-center gap-4">
+          <svg className="animate-spin w-8 h-8 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+          <p className="text-enterprise-subtext font-medium text-sm">Loading Dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const stats = data.stats;
 
   // Statistics KPI Cards configurations
   const kpis = [
@@ -112,12 +173,9 @@ export const Dashboard: React.FC = () => {
     { name: 'Low', value: 25, color: '#10B981' }
   ];
 
-  const alerts = data?.recentAlerts || mockAlerts;
-  const paths = data?.criticalPaths || mockAttackPaths;
-  const recommendations = data?.recommendations || [
-    { title: 'Enforce MFA Scope', desc: 'Enabling MFA on developer-session blocks downstream privilege assumptions.' },
-    { title: 'Upgrade IMDSv2', desc: 'Restrict EC2 app server metadata queries to IMDSv2 tokens.' }
-  ];
+  const alerts = data.recentAlerts || [];
+  const paths = data.criticalPaths || [];
+  const recommendations = data.recommendations || [];
 
   return (
     <div className="flex-1 flex overflow-hidden bg-enterprise-bg">
@@ -130,11 +188,52 @@ export const Dashboard: React.FC = () => {
               Live identity-centric attack path mappings and permissions configurations.
             </p>
           </div>
-          <div className="text-xs text-enterprise-subtext flex items-center gap-2 bg-enterprise-card border border-enterprise-border px-3 py-1.5 rounded-lg">
-            <span className="w-2 h-2 rounded-full bg-enterprise-success animate-ping" />
-            <span>AWS Scan: {data?.lastScan ? `${new Date(data.lastScan.timestamp).toLocaleTimeString()}` : 'Live'}</span>
+          <div className="flex items-center gap-2">
+            <div className="text-xs text-enterprise-subtext flex items-center gap-2 bg-enterprise-card border border-enterprise-border px-3 py-1.5 rounded-lg">
+              <span className={`w-2 h-2 rounded-full ${isScanning ? 'bg-blue-500 animate-pulse' : 'bg-enterprise-success animate-ping'}`} />
+              <span>
+                {isScanning
+                  ? 'Scanning AWS...'
+                  : data?.lastScan
+                    ? `Last scan: ${new Date(data.lastScan.timestamp).toLocaleTimeString()}`
+                    : 'Live'}
+              </span>
+            </div>
+            <button
+              disabled={isScanning}
+              onClick={handleScanClick}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                scanSuccess
+                  ? 'bg-enterprise-success/20 text-enterprise-success border border-enterprise-success/30'
+                  : isScanning
+                    ? 'bg-blue-600/10 text-blue-400/50 border border-blue-500/10 cursor-not-allowed'
+                    : 'bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30'
+              }`}
+            >
+              {scanSuccess ? (
+                <ShieldCheck className="w-3.5 h-3.5" />
+              ) : (
+                <svg className={isScanning ? "animate-spin" : ""} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
+              )}
+              {scanSuccess ? 'Scan Complete!' : isScanning ? 'Scanning AWS...' : 'Scan Again'}
+            </button>
           </div>
         </div>
+
+        {/* Scanning overlay banner */}
+        {isScanning && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex items-center gap-3"
+          >
+            <svg className="animate-spin w-5 h-5 text-blue-400 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            <div>
+              <p className="text-sm font-bold text-blue-300">Scanning your AWS environment...</p>
+              <p className="text-xs text-blue-400/70 mt-0.5">Collecting IAM, EC2, S3, Lambda, RDS, DynamoDB, Secrets, and CloudTrail data across all regions. The dashboard will refresh automatically when complete.</p>
+            </div>
+          </motion.div>
+        )}
 
         {/* KPI Cards Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">

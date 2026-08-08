@@ -68,6 +68,19 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 {"id": sec['id'], "name": sec['name'], "arn": sec['arn'], "reg": sec['region'], "riskScore": sec.get('riskScore', 0), "status": sec['status'], "owner": sec['owner']}
             )
 
+        # 9.5 Write RDS & DynamoDB
+        for rds in inventory.rds:
+            execute_write(
+                "CREATE (n:RDS {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'RDS'})",
+                {"id": rds['id'], "name": rds['name'], "arn": rds['arn'], "reg": rds['region'], "riskScore": rds.get('riskScore', 0), "status": rds['status'], "owner": rds['owner']}
+            )
+            
+        for ddb in inventory.dynamodb:
+            execute_write(
+                "CREATE (n:DynamoDB {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'DynamoDB'})",
+                {"id": ddb['id'], "name": ddb['name'], "arn": ddb['arn'], "reg": ddb['region'], "riskScore": ddb.get('riskScore', 0), "status": ddb['status'], "owner": ddb['owner']}
+            )
+
         # 10. Write Relationships — all dynamically computed
 
         # Connect Users to Groups

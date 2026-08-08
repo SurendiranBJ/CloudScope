@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     
     BACKEND_PORT: int = 8000
-    SCAN_INTERVAL_MINUTES: int = 5
+    SCAN_INTERVAL_MINUTES: int = 2
     LOG_LEVEL: str = "INFO"
     
     CORS_ORIGINS: list[str] = [

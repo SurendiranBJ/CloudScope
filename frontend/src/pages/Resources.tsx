@@ -32,7 +32,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     refetchInterval: 10000
   });
 
-  const resources = data || mockResources;
+  const resources = data || [];
 
   // Map types to colored icons
   const typeIcons: Record<CloudResource['type'], any> = {
@@ -43,6 +43,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     Lambda: { icon: Zap, color: 'text-pink-500 bg-pink-500/15 border-pink-500/30' },
     Secrets: { icon: Lock, color: 'text-enterprise-critical bg-enterprise-critical/15 border-enterprise-critical/30' },
     RDS: { icon: Server, color: 'text-indigo-500 bg-indigo-500/15 border-indigo-500/30' },
+    DynamoDB: { icon: Database, color: 'text-purple-500 bg-purple-500/15 border-purple-500/30' },
     Policy: { icon: FileText, color: 'text-teal-500 bg-teal-500/15 border-teal-500/30' }
   };
 
@@ -81,7 +82,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     return ['ALL', ...new Set(resources.map((r) => r.region))];
   }, [resources]);
 
-  const resourceTypes = ['ALL', 'User', 'Role', 'S3', 'EC2', 'Lambda', 'Secrets', 'RDS'];
+  const resourceTypes = ['ALL', 'User', 'Role', 'S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB'];
 
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">

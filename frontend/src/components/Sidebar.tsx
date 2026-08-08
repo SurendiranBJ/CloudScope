@@ -28,9 +28,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
     { name: 'Identity Graph', path: '/graph', icon: Network },
     { name: 'Attack Paths', path: '/attack-paths', icon: GitMerge },
     { name: 'Risk Assessment', path: '/risks', icon: AlertTriangle },
-    { name: 'Attack Simulation', path: '/simulation', icon: Zap, badge: 'NEW' },
     { name: 'Alerts', path: '/alerts', icon: Bell },
-    { name: 'AI Copilot', path: '/copilot', icon: Bot },
     { name: 'Reports', path: '/reports', icon: FileBarChart },
     { name: 'Settings', path: '/settings', icon: Settings }
   ];

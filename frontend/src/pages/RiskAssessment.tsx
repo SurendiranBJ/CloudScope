@@ -22,7 +22,7 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
     refetchInterval: 10000
   });
 
-  const risks = data || mockRisks;
+  const risks = data || [];
 
   const complianceScores = [
     { name: 'CIS AWS Foundations', score: 72, color: 'text-enterprise-warning border-enterprise-warning/20 bg-enterprise-warning/5' },

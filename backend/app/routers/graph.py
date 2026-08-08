@@ -11,9 +11,12 @@ router = APIRouter(tags=["Graph"])
 def get_graph_elements():
     data = cache.get("v1:graph")
     if not data:
-        scan_manager.run_scan()
-        data = cache.get("v1:graph") or []
-        
+        # Cache is cold — trigger async scan if not already running
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
+        # Return empty list — frontend will get data on next poll
+        data = []
+
     return APIResponse(
         success=True,
         message="Graph nodes and edges elements retrieved successfully",
@@ -23,10 +26,11 @@ def get_graph_elements():
 
 @router.post("/graph/rebuild", response_model=APIResponse[dict])
 def rebuild_graph():
-    logger_result = scan_manager.run_scan()
+    """Trigger scan asynchronously — returns immediately so the frontend doesn't time out."""
+    result = scan_manager.trigger_async_scan()
     return APIResponse(
-        success=True if logger_result.get("status") == "success" else False,
-        message="Graph structure sync rebuild complete",
+        success=True,
+        message="Scan triggered",
         timestamp=datetime.utcnow().isoformat() + "Z",
-        data=logger_result
+        data=result
     )

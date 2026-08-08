@@ -1,5 +1,7 @@
 import time
 import logging
+import threading
+import concurrent.futures
 from datetime import datetime
 from app.services.scanner.inventory import AWSInventory
 from app.services.aws import (
@@ -9,8 +11,11 @@ from app.services.aws import (
     lambda_service,
     secrets_service,
     access_analyzer_service,
-    cloudtrail_service
+    cloudtrail_service,
+    rds_service,
+    dynamodb_service
 )
+from app.services.aws.region_cache import clear_region_cache
 from app.services.attack import risk_engine, path_engine
 from app.services.graph import graph_builder, graph_loader
 from app.database import execute_write
@@ -174,6 +179,16 @@ def _generate_risk_issue(item) -> str:
             return f"EC2 '{name}': publicly accessible (IP: {item['details']['public_ip']})"
         return f"EC2 '{name}': elevated risk from instance profile configuration"
 
+    elif item_type == 'RDS':
+        if item.get('details', {}).get('publicly_accessible', False):
+            return f"RDS '{name}': publicly accessible database"
+        return f"RDS '{name}': elevated risk from database configuration"
+
+    elif item_type == 'DynamoDB':
+        if not item.get('details', {}).get('pitr_enabled', True):
+            return f"DynamoDB '{name}': point-in-time recovery not enabled"
+        return f"DynamoDB '{name}': elevated risk from table configuration"
+
     return f"Resource '{name}': elevated risk score detected"
 
 
@@ -200,38 +215,85 @@ def _generate_recommendation(item) -> str:
     elif item_type == 'EC2':
         return "Review security groups, restrict public access, and upgrade to IMDSv2"
 
+    elif item_type == 'RDS':
+        return "Disable public accessibility and enable storage encryption"
+
+    elif item_type == 'DynamoDB':
+        return "Enable point-in-time recovery and review IAM access policies"
+
     return "Apply least-privilege access controls"
 
 
 class ScanManager:
     def __init__(self):
         self.inventory = AWSInventory()
-        self.is_running = False
+        self._lock = threading.Lock()
+        self._is_running = False
+        self._last_result: dict | None = None
+        self._scan_started_at: str | None = None
+
+    @property
+    def is_running(self):
+        return self._is_running
+
+    def get_status(self) -> dict:
+        """Return current scan status for the frontend to poll."""
+        return {
+            "is_scanning": self._is_running,
+            "started_at": self._scan_started_at,
+            "last_result": self._last_result
+        }
+
+    def trigger_async_scan(self) -> dict:
+        """Start a scan in a background thread. Returns immediately."""
+        if self._is_running:
+            return {"status": "already_running", "message": "Scan already in progress"}
+        thread = threading.Thread(target=self.run_scan, daemon=True)
+        thread.start()
+        return {"status": "started", "message": "Scan started in background"}
 
     def run_scan(self) -> dict:
-        if self.is_running:
-            logger.warning("Scan sync already in progress. Skipping duplicate request.")
+        if not self._lock.acquire(blocking=False):
+            logger.warning("Scan lock held. Skipping duplicate.")
             return {"status": "skipped", "message": "Scan already running"}
 
-        self.is_running = True
+        self._is_running = True
+        self._scan_started_at = datetime.utcnow().isoformat() + "Z"
         start_time = time.time()
         logger.info("Central Orchestrator starting AWS scan sync sequence")
 
         try:
             self.inventory.clear()
+            # Clear region cache so we get fresh regions
+            clear_region_cache()
 
-            # 1. AWS API Data Collection
-            self.inventory.users = iam_service.collect_users()
-            self.inventory.groups = iam_service.collect_groups()
-            self.inventory.roles = iam_service.collect_roles()
-            self.inventory.policies = iam_service.collect_policies()
-
-            self.inventory.ec2 = ec2_service.collect_ec2_instances()
-            self.inventory.s3 = s3_service.collect_s3_buckets()
-            self.inventory.lambdas = lambda_service.collect_lambda_functions()
-            self.inventory.secrets = secrets_service.collect_secrets()
-            self.inventory.findings = access_analyzer_service.collect_access_analyzer_findings()
-            self.inventory.alerts = cloudtrail_service.collect_recent_alerts()
+            # 1. AWS API Data Collection (Concurrently)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                future_users = executor.submit(iam_service.collect_users)
+                future_groups = executor.submit(iam_service.collect_groups)
+                future_roles = executor.submit(iam_service.collect_roles)
+                future_policies = executor.submit(iam_service.collect_policies)
+                future_ec2 = executor.submit(ec2_service.collect_ec2_instances)
+                future_s3 = executor.submit(s3_service.collect_s3_buckets)
+                future_lambdas = executor.submit(lambda_service.collect_lambda_functions)
+                future_secrets = executor.submit(secrets_service.collect_secrets)
+                future_rds = executor.submit(rds_service.collect_rds_instances)
+                future_dynamodb = executor.submit(dynamodb_service.collect_dynamodb_tables)
+                future_findings = executor.submit(access_analyzer_service.collect_access_analyzer_findings)
+                future_alerts = executor.submit(cloudtrail_service.collect_recent_alerts)
+                
+                self.inventory.users = future_users.result()
+                self.inventory.groups = future_groups.result()
+                self.inventory.roles = future_roles.result()
+                self.inventory.policies = future_policies.result()
+                self.inventory.ec2 = future_ec2.result()
+                self.inventory.s3 = future_s3.result()
+                self.inventory.lambdas = future_lambdas.result()
+                self.inventory.secrets = future_secrets.result()
+                self.inventory.rds = future_rds.result()
+                self.inventory.dynamodb = future_dynamodb.result()
+                self.inventory.findings = future_findings.result()
+                self.inventory.alerts = future_alerts.result()
 
             # 2. Risk Engine Scoring
             for u in self.inventory.users:
@@ -244,6 +306,10 @@ class ScanManager:
                 e['riskScore'] = risk_engine.score_resource_risk(e)
             for sec in self.inventory.secrets:
                 sec['riskScore'] = risk_engine.score_resource_risk(sec)
+            for rds in self.inventory.rds:
+                rds['riskScore'] = risk_engine.score_resource_risk(rds)
+            for ddb in self.inventory.dynamodb:
+                ddb['riskScore'] = risk_engine.score_resource_risk(ddb)
 
             # 3. Build Neo4j database graph
             try:
@@ -268,12 +334,17 @@ class ScanManager:
 
             # 6. Record ScanHistory node in Neo4j
             scan_timestamp = datetime.utcnow().isoformat() + "Z"
-            resources_count = len(self.inventory.ec2) + len(self.inventory.s3) + len(self.inventory.lambdas) + len(self.inventory.secrets)
+            resources_count = (len(self.inventory.ec2) + len(self.inventory.s3) +
+                               len(self.inventory.lambdas) + len(self.inventory.secrets) +
+                               len(self.inventory.rds) + len(self.inventory.dynamodb))
             nodes_count = G.number_of_nodes()
             edges_count = G.number_of_edges()
 
             # Compute all risk items across all resource types
-            all_scored_items = self.inventory.users + self.inventory.roles + self.inventory.s3 + self.inventory.ec2 + self.inventory.secrets
+            all_scored_items = (self.inventory.users + self.inventory.roles +
+                                self.inventory.s3 + self.inventory.ec2 +
+                                self.inventory.secrets + self.inventory.rds +
+                                self.inventory.dynamodb)
 
             # Categorize by risk level
             critical_items = [x for x in all_scored_items if x.get('riskScore', 0) >= 80]
@@ -298,11 +369,11 @@ class ScanManager:
             except Exception as hist_err:
                 logger.warning(f"Neo4j ScanHistory creation failed: {str(hist_err)}")
 
-            # 7. Refresh/Invalidate Redis Cache keys
+            # 7. Refresh/Invalidate Cache keys
             cache.set("v1:users", self.inventory.users)
             cache.set("v1:roles", self.inventory.roles)
             cache.set("v1:policies", self.inventory.policies)
-            cache.set("v1:resources", self.inventory.users + self.inventory.roles + self.inventory.ec2 + self.inventory.s3 + self.inventory.lambdas + self.inventory.secrets)
+            cache.set("v1:resources", self.inventory.users + self.inventory.roles + self.inventory.ec2 + self.inventory.s3 + self.inventory.lambdas + self.inventory.secrets + self.inventory.rds + self.inventory.dynamodb)
             cache.set("v1:alerts", self.inventory.alerts)
             cache.set("v1:attack-paths", attack_paths)
 
@@ -384,19 +455,23 @@ class ScanManager:
             }
             cache.set("v1:dashboard", dashboard_data)
 
-            self.is_running = False
-            return {
+            self._last_result = {
                 "status": "success",
                 "timestamp": scan_timestamp,
                 "duration": duration,
                 "resources": resources_count,
                 "risks": risks_count
             }
+            return self._last_result
 
         except Exception as e:
-            self.is_running = False
             logger.error(f"Scan Manager Orchestrator failed: {str(e)}")
-            return {"status": "error", "message": str(e)}
+            self._last_result = {"status": "error", "message": str(e)}
+            return self._last_result
+
+        finally:
+            self._is_running = False
+            self._lock.release()
 
 
 # Export singleton
