@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
-import { ZoomIn, ZoomOut, Maximize2, ChevronUp, ChevronDown, List } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, ChevronUp, ChevronDown, List, Download } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
 import { mockGraphElements } from '../data/graph';
@@ -381,6 +381,14 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   const handleZoomIn = () => cyRef.current?.zoom(cyRef.current.zoom() + 0.15);
   const handleZoomOut = () => cyRef.current?.zoom(cyRef.current.zoom() - 0.15);
   const handleFit = () => cyRef.current?.fit();
+  const handleExportImage = () => {
+    if (!cyRef.current) return;
+    const png = cyRef.current.png({ bg: '#0B1120', full: true });
+    const a = document.createElement('a');
+    a.href = png;
+    a.download = 'identity-graph.png';
+    a.click();
+  };
 
   return (
     <div className="w-full h-full relative bg-[#0B1120] overflow-hidden">
@@ -413,9 +421,11 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
         
         {/* Zoom Controls */}
         <div className="flex items-center gap-1.5 bg-[#1E293B]/80 backdrop-blur border border-gray-700 rounded-lg p-1">
-          <button onClick={handleZoomIn} className="p-1 hover:bg-gray-700 rounded text-gray-300"><ZoomIn className="w-4 h-4" /></button>
-          <button onClick={handleZoomOut} className="p-1 hover:bg-gray-700 rounded text-gray-300"><ZoomOut className="w-4 h-4" /></button>
-          <button onClick={handleFit} className="p-1 hover:bg-gray-700 rounded text-gray-300"><Maximize2 className="w-4 h-4" /></button>
+          <button onClick={handleZoomIn} className="p-1 hover:bg-gray-700 rounded text-gray-300" title="Zoom In"><ZoomIn className="w-4 h-4" /></button>
+          <button onClick={handleZoomOut} className="p-1 hover:bg-gray-700 rounded text-gray-300" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
+          <button onClick={handleFit} className="p-1 hover:bg-gray-700 rounded text-gray-300" title="Fit to Screen"><Maximize2 className="w-4 h-4" /></button>
+          <div className="w-[1px] h-4 bg-gray-700 mx-1"></div>
+          <button onClick={handleExportImage} className="p-1 hover:bg-gray-700 rounded text-gray-300" title="Export Graph"><Download className="w-4 h-4" /></button>
         </div>
       </div>
 

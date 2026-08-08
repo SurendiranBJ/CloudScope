@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { IdentityGraph } from '../components/IdentityGraph';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { Network, Search, Filter, LayoutTemplate, Maximize, RefreshCw, AlertTriangle, Info, Download, ChevronDown } from 'lucide-react';
@@ -7,6 +8,11 @@ import { getGraphElements } from '../api/graph';
 import { getRiskAssessmentFindings } from '../api/risks';
 
 export const IdentityGraphPage: React.FC = () => {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const highlightParam = searchParams.get('highlight');
+  const highlightedNodeIds = highlightParam ? highlightParam.split(',') : [];
+
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<'dagre' | 'breadthfirst' | 'cose'>('dagre');
@@ -120,6 +126,7 @@ export const IdentityGraphPage: React.FC = () => {
         <div className="flex-1 relative flex flex-col min-w-0">
           <IdentityGraph 
             onNodeSelect={setSelectedNode} 
+            highlightedNodeIds={highlightedNodeIds}
             layoutMode={layoutMode}
             searchQuery={searchQuery}
             showLabels={showLabels}

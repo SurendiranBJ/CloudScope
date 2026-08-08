@@ -34,10 +34,38 @@ export const Reports: React.FC = () => {
     setDownloading(id);
     setDownloadSuccess(null);
     setTimeout(() => {
+      let content = '';
+      let mimeType = 'text/plain';
+      let extension = id;
+      
+      if (id === 'json') {
+         content = JSON.stringify(data || { empty: true }, null, 2);
+         mimeType = 'application/json';
+      } else if (id === 'csv') {
+         content = 'Framework,Score,Details\n';
+         complianceStandards.forEach(s => {
+           content += `"${s.name}",${s.status},"${s.details}"\n`;
+         });
+         mimeType = 'text/csv';
+      } else {
+         content = `CloudScope Security Report\n\nCompliance Summary:\n\n${JSON.stringify(complianceStandards, null, 2)}`;
+         extension = 'txt';
+      }
+
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `cloudscope-report.${extension}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
       setDownloading(null);
       setDownloadSuccess(id);
       setTimeout(() => setDownloadSuccess(null), 3000);
-    }, 1500); // Simulate export conversion
+    }, 1500); // Simulate export conversion delay
   };
 
   const complianceRaw = data?.compliance || [
