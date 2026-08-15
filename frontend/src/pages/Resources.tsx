@@ -8,11 +8,12 @@ import {
   Lock,
   FileText,
   Search,
-  Plus
+  X,
+  Copy,
+  Check
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getCloudResources } from '../api/resources';
-import { mockResources } from '../data/resources';
 import type { CloudResource } from '../types';
 
 interface ResourcesProps {
@@ -23,6 +24,9 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
   const [localSearch, setLocalSearch] = useState('');
   const [selectedType, setSelectedType] = useState<string>('ALL');
   const [selectedRegion, setSelectedRegion] = useState<string>('ALL');
+  // JSON config modal state
+  const [inspectResource, setInspectResource] = useState<CloudResource | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const searchQuery = search || localSearch;
 
@@ -84,20 +88,22 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
 
   const resourceTypes = ['ALL', 'User', 'Role', 'S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB'];
 
+  const handleCopy = () => {
+    if (inspectResource) {
+      navigator.clipboard.writeText(JSON.stringify(inspectResource, null, 2));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
-      {/* Header */}
-      <div className="flex justify-between items-start">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Cloud Resources Ledger</h1>
-          <p className="text-xs text-enterprise-subtext mt-1">
-            Browse and search all tracked AWS IAM policies and database storage entities.
-          </p>
-        </div>
-        <button className="flex items-center gap-1.5 px-4 py-2 bg-enterprise-accent hover:bg-blue-600 text-white font-semibold rounded-lg text-xs transition-colors glow-blue">
-          <Plus className="w-4 h-4" />
-          <span>Register Asset</span>
-        </button>
+      {/* Header — Register Asset removed (CloudScope is read-only scanner) */}
+      <div>
+        <h1 className="text-2xl font-bold text-white tracking-tight">Cloud Resources Ledger</h1>
+        <p className="text-xs text-enterprise-subtext mt-1">
+          Browse and search all tracked AWS IAM policies and database storage entities.
+        </p>
       </div>
 
       {/* Filter and Search controls */}
@@ -209,7 +215,10 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
                       </td>
                       <td className="p-4 text-enterprise-subtext font-medium">{res.owner}</td>
                       <td className="p-4 text-right">
-                        <button className="px-2.5 py-1.5 hover:bg-gray-800 hover:text-white text-enterprise-accent font-semibold rounded transition-colors text-[10px]">
+                        <button
+                          onClick={() => { setInspectResource(res); setCopied(false); }}
+                          className="px-2.5 py-1.5 hover:bg-gray-800 hover:text-white text-enterprise-accent font-semibold rounded transition-colors text-[10px]"
+                        >
                           View JSON Configuration
                         </button>
                       </td>
@@ -227,6 +236,51 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
           </table>
         </div>
       </div>
+
+      {/* JSON Configuration Modal */}
+      {inspectResource && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setInspectResource(null)}
+        >
+          <div
+            className="relative w-full max-w-2xl mx-4 bg-enterprise-card border border-enterprise-border rounded-2xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-enterprise-border bg-enterprise-bg/40">
+              <div>
+                <h3 className="text-sm font-bold text-white">{inspectResource.name}</h3>
+                <p className="text-[10px] text-enterprise-subtext mt-0.5 font-mono">{inspectResource.arn}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCopy}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-gray-800 text-enterprise-subtext hover:text-white rounded-lg transition-colors text-xs"
+                  title="Copy JSON"
+                >
+                  {copied
+                    ? <Check className="w-3.5 h-3.5 text-enterprise-success" />
+                    : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Copied' : 'Copy'}</span>
+                </button>
+                <button
+                  onClick={() => setInspectResource(null)}
+                  className="p-1.5 hover:bg-gray-800 text-enterprise-subtext hover:text-white rounded-lg transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            {/* Modal Body */}
+            <div className="overflow-y-auto flex-1 p-5">
+              <pre className="text-[11px] font-mono text-gray-300 leading-relaxed select-text whitespace-pre-wrap">
+                {JSON.stringify(inspectResource, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -2,7 +2,6 @@ import { useState, useMemo } from 'react';
 import { ShieldAlert, Search, ArrowUpDown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getRiskAssessmentFindings } from '../api/risks';
-import { mockRisks } from '../data/risks';
 import type { RiskFinding } from '../types';
 
 interface RiskAssessmentProps {

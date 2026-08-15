@@ -60,7 +60,8 @@ from app.routers import (
     reports,
     scan,
     copilot,
-    risks
+    risks,
+    settings
 )
 
 # Mount Routers
@@ -75,6 +76,7 @@ api_v1_router.include_router(reports.router)
 api_v1_router.include_router(scan.router)
 api_v1_router.include_router(copilot.router)
 api_v1_router.include_router(risks.router)
+api_v1_router.include_router(settings.router)
 
 app.include_router(api_v1_router)
 

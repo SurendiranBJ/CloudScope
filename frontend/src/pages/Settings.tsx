@@ -1,16 +1,26 @@
 import { useState } from 'react';
-import { Settings, Shield, Bell, Key, RefreshCw, CheckCircle, Mail, MessageSquare } from 'lucide-react';
+import { Settings, Shield, Bell, Key, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
+import { postScanInterval } from '../api/settings';
 
 export const SettingsPage: React.FC = () => {
   const [scanInterval, setScanInterval] = useState('10');
-  const [slackEnabled, setSlackEnabled] = useState(true);
-  const [emailEnabled, setEmailEnabled] = useState(true);
-  const [saved, setSaved] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSaveScanInterval = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    setSaveState('saving');
+    setErrorMsg('');
+    try {
+      await postScanInterval(Number(scanInterval));
+      setSaveState('success');
+      setTimeout(() => setSaveState('idle'), 4000);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || 'Unknown error';
+      setErrorMsg(detail);
+      setSaveState('error');
+      setTimeout(() => setSaveState('idle'), 5000);
+    }
   };
 
   return (
@@ -22,11 +32,11 @@ export const SettingsPage: React.FC = () => {
           <span>Platform Settings</span>
         </h1>
         <p className="text-xs text-enterprise-subtext mt-1">
-          Configure scanning intervals, notification webhooks, and administrative accounts.
+          Configure scanning intervals and administrative accounts.
         </p>
       </div>
 
-      <form onSubmit={handleSave} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <form onSubmit={handleSaveScanInterval} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column - General Settings */}
         <div className="lg:col-span-2 space-y-6">
           {/* AWS Account Sync */}
@@ -66,6 +76,12 @@ export const SettingsPage: React.FC = () => {
             <div className="space-y-3">
               <span className="text-xs text-enterprise-subtext block">
                 Determine how often the platform polls AWS config logs and credential reports.
+                Changes take effect immediately — update{' '}
+                <code className="text-enterprise-accent font-mono text-[10px] bg-gray-900 px-1 py-0.5 rounded">
+                  SCAN_INTERVAL_MINUTES
+                </code>{' '}
+                in <code className="text-enterprise-accent font-mono text-[10px] bg-gray-900 px-1 py-0.5 rounded">.env</code>{' '}
+                to persist across server restarts.
               </span>
               <div className="flex gap-4">
                 {[
@@ -96,53 +112,19 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Notifications Channels */}
-          <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4">
+          {/* Notification Integrations — Coming Soon */}
+          <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4 opacity-60">
             <h2 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-enterprise-border pb-3">
               <Bell className="w-4 h-4 text-enterprise-accent" />
               <span>Security Event Notifications</span>
+              <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded bg-gray-700 text-gray-400 uppercase tracking-wider">
+                Coming Soon
+              </span>
             </h2>
-            <div className="space-y-4">
-              {/* Slack */}
-              <div className="flex items-center justify-between p-3 bg-enterprise-bg/40 border border-enterprise-border rounded-lg">
-                <div className="flex items-center gap-3">
-                  <MessageSquare className="w-5 h-5 text-purple-400 shrink-0" />
-                  <div className="text-xs">
-                    <p className="font-bold text-white">Slack Webhook alerts</p>
-                    <p className="text-[10px] text-enterprise-subtext">Post critical alerts to channel #security-findings</p>
-                  </div>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={slackEnabled}
-                    onChange={() => setSlackEnabled(!slackEnabled)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-gray-800 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-enterprise-accent" />
-                </label>
-              </div>
-
-              {/* Email */}
-              <div className="flex items-center justify-between p-3 bg-enterprise-bg/40 border border-enterprise-border rounded-lg">
-                <div className="flex items-center gap-3">
-                  <Mail className="w-5 h-5 text-blue-400 shrink-0" />
-                  <div className="text-xs">
-                    <p className="font-bold text-white">Email Notification Digests</p>
-                    <p className="text-[10px] text-enterprise-subtext">Send weekly security assessment rollups</p>
-                  </div>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={emailEnabled}
-                    onChange={() => setEmailEnabled(!emailEnabled)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-gray-800 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-enterprise-accent" />
-                </label>
-              </div>
-            </div>
+            <p className="text-xs text-enterprise-subtext leading-relaxed">
+              Slack webhook alerts and email notification digests are planned for a future release.
+              Notification integrations will be configurable here once the backend integration is complete.
+            </p>
           </div>
         </div>
 
@@ -152,7 +134,7 @@ export const SettingsPage: React.FC = () => {
           <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4">
             <h2 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-enterprise-border pb-3">
               <Key className="w-4 h-4 text-enterprise-accent" />
-              <span>User Profile & Sandbox Role</span>
+              <span>User Profile &amp; Sandbox Role</span>
             </h2>
             <div className="space-y-3 text-xs">
               <div className="space-y-1">
@@ -175,20 +157,40 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Action Button */}
+          {/* Error feedback */}
+          {saveState === 'error' && (
+            <div className="flex items-start gap-2 p-3 bg-enterprise-critical/10 border border-enterprise-critical/30 rounded-lg text-xs text-enterprise-critical">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{errorMsg || 'Failed to update scan interval. Is the backend running?'}</span>
+            </div>
+          )}
+
+          {/* Save Button */}
           <button
             type="submit"
-            className="w-full py-2.5 bg-enterprise-accent hover:bg-blue-600 active:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-2 glow-blue"
+            disabled={saveState === 'saving'}
+            className="w-full py-2.5 bg-enterprise-accent hover:bg-blue-600 active:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-2 glow-blue"
           >
-            {saved ? (
+            {saveState === 'saving' ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Applying...</span>
+              </>
+            ) : saveState === 'success' ? (
               <>
                 <CheckCircle className="w-4 h-4" />
-                <span>Configuration Saved</span>
+                <span>Interval Updated — every {scanInterval} min</span>
               </>
             ) : (
-              <span>Save System Settings</span>
+              <span>Save Scan Interval</span>
             )}
           </button>
+
+          <p className="text-[10px] text-enterprise-subtext text-center leading-relaxed">
+            Runtime change only. To persist across restarts, set{' '}
+            <code className="font-mono text-enterprise-accent">SCAN_INTERVAL_MINUTES={scanInterval}</code>{' '}
+            in your <code className="font-mono text-enterprise-accent">.env</code> file.
+          </p>
         </div>
       </form>
     </div>

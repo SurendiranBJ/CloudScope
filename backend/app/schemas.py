@@ -93,6 +93,9 @@ class CytoscapeElementData(BaseModel):
     arn: Optional[str] = None
     description: Optional[str] = None
     policyType: Optional[str] = None
+    # Additional fields for NodeDetailsPanel real-data rendering
+    trustPolicy: Optional[str] = None   # Role nodes: raw trust policy JSON string
+    policies: Optional[List[str]] = None  # User nodes: list of attached policy names
 
 class CytoscapeElement(BaseModel):
     data: CytoscapeElementData

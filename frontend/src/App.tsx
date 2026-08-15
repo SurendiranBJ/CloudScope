@@ -19,7 +19,6 @@ const queryClient = new QueryClient();
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedRegion, setSelectedRegion] = useState('ap-south-1');
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -33,8 +32,6 @@ function App() {
             {/* Top Navigation */}
             <Navbar
               onSearchChange={setSearchQuery}
-              selectedRegion={selectedRegion}
-              setSelectedRegion={setSelectedRegion}
             />
 
             {/* Main Page Content Body */}

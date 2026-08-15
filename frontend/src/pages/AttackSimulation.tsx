@@ -10,13 +10,14 @@ import {
   User,
   Key,
   Database,
-  RefreshCw
+  RefreshCw,
+  Sparkles
 } from 'lucide-react';
 
 export const AttackSimulation: React.FC = () => {
-  const [startIdentity, setStartIdentity] = useState('usr-002'); // Default to developer-session
+  const [startIdentity, setStartIdentity] = useState('usr-002');
   const [escalationStep, setEscalationStep] = useState('sts:AssumeRole');
-  const [targetResource, setTargetResource] = useState('res-002'); // Default to S3-Customer-PII-DB
+  const [targetResource, setTargetResource] = useState('res-002');
   const [isRunning, setIsRunning] = useState(false);
   const [showResult, setShowResult] = useState(false);
 
@@ -37,7 +38,7 @@ export const AttackSimulation: React.FC = () => {
     setTimeout(() => {
       setIsRunning(false);
       setShowResult(true);
-    }, 1800); // Simulate execution delay
+    }, 1800);
   };
 
   const resetSimulation = () => {
@@ -48,14 +49,20 @@ export const AttackSimulation: React.FC = () => {
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-          <Zap className="w-6 h-6 text-enterprise-warning animate-pulse" />
-          <span>Attack Simulation Sandbox</span>
-        </h1>
-        <p className="text-xs text-enterprise-subtext mt-1">
-          Perform simulated lateral privilege threat assessments. Select starting access points and targets to calculate path risks.
-        </p>
+      <div className="flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+            <Zap className="w-6 h-6 text-enterprise-warning animate-pulse" />
+            <span>Attack Simulation Sandbox</span>
+          </h1>
+          <p className="text-xs text-enterprise-subtext mt-1">
+            Perform simulated lateral privilege threat assessments. Select starting access points and targets to calculate path risks.
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-400 text-xs font-bold">
+          <Sparkles className="w-3.5 h-3.5" />
+          <span>Interactive Sandbox (Custom Graph Engine Coming Soon)</span>
+        </div>
       </div>
 
       {/* Simulator Inputs Config */}

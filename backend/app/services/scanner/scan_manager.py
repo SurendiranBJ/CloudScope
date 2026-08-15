@@ -296,10 +296,43 @@ class ScanManager:
                 self.inventory.alerts = future_alerts.result()
 
             # 2. Risk Engine Scoring
+            # Start with customer-managed policies (Scope='Local') — these were
+            # already fully fetched by collect_policies().
+            policy_doc_map = {
+                p['name']: p['document']
+                for p in self.inventory.policies
+            }
+
+            # Extend the map with AWS-managed policy documents for policies
+            # that are actually attached to users/roles found in this scan.
+            # We only fetch the specific ARNs in use — not the full catalog.
+            aws_managed_arns: set = set()
             for u in self.inventory.users:
-                u['riskScore'] = risk_engine.score_user_risk(u)
+                aws_managed_arns.update(
+                    arn for arn in u.get('attachedPolicyArns', {}).values()
+                    if '::aws:policy/' in arn
+                )
             for r in self.inventory.roles:
-                r['riskScore'] = risk_engine.score_role_risk(r)
+                aws_managed_arns.update(
+                    arn for arn in r.get('attachedPolicyArns', {}).values()
+                    if '::aws:policy/' in arn
+                )
+            if aws_managed_arns:
+                logger.info(
+                    f"Fetching documents for {len(aws_managed_arns)} unique "
+                    f"AWS-managed policies attached in this scan"
+                )
+                managed_docs = iam_service.fetch_managed_policy_documents(aws_managed_arns)
+                # Merge; customer-managed entries already in the map take precedence
+                # (though name collisions between customer and AWS-managed are
+                # extremely unlikely in practice).
+                policy_doc_map.update(managed_docs)
+
+            for u in self.inventory.users:
+                u['riskScore'] = risk_engine.score_user_risk(u, policy_doc_map)
+            for r in self.inventory.roles:
+                r['riskScore'] = risk_engine.score_role_risk(r, policy_doc_map)
+
             for s in self.inventory.s3:
                 s['riskScore'] = risk_engine.score_resource_risk(s)
             for e in self.inventory.ec2:
@@ -379,15 +412,35 @@ class ScanManager:
 
             # Format Cytoscape graph json response
             cytoscape_elements = []
+
+            # Build lookup maps for node-specific fields not stored in NetworkX
+            # but needed by the NodeDetailsPanel (trustPolicy for Roles, policies for Users)
+            role_map = {r['name']: r for r in self.inventory.roles}
+            user_map = {u['name']: u for u in self.inventory.users}
+
             for nid, attr in G.nodes(data=True):
+                node_type = attr.get('type', 'Resource')
+                label = attr.get('label', nid)
+
+                extra: dict = {}
+                if node_type == 'Role':
+                    role = role_map.get(label) or role_map.get(nid)
+                    if role:
+                        extra['trustPolicy'] = role.get('trustPolicy', '')
+                elif node_type == 'User':
+                    user = user_map.get(label) or user_map.get(nid)
+                    if user:
+                        extra['policies'] = user.get('policies', [])
+
                 cytoscape_elements.append({
                     "data": {
                         "id": nid,
-                        "label": attr.get('label', nid),
-                        "type": attr.get('type', 'Resource'),
+                        "label": label,
+                        "type": node_type,
                         "riskScore": attr.get('riskScore', 0),
                         "arn": attr.get('arn', ''),
-                        "description": attr.get('description', '')
+                        "description": attr.get('description', ''),
+                        **extra
                     }
                 })
             for s, t, attr in G.edges(data=True):

@@ -93,8 +93,14 @@ def collect_users() -> list:
                 try:
                     attached_policies = client.list_attached_user_policies(UserName=username)
                     policy_names = [p['PolicyName'] for p in attached_policies.get('AttachedPolicies', [])]
+                    # Keep name→ARN so scan_manager can resolve AWS-managed policy documents
+                    policy_arns = {
+                        p['PolicyName']: p['PolicyArn']
+                        for p in attached_policies.get('AttachedPolicies', [])
+                    }
                 except Exception:
                     policy_names = []
+                    policy_arns = {}
 
                 # Get Inline Policies
                 try:
@@ -118,6 +124,7 @@ def collect_users() -> list:
                     "arn": arn,
                     "status": status,
                     "policies": policy_names,
+                    "attachedPolicyArns": policy_arns,  # name -> ARN, for AWS-managed doc resolution
                     "groups": group_names,
                     "riskScore": 0,  # Calculated downstream by risk_engine
                     "mfaEnabled": mfa_enabled,
@@ -171,9 +178,15 @@ def collect_roles() -> list:
 
                 # Get attached policies for the role
                 attached_policy_names = []
+                attached_policy_arns = {}
                 try:
                     role_policies = client.list_attached_role_policies(RoleName=role_name)
                     attached_policy_names = [p['PolicyName'] for p in role_policies.get('AttachedPolicies', [])]
+                    # Keep name→ARN so scan_manager can resolve AWS-managed policy documents
+                    attached_policy_arns = {
+                        p['PolicyName']: p['PolicyArn']
+                        for p in role_policies.get('AttachedPolicies', [])
+                    }
                 except Exception:
                     pass
 
@@ -185,6 +198,7 @@ def collect_roles() -> list:
                     "activeSessions": 0,
                     "riskScore": 0,  # Calculated downstream
                     "attachedPolicies": attached_policy_names,
+                    "attachedPolicyArns": attached_policy_arns,  # name -> ARN, for AWS-managed doc resolution
                     "type": "Role",
                     "region": "global",
                     "status": "active",
@@ -228,3 +242,59 @@ def collect_policies() -> list:
     except Exception as e:
         logger.error(f"IAM Collector failed to list policies: {str(e)}")
     return policies_data
+
+
+def fetch_managed_policy_documents(policy_arns: set) -> dict:
+    """Fetch IAM policy documents for a specific set of AWS-managed policy ARNs.
+
+    Only the ARNs explicitly passed are fetched — this never enumerates the
+    full AWS-managed policy catalog. Intended to be called by scan_manager
+    with the union of ARNs actually attached to the users/roles found in the
+    current scan.
+
+    Args:
+        policy_arns: A set of policy ARN strings
+            (e.g. {"arn:aws:iam::aws:policy/AdministratorAccess"}). ARNs that
+            are not AWS-managed (i.e. do not contain "::aws:policy/") are
+            silently skipped — they are already handled by collect_policies().
+
+    Returns:
+        A dict mapping policy name -> JSON document string for every ARN that
+        was successfully resolved. ARNs that fail (e.g. rate-limited, no
+        permission) are omitted; the risk_engine name-substring fallback will
+        cover those cases.
+    """
+    result = {}
+    if not policy_arns:
+        return result
+
+    try:
+        session = get_aws_session()
+        client = session.client('iam')
+    except Exception as e:
+        logger.error(f"IAM fetch_managed_policy_documents: failed to create client: {e}")
+        return result
+
+    for arn in policy_arns:
+        # Only handle AWS-managed policies; customer-managed ARNs contain the
+        # account ID, not '::aws:policy/' — skip them to avoid duplicate work.
+        if '::aws:policy/' not in arn:
+            continue
+        try:
+            pol = client.get_policy(PolicyArn=arn)
+            default_ver = pol['Policy']['DefaultVersionId']
+            pol_ver = client.get_policy_version(PolicyArn=arn, VersionId=default_ver)
+            doc = pol_ver.get('PolicyVersion', {}).get('Document', {})
+            policy_name = pol['Policy']['PolicyName']
+            result[policy_name] = json.dumps(doc)
+            logger.debug(f"Resolved AWS-managed policy document: {policy_name} ({arn})")
+        except Exception as e:
+            # Rate-limit or permission error — log and continue; the risk_engine
+            # name-substring fallback will handle this policy.
+            logger.warning(f"Could not fetch document for AWS-managed policy {arn}: {e}")
+
+    logger.info(
+        f"IAM fetch_managed_policy_documents: resolved {len(result)}/{len(policy_arns)} "
+        f"AWS-managed policy documents"
+    )
+    return result

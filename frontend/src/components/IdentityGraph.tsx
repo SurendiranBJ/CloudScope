@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
-import { ZoomIn, ZoomOut, Maximize2, ChevronUp, ChevronDown, List, Download } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, ChevronDown, List, Download } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
-import { mockGraphElements } from '../data/graph';
 
 // Register dagre extension
 cytoscape.use(dagre);

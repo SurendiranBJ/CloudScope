@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   PieChart,
@@ -17,7 +18,6 @@ import {
   Key,
   ShieldCheck,
   Bot,
-  ArrowRight,
   Sparkles
 } from 'lucide-react';
 import { IdentityGraph } from '../components/IdentityGraph';
@@ -28,6 +28,7 @@ import { rebuildGraph, getScanStatus } from '../api/graph';
 import type { SecurityAlert, AttackPath } from '../types';
 
 export const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isScanning, setIsScanning] = useState(false);
   const [scanSuccess, setScanSuccess] = useState(false);
@@ -333,7 +334,10 @@ export const Dashboard: React.FC = () => {
                 <ShieldAlert className="w-4 h-4 text-enterprise-warning" />
                 <span>Recent Threat Alerts</span>
               </div>
-              <span className="text-xs text-enterprise-accent hover:underline cursor-pointer">
+              <span
+                onClick={() => navigate('/alerts')}
+                className="text-xs text-enterprise-accent hover:underline cursor-pointer"
+              >
                 View All Alerts
               </span>
             </h2>
@@ -386,10 +390,6 @@ export const Dashboard: React.FC = () => {
                     </div>
                     <p className="text-[10px] text-enterprise-subtext">{path.description}</p>
                   </div>
-                  <button className="flex items-center gap-1.5 px-3 py-1.5 bg-enterprise-accent/15 hover:bg-enterprise-accent/25 text-enterprise-accent font-semibold rounded-lg text-xs transition-colors shrink-0">
-                    <span>Audit Vector</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
                 </div>
               ))}
             </div>

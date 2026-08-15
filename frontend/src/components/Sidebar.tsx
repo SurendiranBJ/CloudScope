@@ -6,9 +6,7 @@ import {
   Network,
   GitMerge,
   AlertTriangle,
-  Zap,
   Bell,
-  Bot,
   FileBarChart,
   Settings,
   ChevronLeft,
@@ -87,11 +85,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
                   </motion.span>
                 )}
               </div>
-              {!collapsed && item.badge && (
-                <span className="text-[10px] px-1.5 py-0.5 font-bold rounded bg-enterprise-accent text-white leading-none scale-90">
-                  {item.badge}
-                </span>
-              )}
             </NavLink>
           ))}
         </nav>

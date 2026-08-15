@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { IdentityGraph } from '../components/IdentityGraph';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
-import { Network, Search, Filter, LayoutTemplate, Maximize, RefreshCw, AlertTriangle, Info, Download, ChevronDown } from 'lucide-react';
+import { Network, Search, LayoutTemplate, Maximize, RefreshCw, AlertTriangle, Info, ChevronDown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
 import { getRiskAssessmentFindings } from '../api/risks';
@@ -91,10 +91,7 @@ export const IdentityGraphPage: React.FC = () => {
               />
             </div>
             
-            <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors">
-              <Filter className="w-4 h-4" /> Filter
-            </button>
-            
+            {/* Layout dropdown — single control (sidebar duplicate removed) */}
             <div className="relative group">
               <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors">
                 <LayoutTemplate className="w-4 h-4" /> Layout <ChevronDown className="w-3 h-3 text-gray-400" />
@@ -146,27 +143,22 @@ export const IdentityGraphPage: React.FC = () => {
         {!isFullscreen && (
           <aside className="w-80 bg-[#111827] border-l border-gray-800 flex flex-col overflow-y-auto shrink-0 custom-scrollbar z-10">
           
-          {/* Recommended Fixes */}
+          {/* Recommended Fixes — View Details removed (no navigation target; risk data is visible in table row) */}
           <div className="p-5 border-b border-gray-800">
             <h3 className="text-sm font-semibold text-white mb-4">Recommended Fixes</h3>
             <div className="space-y-3">
               {risks?.map((risk: any, i: number) => (
                 <div key={i} className="p-3 bg-gray-900 border border-gray-800 rounded-lg">
-                  <div className="flex items-start gap-2 mb-2">
+                  <div className="flex items-start gap-2">
                     {risk.severity === 'Critical' || risk.severity === 'High' ? (
                       <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                     ) : (
                       <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
                     )}
                     <div>
-                      <h4 className="text-xs font-semibold text-gray-200">{risk.title || 'Security Finding'}</h4>
+                      <h4 className="text-xs font-semibold text-gray-200">{risk.title || risk.identity || 'Security Finding'}</h4>
                       <p className="text-[10px] text-gray-400 mt-1 leading-snug">{risk.description || risk.recommendation || risk.issue}</p>
                     </div>
-                  </div>
-                  <div className="flex justify-end mt-2">
-                    <button className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[10px] font-medium transition-colors">
-                      View Details
-                    </button>
                   </div>
                 </div>
               ))}
@@ -176,25 +168,12 @@ export const IdentityGraphPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Graph Settings */}
+          {/* Graph Settings — layout select removed (controlled by header dropdown only) */}
           <div className="p-5">
             <h3 className="text-sm font-semibold text-white mb-4">Graph Settings</h3>
             
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Layout</span>
-                <select 
-                  value={layoutMode} 
-                  onChange={(e) => setLayoutMode(e.target.value as any)}
-                  className="bg-gray-900 border border-gray-700 text-xs rounded px-2 py-1 focus:outline-none"
-                >
-                  <option value="dagre">Hierarchical TB</option>
-                  <option value="breadthfirst">Concentric</option>
-                  <option value="cose">Force Directed</option>
-                </select>
-              </div>
-              
-              <div className="space-y-2 pt-2 border-t border-gray-800">
+              <div className="space-y-2">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-600 focus:ring-offset-gray-900" />
                   <span className="text-xs text-gray-300">Show Node Labels</span>
@@ -207,12 +186,6 @@ export const IdentityGraphPage: React.FC = () => {
                   <input type="checkbox" checked={highlightRisky} onChange={(e) => setHighlightRisky(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-600 focus:ring-offset-gray-900" />
                   <span className="text-xs text-gray-300">Highlight Risky Paths</span>
                 </label>
-              </div>
-
-              <div className="pt-4">
-                <button className="w-full flex items-center justify-center gap-2 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-semibold text-white transition-colors">
-                  <Download className="w-4 h-4" /> Export Graph
-                </button>
               </div>
             </div>
           </div>

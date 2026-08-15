@@ -1,19 +1,19 @@
 import React, { useState } from 'react';
-import { Search, Bell, ChevronDown, User, Globe, AlertOctagon } from 'lucide-react';
+import { Search, Bell, ChevronDown, User, AlertOctagon } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 
 interface NavbarProps {
   onSearchChange?: (val: string) => void;
-  selectedRegion: string;
-  setSelectedRegion: (region: string) => void;
+  // selectedRegion / setSelectedRegion props removed — region selector had no
+  // effect on any API call (all queries are region-agnostic at the backend level).
+  // Documented as a future roadmap item: implement per-region scoped queries
+  // when multi-region support is added to the backend.
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
-  onSearchChange,
-  selectedRegion,
-  setSelectedRegion
-}) => {
+export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
+  const navigate = useNavigate();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
 
@@ -24,12 +24,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   });
 
   const alerts = data?.recentAlerts || [];
-
-  const regions = [
-    { code: 'ap-south-1', name: 'Asia Pacific (Mumbai)' },
-    { code: 'us-east-1', name: 'US East (N. Virginia)' },
-    { code: 'eu-west-1', name: 'Europe (Ireland)' }
-  ];
 
   return (
     <header className="h-16 border-b border-enterprise-border bg-enterprise-card px-6 flex items-center justify-between relative z-40 select-none">
@@ -48,23 +42,6 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Right Controls */}
       <div className="flex items-center gap-4">
-        {/* Region Selector */}
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-enterprise-border bg-enterprise-bg/40 text-sm text-gray-200">
-          <Globe className="w-4 h-4 text-enterprise-accent" />
-          <span className="font-semibold text-xs text-enterprise-subtext uppercase">Region:</span>
-          <select
-            value={selectedRegion}
-            onChange={(e) => setSelectedRegion(e.target.value)}
-            className="bg-transparent font-medium border-none focus:outline-none cursor-pointer text-white"
-          >
-            {regions.map((r) => (
-              <option key={r.code} value={r.code} className="bg-enterprise-card text-white">
-                {r.code} ({r.name.split(' ')[0]})
-              </option>
-            ))}
-          </select>
-        </div>
-
         {/* Notifications Dropdown */}
         <div className="relative">
           <button
@@ -121,10 +98,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <p className="text-[10px] text-enterprise-subtext">admin@identityscope.io</p>
               </div>
               <div className="p-2 space-y-0.5">
-                <button className="w-full text-left px-3 py-1.5 rounded hover:bg-gray-800 text-xs text-gray-200">
-                  My Profile
-                </button>
-                <button className="w-full text-left px-3 py-1.5 rounded hover:bg-gray-800 text-xs text-gray-200">
+                {/* "My Profile" removed — no profile page/route exists in this version */}
+                <button
+                  onClick={() => { setShowProfile(false); navigate('/settings'); }}
+                  className="w-full text-left px-3 py-1.5 rounded hover:bg-gray-800 text-xs text-gray-200"
+                >
                   Settings
                 </button>
               </div>

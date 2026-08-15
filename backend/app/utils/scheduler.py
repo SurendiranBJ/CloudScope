@@ -33,3 +33,25 @@ def stop_scheduler():
     logger.info("Stopping background scanner scheduler job")
     if _scheduler.running:
         _scheduler.shutdown()
+
+
+def reschedule_scan_job(minutes: int) -> None:
+    """Update the running APScheduler job's interval at runtime.
+
+    Uses reschedule_job() which atomically replaces the trigger on the
+    existing job without cancelling it or creating a duplicate job.
+
+    Args:
+        minutes: New interval in minutes. Must be >= 1.
+
+    Raises:
+        ValueError: If the scheduler is not running or the job is not found.
+    """
+    if not _scheduler.running:
+        raise ValueError("Scheduler is not running")
+    logger.info(f"Rescheduling aws_sync_scan_job to {minutes} minute(s)")
+    _scheduler.reschedule_job(
+        job_id="aws_sync_scan_job",
+        trigger="interval",
+        minutes=minutes
+    )

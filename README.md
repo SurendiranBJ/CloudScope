@@ -4,6 +4,8 @@ CloudScope is a modern, real-time Cloud Security Posture Management (CSPM) and C
 
 Designed with a premium glassmorphism React dashboard and backed by a highly concurrent, asynchronous FastAPI engine, CloudScope enables security teams to visualize the blast radius of compromised identities before an attacker can exploit them.
 
+> **Latest Security & Architecture Updates**: See [`AUDIT_AND_CHANGES.md`](file:///c:/Users/surab/Desktop/CloudScope/AUDIT_AND_CHANGES.md) for a complete breakdown of recent IAM risk engine fixes, AWS-managed policy document resolution, API endpoints, and UI audit results.
+
 ---
 
 ## 🏛️ Architectural Paradigm: The Two-Phase Security Model
@@ -16,16 +18,16 @@ To achieve this, CloudScope is architected around a strict **Two-Phase Security 
 Phase A is responsible for understanding the exact configuration of the AWS environment at a given point in time. It answers the question: *"What dangerous permissions exist right now, and how can they be chained together to compromise critical infrastructure?"*
 
 1. **Multithreaded AWS Discovery (Boto3)**: The backend `ScanManager` orchestrates a highly concurrent data collection process using Python's `ThreadPoolExecutor`. It pre-caches available AWS regions to prevent redundant API calls, and then simultaneously dispatches collection threads for:
-   - **Identity Access Management (IAM)**: Users, Groups, Roles, Managed Policies, and Inline Policies.
+   - **Identity Access Management (IAM)**: Users, Groups, Roles, Customer-Managed Policies, and AWS-Managed Policies (`arn:aws:iam::aws:policy/...`).
    - **Compute**: EC2 Instances and Lambda Execution Environments.
    - **Storage & Databases**: S3 Buckets, RDS Instances, and DynamoDB Tables.
    - **Secrets Management**: AWS Secrets Manager metadata.
    - **Security Services**: IAM Access Analyzer findings.
 
 2. **Graph Construction (Neo4j & NetworkX)**: The raw JSON configurations are passed to the `GraphBuilder`. Relationships are algorithmically derived (e.g., matching a User's attached policies to a Role's Trust Relationship document). These nodes and edges are persisted into a **Neo4j Graph Database** (and mirrored in memory via `NetworkX` for rapid mathematical pathfinding).
-   - **Static Edges Constructed**: `MEMBER_OF`, `HAS_POLICY`, `CAN_ASSUME`, `CAN_ACCESS`, `ATTACHED_TO`.
+   - **Static Edges Constructed**: `MEMBER_OF`, `HAS_POLICY`, `CAN_ASSUME`, `ALLOWS`, `ATTACHED_TO`, `EXECUTES_WITH`.
 
-3. **Advanced Risk Engine**: The system does not rely on simple naming conventions. The `RiskEngine` explicitly parses raw IAM JSON policy documents, utilizing Abstract Syntax Tree (AST)-like evaluation to identify wildcard permissions (`Action: *` or `Resource: *`), lack of MFA enforcement, cross-account trust vulnerabilities, and public exposure on S3/RDS resources.
+3. **Advanced Risk Engine**: The system does not rely on simple naming conventions. The `RiskEngine` explicitly parses raw IAM JSON policy documents, utilizing AST-like evaluation to identify wildcard permissions (`Action: *` or `Resource: *`), lack of MFA enforcement, cross-account trust vulnerabilities, and public exposure on S3/RDS resources. It inspects both customer-managed and resolved AWS-managed policy documents.
 
 ### Phase B: Dynamic Activity Monitoring (The "Behavior" of the Cloud)
 While Phase A maps the *potential* attack paths, Phase B monitors the *actual* behavioral telemetry of the environment.
@@ -46,18 +48,18 @@ If the static graph indicates that `User:Alice` has a theoretical `CAN_ASSUME` p
 The backend is structured as a modular, event-driven API server running on **Uvicorn** and **FastAPI**.
 
 *   **Concurrency & Asynchrony**: To prevent the UI from hanging during massive AWS API sweeps, manual scans are triggered asynchronously. The POST `/scan` endpoint dispatches a daemon thread and returns immediately. The frontend seamlessly polls a lightweight `/scan/status` endpoint.
-*   **APScheduler Integration**: Automated, periodic scanning is managed by `APScheduler` running in the background. To prevent memory leaks and API rate-limiting (HTTP 429 Too Many Requests), the scheduler enforces `max_instances=1` and utilizes Threading Locks (`threading.Lock(blocking=False)`) to guarantee mutually exclusive execution.
+*   **APScheduler Integration & Runtime Rescheduling**: Automated, periodic scanning is managed by `APScheduler`. Scans enforce `max_instances=1` and utilize `threading.Lock(blocking=False)` to prevent duplicate execution. Admins can update the scan frequency dynamically via `POST /api/v1/settings/scan-interval`, which atomically reschedules the running job at runtime.
+*   **Strict CORS Policy**: `CORS_ORIGINS` environment variable replaces wildcard settings, defaulting to trusted origins (`http://localhost:5173`, `http://localhost:3000`).
 *   **Caching Layer (Redis)**: Enterprise AWS environments can produce graphs with tens of thousands of nodes. The backend implements a transparent caching layer utilizing **Redis** (`redis-py`). Complex graph topologies and Dashboard aggregations are cached with a configurable TTL. If Redis is unavailable, the application gracefully degrades to local memory caching without crashing.
-*   **Data Models (Pydantic)**: All API payloads and internal data structures are strictly typed and validated using Pydantic, ensuring zero runtime data malformations when transitioning between AWS Boto3 dictionaries and React JSON payloads.
+*   **Data Models (Pydantic)**: All API payloads and internal data structures are strictly typed and validated using Pydantic, ensuring zero runtime data malformations.
 
 ### Frontend Architecture (React 18 + Vite + TypeScript)
 The frontend is a Single Page Application (SPA) designed with a premium, enterprise-grade dark mode aesthetic relying heavily on glassmorphism (translucency, background blurring, and structural gradients).
 
-*   **State Management & Data Fetching**: Powered by **TanStack Query (React Query)**. This handles caching, background synchronization, and automatic refetching of the dashboard data. When the asynchronous scanner completes, React Query actively invalidates the cache, seamlessly re-rendering the UI without a page reload.
-*   **Identity Graph Visualization (Cytoscape.js)**: The core visualization component is built on top of `Cytoscape.js`. 
-   - **Dagre Layout Engine**: Utilizes the `cytoscape-dagre` extension to enforce a strict Directed Acyclic Graph (DAG) hierarchical layout, ensuring complex attack paths flow logically from left to right (Identities -> Roles -> Resources).
-   - **Interactive DOM Overlays**: The graph features a floating, collapsible legend overlay and distinct color-coded node rendering. Static edges are rendered as solid gray lines, while active Risk Paths and Dynamic Edges are rendered with bold, colored strokes (e.g., solid red for `RISK PATH`).
-*   **Styling (Tailwind CSS)**: The entire interface avoids generic component libraries in favor of utility-first Tailwind CSS. This allows for absolute control over micro-animations, hover states, and the precise geometric aesthetic required for a modern cybersecurity tool.
+*   **State Management & Data Fetching**: Powered by **TanStack Query (React Query)**. This handles caching, background synchronization, and automatic refetching of the dashboard data.
+*   **Identity Graph Visualization (Cytoscape.js)**: Built on `Cytoscape.js` with `cytoscape-dagre` hierarchical layout rendering. Renders live node properties including raw IAM trust relationship policies and attached policy lists.
+*   **Interactive Modals & Real Data Reporting**: Includes an in-app JSON inspector modal for cloud resources, live Copilot AI integration for attack path explanations, client-side alert dismissal, and client-side document generators for PDF (jsPDF), CSV, JSON, and SVG vector graphics.
+*   **Styling (Tailwind CSS)**: Utility-first Tailwind CSS for precise geometric layout, hover transitions, and glassmorphism styling.
 
 ---
 
@@ -103,13 +105,13 @@ npm install
 npm run dev
 ```
 
-Navigate to `http://localhost:5173` in your web browser. The dashboard will automatically connect to the backend, trigger an initial asynchronous scan, and populate the Identity Graph.
+Navigate to `http://localhost:5173` in your web browser. The dashboard will automatically connect to the backend, trigger an initial scan, and populate the Identity Graph.
 
 ---
 
 ## 🗺️ Roadmap & Future Iterations
 
-1. **Cypher Query Builder UI**: Expose a visual query builder on the frontend allowing security analysts to write custom Neo4j Cypher queries directly against the Identity Graph (e.g., "Find all Users who can assume a Role that has Access to S3 Bucket X").
-2. **Automated Remediation Workflows (Lambda)**: Implement safe, click-to-remediate workflows directly from the dashboard. This will trigger a backend AWS SDK call to automatically revoke over-privileged inline policies or disable public bucket access block settings.
-3. **Multi-Cloud Generalization**: Abstract the AWS-specific Boto3 collectors behind a generic `CloudProvider` interface to support subsequent Azure RM and GCP Resource Manager integrations.
-4. **Kubernetes (EKS) Node Integration**: Expand the configuration scanner to utilize the Kubernetes Python Client, parsing RBAC `ClusterRoles` and `RoleBindings` to map identities into the EKS data plane.
+1. **Cypher Query Builder UI**: Expose a visual query builder on the frontend allowing security analysts to write custom Neo4j Cypher queries directly against the Identity Graph.
+2. **Automated Remediation Workflows (Lambda)**: Implement safe, click-to-remediate workflows directly from the dashboard.
+3. **Multi-Cloud & Multi-Region Expansion**: Abstract the AWS-specific collectors to support regional scoping, Azure RM, and GCP Resource Manager.
+4. **Kubernetes (EKS) Node Integration**: Expand the configuration scanner to utilize the Kubernetes Python Client, parsing RBAC `ClusterRoles` and `RoleBindings`.

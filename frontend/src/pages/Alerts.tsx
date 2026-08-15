@@ -1,15 +1,17 @@
 import { useState, useMemo, Fragment } from 'react';
 import type { FC } from 'react';
-import { Bell, AlertOctagon, Search, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import { Bell, AlertOctagon, Search, RefreshCw, ChevronDown, ChevronUp, Check, Copy } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getSecurityAlerts } from '../api/alerts';
-import { mockAlerts } from '../data/alerts';
 import type { SecurityAlert } from '../types';
 
 export const Alerts: FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<string>('ALL');
   const [expandedAlertId, setExpandedAlertId] = useState<string | null>(null);
+  // Client-side dismiss set — cleared on each new scan (component remounts via queryKey invalidation)
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [copyAlertId, setCopyAlertId] = useState<string | null>(null);
 
   const { data } = useQuery({
     queryKey: ['securityAlerts'],
@@ -47,8 +49,23 @@ export const Alerts: FC = () => {
     }
   };
 
+  // Count of currently-resolved alerts that can be dismissed
+  const resolvedCount = useMemo(
+    () => alerts.filter(a => a.status === 'resolved' && !dismissedIds.has(a.id)).length,
+    [alerts, dismissedIds]
+  );
+
+  const handleClearResolved = () => {
+    const resolvedIds = alerts
+      .filter(a => a.status === 'resolved')
+      .map(a => a.id);
+    setDismissedIds(prev => new Set([...prev, ...resolvedIds]));
+  };
+
   const filteredAlerts = useMemo(() => {
     return alerts.filter((alert) => {
+      if (dismissedIds.has(alert.id)) return false;
+
       const matchesSearch =
         alert.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
         alert.resource.toLowerCase().includes(searchQuery.toLowerCase());
@@ -57,10 +74,16 @@ export const Alerts: FC = () => {
 
       return matchesSearch && matchesSeverity;
     });
-  }, [alerts, searchQuery, severityFilter]);
+  }, [alerts, searchQuery, severityFilter, dismissedIds]);
 
   const toggleExpand = (id: string) => {
     setExpandedAlertId((prev) => (prev === id ? null : id));
+  };
+
+  const handleCopyDetails = (alert: SecurityAlert) => {
+    navigator.clipboard.writeText(alert.details);
+    setCopyAlertId(alert.id);
+    setTimeout(() => setCopyAlertId(null), 2000);
   };
 
   return (
@@ -76,9 +99,14 @@ export const Alerts: FC = () => {
             Real-time security log alerts listing permission drifts and credential assumption events.
           </p>
         </div>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 bg-enterprise-card hover:bg-gray-800 text-white font-semibold rounded-lg text-xs transition-colors border border-enterprise-border">
+        <button
+          onClick={handleClearResolved}
+          disabled={resolvedCount === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-enterprise-card hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition-colors border border-enterprise-border"
+          title={resolvedCount === 0 ? 'No resolved alerts to clear' : `Hide ${resolvedCount} resolved alert${resolvedCount > 1 ? 's' : ''} from view`}
+        >
           <RefreshCw className="w-3.5 h-3.5" />
-          <span>Clear Resolved</span>
+          <span>Clear Resolved{resolvedCount > 0 ? ` (${resolvedCount})` : ''}</span>
         </button>
       </div>
 
@@ -168,10 +196,21 @@ export const Alerts: FC = () => {
                         <tr>
                           <td colSpan={6} className="bg-enterprise-bg/60 p-4 border-b border-enterprise-border">
                             <div className="space-y-2">
-                              <h5 className="font-bold text-[10px] text-enterprise-accent flex items-center gap-1 uppercase">
-                                <AlertOctagon className="w-4 h-4 text-enterprise-accent shrink-0" />
-                                <span>CloudTrail Log Payload Parameters</span>
-                              </h5>
+                              <div className="flex items-center justify-between">
+                                <h5 className="font-bold text-[10px] text-enterprise-accent flex items-center gap-1 uppercase">
+                                  <AlertOctagon className="w-4 h-4 text-enterprise-accent shrink-0" />
+                                  <span>CloudTrail Log Payload Parameters</span>
+                                </h5>
+                                <button
+                                  onClick={() => handleCopyDetails(alert)}
+                                  className="flex items-center gap-1 px-2 py-1 hover:bg-gray-800 text-enterprise-subtext hover:text-white rounded text-[10px] transition-colors"
+                                >
+                                  {copyAlertId === alert.id
+                                    ? <Check className="w-3.5 h-3.5 text-enterprise-success" />
+                                    : <Copy className="w-3.5 h-3.5" />}
+                                  <span>{copyAlertId === alert.id ? 'Copied' : 'Copy'}</span>
+                                </button>
+                              </div>
                               <pre className="p-4 bg-gray-900 border border-enterprise-border rounded-lg text-[9px] font-mono text-gray-300 overflow-x-auto whitespace-pre-wrap leading-relaxed select-text">
                                 {alert.details}
                               </pre>

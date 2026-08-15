@@ -11,6 +11,9 @@ interface NodeDetailsPanelProps {
     arn?: string;
     description?: string;
     policyType?: string;
+    // Real fields from graph data populated by graph_builder.py
+    trustPolicy?: string;
+    policies?: string[];
   } | null;
   onClose: () => void;
 }
@@ -40,6 +43,16 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
     return 'bg-enterprise-success';
   };
 
+  // Try to pretty-print the trust policy if it's valid JSON
+  const formatTrustPolicy = (raw?: string): string => {
+    if (!raw) return '';
+    try {
+      return JSON.stringify(JSON.parse(raw), null, 2);
+    } catch {
+      return raw;
+    }
+  };
+
   return (
     <div className="w-80 border-l border-enterprise-border bg-enterprise-card h-full flex flex-col justify-between select-none relative z-30 overflow-y-auto shrink-0 shadow-2xl animate-in slide-in-from-right duration-200">
       {/* Header */}
@@ -51,6 +64,7 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
         <button
           onClick={onClose}
           className="p-1 text-enterprise-subtext hover:text-white rounded-md hover:bg-gray-800 transition-colors"
+          title="Close panel"
         >
           <X className="w-4 h-4" />
         </button>
@@ -105,7 +119,7 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
           </div>
         )}
 
-        {/* Conditional Policy Viewers */}
+        {/* Role: Trust Relationship Policy (real data from graph) */}
         {nodeData.type === 'Role' && (
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-enterprise-subtext">
@@ -113,22 +127,14 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
               <span>Trust Relationship Policy</span>
             </div>
             <pre className="p-3 bg-enterprise-bg/85 border border-enterprise-border rounded-lg text-[10px] font-mono text-gray-300 overflow-x-auto max-h-48 scrollbar-thin">
-{`{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Service": "ec2.amazonaws.com"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}`}
+              {nodeData.trustPolicy
+                ? formatTrustPolicy(nodeData.trustPolicy)
+                : '// Trust policy not available for this role.'}
             </pre>
           </div>
         )}
 
+        {/* User: Directly Attached Policies (real data from graph) */}
         {nodeData.type === 'User' && (
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-enterprise-subtext">
@@ -136,28 +142,34 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
               <span>Directly Attached Policies</span>
             </div>
             <div className="space-y-1.5">
-              <div className="flex justify-between items-center bg-enterprise-bg/40 p-2 rounded border border-enterprise-border text-xs">
-                <span className="font-semibold text-gray-200">AdministratorAccess</span>
-                <span className="text-[10px] text-enterprise-critical font-bold">Admin Privs</span>
-              </div>
-              <div className="flex justify-between items-center bg-enterprise-bg/40 p-2 rounded border border-enterprise-border text-xs">
-                <span className="font-semibold text-gray-200">SystemAdminAccess</span>
-                <span className="text-[10px] text-enterprise-warning font-bold">Write Scope</span>
-              </div>
+              {nodeData.policies && nodeData.policies.length > 0 ? (
+                nodeData.policies.map((policy) => {
+                  const isAdmin = /admin/i.test(policy) || /\*/.test(policy);
+                  return (
+                    <div
+                      key={policy}
+                      className="flex justify-between items-center bg-enterprise-bg/40 p-2 rounded border border-enterprise-border text-xs"
+                    >
+                      <span className="font-semibold text-gray-200 truncate max-w-[160px]" title={policy}>
+                        {policy}
+                      </span>
+                      {isAdmin && (
+                        <span className="text-[9px] text-enterprise-critical font-bold ml-2 shrink-0">
+                          Admin Privs
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="text-[10px] text-enterprise-subtext italic">No policies attached to this user.</p>
+              )}
             </div>
           </div>
         )}
       </div>
 
-      {/* Footer Controls */}
-      <div className="p-4 border-t border-enterprise-border bg-enterprise-bg/25">
-        <button
-          onClick={onClose}
-          className="w-full py-2 bg-enterprise-accent hover:bg-blue-600 active:bg-blue-700 text-white font-semibold rounded-lg text-xs transition-colors glow-blue"
-        >
-          Audit History Logs
-        </button>
-      </div>
+      {/* Footer — "Audit History Logs" removed (no backend endpoint); X close in header is sufficient */}
     </div>
   );
 };

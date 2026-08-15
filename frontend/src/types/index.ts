@@ -29,7 +29,7 @@ export interface IAMPolicy {
 
 export interface CloudResource {
   name: string;
-  type: 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy';
+  type: 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy' | 'DynamoDB';
   region: string;
   status: 'active' | 'stopped' | 'configured' | 'warning' | 'critical';
   owner: string;
