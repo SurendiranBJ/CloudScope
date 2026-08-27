@@ -85,11 +85,17 @@ python -m venv venv
 # macOS/Linux:
 source venv/bin/activate
 
-# Install dependencies
+# Install runtime dependencies
 pip install -r requirements.txt
+
+# (Optional) Install test/dev dependencies
+pip install -r requirements-dev.txt
 
 # Start the FastAPI Uvicorn Server
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# Run the test suite
+python -m pytest tests/ -v
 ```
 
 ### 2. Frontend Setup
