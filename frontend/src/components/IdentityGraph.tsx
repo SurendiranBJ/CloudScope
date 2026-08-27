@@ -52,6 +52,13 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     DynamoDB: true
   });
 
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string; visible: boolean }>({
+    x: 0,
+    y: 0,
+    text: '',
+    visible: false
+  });
+
   const filterColors = {
     User: '#3B82F6', // Blue
     Role: '#8B5CF6', // Purple
@@ -142,6 +149,52 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     });
   };
 
+  // Layout mode configurations
+  const getLayoutOptions = (mode: 'dagre' | 'breadthfirst' | 'cose') => {
+    switch (mode) {
+      case 'dagre':
+        return {
+          name: 'dagre',
+          directed: true,
+          padding: 50,
+          rankDir: 'TB',
+          nodeSep: 100, // Horizontal separation between nodes in same rank
+          rankSep: 150, // Vertical separation between ranks
+          fit: true,
+          spacingFactor: 1.2
+        };
+      case 'breadthfirst':
+        return {
+          name: 'breadthfirst',
+          directed: true,
+          padding: 50,
+          circle: true,
+          spacingFactor: 1.8,
+          fit: true
+        };
+      case 'cose':
+        return {
+          name: 'cose',
+          padding: 50,
+          componentSpacing: 150,
+          refresh: 20,
+          fit: true,
+          nodeRepulsion: () => 15000,
+          idealEdgeLength: () => 120,
+          edgeElasticity: () => 100,
+          nestingFactor: 1.2,
+          gravity: 1.5,
+          numIter: 1000,
+          initialTemp: 1000,
+          coolingFactor: 0.99,
+          minTemp: 1.0,
+          spacingFactor: 1.3
+        };
+      default:
+        return { name: 'grid', padding: 50 };
+    }
+  };
+
   // Run path highlight update whenever dependency changes
   useEffect(() => {
     applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery);
@@ -162,20 +215,35 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
         {
           selector: 'node',
           style: {
-            'content': showLabels ? 'data(label)' : '',
+            'content': ((ele: cytoscape.NodeSingular) => {
+              if (!showLabels) return '';
+              const label = ele.data('label') || ele.id();
+              if (label.length > 22) {
+                return label.substring(0, 19) + '...';
+              }
+              return label;
+            }) as any,
             'font-family': 'Inter, sans-serif',
-            'font-size': '12px',
+            'font-size': '11px',
             'font-weight': 'bold',
-            'color': '#E5E7EB',
+            'color': '#F3F4F6',
             'text-valign': 'bottom',
-            'text-margin-y': 8,
+            'text-margin-y': 10,
             'background-color': '#1E293B',
             'border-width': '2px',
             'border-color': '#4B5563',
             'width': '40px',
             'height': '40px',
             'transition-property': 'background-color, border-color, border-width, opacity, width, height',
-            'transition-duration': 0.25
+            'transition-duration': 0.25,
+            // Semi-transparent background behind text to ensure readability
+            'text-background-color': '#0F172A',
+            'text-background-opacity': 0.75,
+            'text-background-padding': '4px',
+            'text-background-shape': 'roundrectangle',
+            'text-border-width': 1,
+            'text-border-color': '#334155',
+            'text-border-opacity': 0.5
           }
         },
         // Types styling
@@ -312,14 +380,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           }
         }
       ],
-      layout: {
-        name: layoutMode,
-        directed: true,
-        padding: 60,
-        grid: false,
-        spacingFactor: 1.5,
-        rankDir: 'TB'
-      } as any
+      layout: getLayoutOptions(layoutMode) as any
     });
 
     cyRef.current = cy;
@@ -349,6 +410,27 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       node.connectedEdges().removeClass('dimmed').addClass('highlighted');
     });
 
+    // Hover tooltip events
+    cy.on('mouseover', 'node', (evt) => {
+      const node = evt.target;
+      const label = node.data('label') || node.id();
+      const renderedPos = node.renderedPosition();
+      setTooltip({
+        x: renderedPos.x,
+        y: renderedPos.y - 30, // Offset above the node
+        text: label,
+        visible: true
+      });
+    });
+
+    cy.on('mouseout', 'node', () => {
+      setTooltip(prev => ({ ...prev, visible: false }));
+    });
+
+    cy.on('drag pan zoom', () => {
+      setTooltip(prev => ({ ...prev, visible: false }));
+    });
+
     // Background click handler to clear selection
     cy.on('tap', (evt) => {
       if (evt.target === cy) {
@@ -360,7 +442,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     
     const handleReset = () => {
       cy.elements().removeClass('dimmed').removeClass('highlighted');
-      cy.layout({ name: layoutMode, directed: true, padding: 60, spacingFactor: 1.5, rankDir: 'TB' } as any).run();
+      cy.layout(getLayoutOptions(layoutMode) as any).run();
       if (onNodeSelect) onNodeSelect(null);
     };
     
@@ -368,6 +450,11 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
 
     // Apply default filters and potential highlighted paths
     applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery);
+
+    // Initial viewport fit
+    cy.ready(() => {
+      cy.fit(undefined, 50);
+    });
 
     return () => {
       window.removeEventListener('graph:reset', handleReset);
@@ -490,6 +577,19 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           </div>
         )}
       </div>
+
+      {/* Tooltip Overlay */}
+      {tooltip.visible && (
+        <div
+          className="absolute z-50 pointer-events-none bg-[#0F172A]/95 border border-gray-700 text-gray-200 text-xs px-3 py-1.5 rounded-lg shadow-2xl backdrop-blur-md transition-opacity duration-150 transform -translate-x-1/2 -translate-y-full flex flex-col gap-0.5"
+          style={{
+            left: `${tooltip.x}px`,
+            top: `${tooltip.y}px`
+          }}
+        >
+          <span className="font-semibold whitespace-nowrap">{tooltip.text}</span>
+        </div>
+      )}
 
       {/* Graph Area */}
       <div ref={containerRef} className="w-full h-full" />
