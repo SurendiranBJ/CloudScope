@@ -211,6 +211,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     const cy = cytoscape({
       container: containerRef.current,
       elements: JSON.parse(JSON.stringify(elements)), // deep copy to prevent direct mutation issues
+      minZoom: 0.1,
+      maxZoom: 3,
+      wheelSensitivity: 0.2,
       style: [
         {
           selector: 'node',
@@ -464,9 +467,29 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   }, [elements, layoutMode, showLabels, showEdgeLabels]);
 
   // Controls API
-  const handleZoomIn = () => cyRef.current?.zoom(cyRef.current.zoom() + 0.15);
-  const handleZoomOut = () => cyRef.current?.zoom(cyRef.current.zoom() - 0.15);
-  const handleFit = () => cyRef.current?.fit();
+  const handleZoomIn = () => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const currentZoom = cy.zoom();
+    const nextZoom = Math.min(3, currentZoom * 1.2);
+    cy.zoom({
+      level: nextZoom,
+      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
+    });
+  };
+
+  const handleZoomOut = () => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const currentZoom = cy.zoom();
+    const nextZoom = Math.max(0.1, currentZoom / 1.2);
+    cy.zoom({
+      level: nextZoom,
+      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
+    });
+  };
+
+  const handleFit = () => cyRef.current?.fit(undefined, 50);
   const handleExportImage = () => {
     if (!cyRef.current) return;
     const png = cyRef.current.png({ bg: '#0B1120', full: true });
