@@ -38,11 +38,15 @@ def score_user_risk(user: Dict[str, Any], policy_doc_map: Dict[str, str]) -> int
 
     Args:
         user: IAM user dict as produced by iam_service.collect_users().
-        policy_doc_map: Mapping of policy name -> JSON document string for
-            every customer-managed policy collected by
-            iam_service.collect_policies(). AWS-managed policies (e.g.
-            AdministratorAccess) will not be present in this map because
-            collect_policies() only fetches Scope='Local' policies.
+        policy_doc_map: Mapping of policy name -> JSON document string.
+            Contains both customer-managed policy documents (from
+            iam_service.collect_policies()) AND AWS-managed policy
+            documents (e.g. AdministratorAccess, PowerUserAccess) for
+            any managed policies actually attached to users/roles found
+            in this scan.  scan_manager.py merges these before calling
+            the scoring functions.  The name-substring fallback below
+            only applies if a specific policy's document fetch failed
+            (e.g. due to an API error or throttle).
     """
     score = 10
 
@@ -78,10 +82,10 @@ def score_role_risk(role: Dict[str, Any], policy_doc_map: Dict[str, str]) -> int
 
     Args:
         role: IAM role dict as produced by iam_service.collect_roles().
-        policy_doc_map: Mapping of policy name -> JSON document string for
-            every customer-managed policy collected by
-            iam_service.collect_policies(). AWS-managed policies will not be
-            present in this map (see score_user_risk docstring).
+        policy_doc_map: Mapping of policy name -> JSON document string.
+            Contains both customer-managed and resolved AWS-managed policy
+            documents for policies attached to identities in this scan.
+            See score_user_risk() docstring for full details.
     """
     score = 15
 

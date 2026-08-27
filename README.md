@@ -109,9 +109,17 @@ Navigate to `http://localhost:5173` in your web browser. The dashboard will auto
 
 ---
 
+## ⚠️ Current Scope & Limitations
+
+> **Single-region scanning**: CloudScope currently scans a **single AWS region** — whichever region the configured `AWS_PROFILE` / credentials default to (typically set via `AWS_DEFAULT_REGION` or the profile's `region` in `~/.aws/config`). All API endpoints, graph data, and risk scores reflect this single region only.
+>
+> Multi-region support (the ability to enumerate and scan resources across all enabled regions in a single pass) is documented future work — see the Roadmap below. The non-functional region selector that was previously present in the frontend has been removed to avoid implying multi-region capability that does not yet exist.
+
+---
+
 ## 🗺️ Roadmap & Future Iterations
 
 1. **Cypher Query Builder UI**: Expose a visual query builder on the frontend allowing security analysts to write custom Neo4j Cypher queries directly against the Identity Graph.
 2. **Automated Remediation Workflows (Lambda)**: Implement safe, click-to-remediate workflows directly from the dashboard.
-3. **Multi-Cloud & Multi-Region Expansion**: Abstract the AWS-specific collectors to support regional scoping, Azure RM, and GCP Resource Manager.
+3. **Multi-Region & Multi-Cloud Expansion**: Enumerate all enabled AWS regions and scan resources across them in parallel; then abstract the collectors to support Azure RM and GCP Resource Manager.
 4. **Kubernetes (EKS) Node Integration**: Expand the configuration scanner to utilize the Kubernetes Python Client, parsing RBAC `ClusterRoles` and `RoleBindings`.

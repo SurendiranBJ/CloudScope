@@ -11,8 +11,11 @@ router = APIRouter(tags=["AWS Resources"])
 def get_security_alerts():
     data = cache.get("v1:alerts")
     if not data:
-        scan_manager.run_scan()
-        data = cache.get("v1:alerts") or []
+        # Cache is cold — trigger async scan if not already running and
+        # return an empty list immediately so the frontend can poll.
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
+        data = []
         
     return APIResponse(
         success=True,

@@ -11,8 +11,11 @@ router = APIRouter(tags=["Attack Paths"])
 def get_attack_paths():
     data = cache.get("v1:attack-paths")
     if not data:
-        scan_manager.run_scan()
-        data = cache.get("v1:attack-paths") or []
+        # Cache is cold — trigger async scan if not already running and
+        # return an empty list immediately so the frontend can poll.
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
+        data = []
         
     return APIResponse(
         success=True,

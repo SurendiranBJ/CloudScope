@@ -11,8 +11,11 @@ router = APIRouter(tags=["Risk"])
 def get_risk_assessment_findings():
     data = cache.get("v1:risks")
     if not data:
-        scan_manager.run_scan()
-        data = cache.get("v1:risks") or []
+        # Cache is cold — trigger async scan if not already running and
+        # return an empty list immediately so the frontend can poll.
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
+        data = []
         
     return APIResponse(
         success=True,
