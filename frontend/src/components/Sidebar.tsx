@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -13,6 +14,7 @@ import {
   ChevronRight,
   ShieldCheck
 } from 'lucide-react';
+import { apiClient } from '../api/client';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -20,6 +22,18 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => {
+  const [health, setHealth] = useState<{ commit: string; start_time: string } | null>(null);
+
+  useEffect(() => {
+    apiClient.get('/health')
+      .then(res => {
+        if (res.data && res.data.success) {
+          setHealth(res.data.data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const menuItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
     { name: 'Cloud Resources', path: '/resources', icon: Cloud },
@@ -89,6 +103,27 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
           ))}
         </nav>
       </div>
+
+      {/* Health / Version Marker */}
+      {health && (
+        <div className="border-t border-enterprise-border">
+          {!collapsed ? (
+            <div className="px-4 py-2 text-[10px] text-enterprise-subtext font-mono">
+              <div className="truncate">Backend: <span className="text-enterprise-accent font-semibold">{health.commit.substring(0, 7)}</span></div>
+              <div className="mt-0.5 text-[9px] truncate" title={`Started: ${new Date(health.start_time).toLocaleString()}`}>
+                Started: {new Date(health.start_time).toLocaleTimeString()}
+              </div>
+            </div>
+          ) : (
+            <div 
+              className="py-2 text-center text-[10px] text-enterprise-accent font-mono cursor-default font-bold" 
+              title={`Backend Commit: ${health.commit}\nStarted: ${new Date(health.start_time).toLocaleString()}`}
+            >
+              v:{health.commit.substring(0, 4)}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Collapse Toggle Footer Button */}
       <div className="p-3 border-t border-enterprise-border flex items-center justify-center">

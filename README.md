@@ -61,8 +61,6 @@ The frontend is a Single Page Application (SPA) designed with a premium, enterpr
 *   **Interactive Modals & Real Data Reporting**: Includes an in-app JSON inspector modal for cloud resources, live Copilot AI integration for attack path explanations, client-side alert dismissal, and client-side document generators for PDF (jsPDF), CSV, JSON, and SVG vector graphics.
 *   **Styling (Tailwind CSS)**: Utility-first Tailwind CSS for precise geometric layout, hover transitions, and glassmorphism styling.
 
----
-
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -72,7 +70,21 @@ The frontend is a Single Page Application (SPA) designed with a premium, enterpr
 - (Optional) Redis server running on localhost:6379 for enhanced caching performance.
 - (Optional) Neo4j Desktop / Server running on localhost:7687.
 
-### 1. Backend Setup
+---
+
+### 💻 Unified Development Startup (Recommended)
+You can start both the backend server (with auto-reload enabled) and the frontend dev server simultaneously using a single command from the project root:
+
+```bash
+# Run both servers concurrently
+npm run dev
+```
+
+---
+
+### 🛠️ Step-by-Step Manual Setup
+
+#### 1. Backend Setup
 Navigate to the `backend` directory and initialize the Python environment:
 
 ```bash
@@ -91,14 +103,14 @@ pip install -r requirements.txt
 # (Optional) Install test/dev dependencies
 pip install -r requirements-dev.txt
 
-# Start the FastAPI Uvicorn Server
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Start the FastAPI Uvicorn Server with hot reload enabled
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 # Run the test suite
 python -m pytest tests/ -v
 ```
 
-### 2. Frontend Setup
+#### 2. Frontend Setup
 In a new terminal, navigate to the `frontend` directory:
 
 ```bash
@@ -112,6 +124,15 @@ npm run dev
 ```
 
 Navigate to `http://localhost:5173` in your web browser. The dashboard will automatically connect to the backend, trigger an initial scan, and populate the Identity Graph.
+
+---
+
+## ⚙️ Local Development Notes
+
+*   **Auto-Reload (Hot Reload)**: The FastAPI server automatically reloads whenever python files in `backend/` are updated (via `--reload`). The Vite frontend hot-reloads similarly for code changes in `frontend/`.
+*   **Self-Healing Cache**: At boot, the backend automatically calls `cache.clear()` to ensure that code/schema changes do not conflict with stale cached keys.
+*   **Version Verification**: To verify that your locally running servers are up-to-date with your latest git commit, refer to the **version marker in the Sidebar footer**. It fetches the current commit hash and server launch time from the `/api/v1/health` endpoint at startup. If the commit hash doesn't match your changes, restart the servers.
+
 
 ---
 
