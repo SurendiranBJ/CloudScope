@@ -20,7 +20,6 @@ import {
   Bot,
   Sparkles
 } from 'lucide-react';
-import { IdentityGraph } from '../components/IdentityGraph';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
@@ -266,19 +265,133 @@ export const Dashboard: React.FC = () => {
           })}
         </div>
 
-        {/* Interactive Graph Section */}
-        <div className="h-[450px] bg-enterprise-card border border-enterprise-border rounded-xl overflow-hidden flex flex-col">
-          <div className="border-b border-enterprise-border px-5 py-3.5 flex justify-between items-center bg-enterprise-card/50">
-            <div className="flex items-center gap-2">
-              <Cloud className="w-4 h-4 text-enterprise-accent" />
-              <h2 className="text-sm font-bold text-white uppercase tracking-wider">AWS Active Identity Scope</h2>
+        {/* Real-time Insights Section: Top Risky Identities & Resource Breakdown */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Panel 1: Top Risky Identities */}
+          <div className="h-[450px] bg-enterprise-card border border-enterprise-border rounded-xl p-5 flex flex-col justify-between">
+            <div>
+              <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-enterprise-accent" />
+                <span>Top Risky Identities</span>
+              </h2>
+              <p className="text-[11px] text-enterprise-subtext mb-4">
+                Identities with the highest vulnerability levels, calculated from IAM mappings and wildcard permissions.
+              </p>
             </div>
-            <span className="text-[10px] text-enterprise-subtext font-medium">
-              Interact with nodes to inspect trust paths and configurations
-            </span>
+
+            {(!data.topRiskyIdentities || data.topRiskyIdentities.length === 0) ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-enterprise-subtext italic text-xs">
+                <Users className="w-8 h-8 mb-2 text-gray-600 animate-pulse" />
+                <span>Scanning AWS environment...</span>
+              </div>
+            ) : (
+              <div className="flex-1 space-y-2 overflow-y-auto pr-1.5 max-h-[300px]">
+                {data.topRiskyIdentities.map((identity: any, i: number) => {
+                  const getRiskColor = (score: number) => {
+                    if (score >= 80) return 'text-enterprise-critical bg-enterprise-critical/15 border border-enterprise-critical/30';
+                    if (score >= 60) return 'text-enterprise-warning bg-enterprise-warning/15 border border-enterprise-warning/30';
+                    if (score >= 40) return 'text-enterprise-accent bg-enterprise-accent/15 border border-enterprise-accent/30';
+                    return 'text-enterprise-success bg-enterprise-success/15 border border-enterprise-success/30';
+                  };
+                  return (
+                    <div
+                      key={i}
+                      onClick={() => navigate('/risks')}
+                      className="p-3 bg-enterprise-bg/40 border border-enterprise-border rounded-lg flex items-center justify-between hover:border-enterprise-accent hover:bg-enterprise-accent/5 transition-all duration-150 cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="text-xs font-bold text-white max-w-[200px] truncate">{identity.name}</div>
+                        <span className={`text-[9px] px-2 py-0.5 rounded font-semibold ${
+                          identity.type === 'User' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                        }`}>
+                          {identity.type}
+                        </span>
+                      </div>
+                      <span className={`text-xs font-black px-2 py-0.5 rounded ${getRiskColor(identity.riskScore)}`}>
+                        {identity.riskScore}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          <div className="flex-1 relative">
-            <IdentityGraph onNodeSelect={(node: any) => setSelectedNode(node)} />
+
+          {/* Panel 2: Resource Inventory Breakdown */}
+          <div className="h-[450px] bg-enterprise-card border border-enterprise-border rounded-xl p-5 flex flex-col justify-between">
+            <div>
+              <h2 className="text-sm font-bold text-white uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Cloud className="w-4 h-4 text-enterprise-accent" />
+                <span>Resource Inventory Breakdown</span>
+              </h2>
+              <p className="text-[11px] text-enterprise-subtext mb-4">
+                Total monitored resources across storage, database, compute, and credentials services.
+              </p>
+            </div>
+
+            {(() => {
+              const resourceColors: Record<string, string> = {
+                S3: '#F59E0B',      // Amber
+                EC2: '#10B981',     // Green
+                Lambda: '#EC4899',  // Pink
+                RDS: '#0EA5E9',     // Sky Blue
+                DynamoDB: '#8B5CF6',// Purple
+                Secrets: '#EF4444'  // Red
+              };
+              const chartData = (data.resourceBreakdown || []).map((item: any) => ({
+                name: item.type,
+                value: item.count,
+                color: resourceColors[item.type] || '#3B82F6'
+              }));
+              const hasData = chartData.length > 0 && chartData.some((c: any) => c.value > 0);
+
+              if (!hasData) {
+                return (
+                  <div className="flex-1 flex flex-col items-center justify-center text-enterprise-subtext italic text-xs">
+                    <Cloud className="w-8 h-8 mb-2 text-gray-600 animate-pulse" />
+                    <span>Calculating resource inventory breakdown...</span>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="flex-1 h-64 w-full flex items-center justify-center">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={chartData}
+                        cx="40%"
+                        cy="50%"
+                        innerRadius={50}
+                        outerRadius={80}
+                        paddingAngle={3}
+                        dataKey="value"
+                      >
+                        {chartData.map((entry: any, index: number) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: '#111827',
+                          borderColor: '#1F2937',
+                          color: '#FFF',
+                          fontSize: '11px'
+                        }}
+                      />
+                      <Legend
+                        layout="vertical"
+                        align="right"
+                        verticalAlign="middle"
+                        iconSize={10}
+                        iconType="circle"
+                        formatter={(value) => <span className="text-xs text-gray-300 font-medium">{value}</span>}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })()}
           </div>
         </div>
 

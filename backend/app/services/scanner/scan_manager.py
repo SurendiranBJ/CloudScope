@@ -477,6 +477,37 @@ class ScanManager:
             # Generate dynamic recommendations
             recommendations = _generate_recommendations(self.inventory, attack_paths)
 
+            # Calculate top risky identities (Users and Roles combined and sorted)
+            identities = []
+            for u in self.inventory.users:
+                identities.append({
+                    "name": u.get('name') or u.get('username') or "unknown",
+                    "type": "User",
+                    "riskScore": u.get('riskScore', 0)
+                })
+            for r in self.inventory.roles:
+                identities.append({
+                    "name": r.get('name') or "unknown",
+                    "type": "Role",
+                    "riskScore": r.get('riskScore', 0)
+                })
+            identities.sort(key=lambda x: x['riskScore'], reverse=True)
+            top_risky_identities = identities[:10]
+
+            # Calculate resource breakdown counts by type
+            resource_counts = {
+                "S3": len(self.inventory.s3),
+                "EC2": len(self.inventory.ec2),
+                "Lambda": len(self.inventory.lambdas),
+                "RDS": len(self.inventory.rds),
+                "DynamoDB": len(self.inventory.dynamodb),
+                "Secrets": len(self.inventory.secrets)
+            }
+            resource_breakdown = [
+                {"type": k, "count": v}
+                for k, v in resource_counts.items()
+            ]
+
             # Format Dashboard Data — ALL values computed dynamically
             dashboard_data = {
                 "securityScore": f"{security_score} / 100",
@@ -504,7 +535,9 @@ class ScanManager:
                     "risks_found": risks_count,
                     "graph_nodes_count": nodes_count,
                     "graph_edges_count": edges_count
-                }
+                },
+                "topRiskyIdentities": top_risky_identities,
+                "resourceBreakdown": resource_breakdown
             }
             cache.set("v1:dashboard", dashboard_data)
 

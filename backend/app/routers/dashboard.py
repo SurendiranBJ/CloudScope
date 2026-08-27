@@ -26,7 +26,9 @@ def get_dashboard_summary():
             "recentAlerts": [],
             "criticalPaths": [],
             "recommendations": [{"title": "Scanning...", "desc": "Your AWS environment is being scanned. Data will appear shortly."}],
-            "lastScan": None
+            "lastScan": None,
+            "topRiskyIdentities": [],
+            "resourceBreakdown": []
         }
 
     return APIResponse(

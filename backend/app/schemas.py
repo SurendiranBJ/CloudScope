@@ -117,6 +117,8 @@ class DashboardData(BaseModel):
     criticalPaths: List[AttackPath]
     recommendations: List[dict]
     lastScan: Optional[ScanHistoryItem] = None
+    topRiskyIdentities: Optional[List[dict]] = None
+    resourceBreakdown: Optional[List[dict]] = None
 
 # Copilot Request/Response
 class CopilotRequest(BaseModel):

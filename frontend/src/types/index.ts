@@ -97,4 +97,6 @@ export interface DashboardData {
     graph_nodes_count: number;
     graph_edges_count: number;
   };
+  topRiskyIdentities?: { name: string; type: 'User' | 'Role'; riskScore: number }[];
+  resourceBreakdown?: { type: string; count: number }[];
 }
