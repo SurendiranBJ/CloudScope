@@ -9,8 +9,20 @@ router = APIRouter(tags=["Dashboard"])
 @router.get("/dashboard", response_model=APIResponse[DashboardData])
 def get_dashboard_summary():
     data = cache.get("v1:dashboard")
-    if not data:
-        # Cache is cold — trigger async scan if not already running
+    
+    # Verify cached data schema validity
+    expected_keys = {
+        "securityScore", "stats", "riskDistribution", "recentAlerts", 
+        "criticalPaths", "recommendations", "topRiskyIdentities", "resourceBreakdown"
+    }
+    is_valid_cache = (
+        data 
+        and isinstance(data, dict) 
+        and expected_keys.issubset(data.keys())
+    )
+
+    if not is_valid_cache:
+        # Cache is cold or stale — trigger async scan if not already running
         if not scan_manager.is_running:
             scan_manager.trigger_async_scan()
         # Return a minimal placeholder so the frontend doesn't crash

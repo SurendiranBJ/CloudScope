@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from app.schemas import APIResponse
 from app.utils.scheduler import reschedule_scan_job
+from app.cache import cache
 from datetime import datetime
 
 router = APIRouter(tags=["Settings"])
@@ -42,4 +43,24 @@ def update_scan_interval(body: ScanIntervalRequest):
             message=f"Background scan job rescheduled to run every {body.minutes} minute(s). "
                     f"Update SCAN_INTERVAL_MINUTES in .env to persist across restarts."
         )
+    )
+
+
+@router.post(
+    "/settings/clear-cache",
+    response_model=APIResponse[dict],
+    summary="Manually clear the Redis and memory cache",
+    description="Flushes all cached scanner data and dashboard layouts."
+)
+def clear_cache():
+    try:
+        cache.clear()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+    return APIResponse(
+        success=True,
+        message="Cache cleared successfully",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data={"cleared": True}
     )

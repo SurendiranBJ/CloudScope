@@ -27,6 +27,13 @@ def get_graph_elements():
 @router.post("/graph/rebuild", response_model=APIResponse[dict])
 def rebuild_graph():
     """Trigger scan asynchronously — returns immediately so the frontend doesn't time out."""
+    # Invalidate stale cache keys to present a loading/scanning state
+    for key in [
+        "v1:dashboard", "v1:graph", "v1:risks", "v1:attack-paths", 
+        "v1:alerts", "v1:users", "v1:roles", "v1:policies", "v1:resources"
+    ]:
+        cache.invalidate(key)
+
     result = scan_manager.trigger_async_scan()
     return APIResponse(
         success=True,
