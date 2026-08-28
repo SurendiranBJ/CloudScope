@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { FC } from 'react';
-import { X, Copy, Check, ShieldAlert, Key, FileText } from 'lucide-react';
+import { X, Copy, Check, ShieldAlert, Key, FileText, MapPin } from 'lucide-react';
+import { formatRegion } from '../utils/regionNames';
 
 interface NodeDetailsPanelProps {
   nodeData: {
@@ -9,6 +10,7 @@ interface NodeDetailsPanelProps {
     type?: 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy';
     riskScore?: number;
     arn?: string;
+    region?: string;
     description?: string;
     policyType?: string;
     // Real fields from graph data populated by graph_builder.py
@@ -116,6 +118,15 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
                 {copied ? <Check className="w-3.5 h-3.5 text-enterprise-success" /> : <Copy className="w-3.5 h-3.5" />}
               </button>
             </div>
+          </div>
+        )}
+
+        {/* AWS Region */}
+        {nodeData.region && (
+          <div className="flex items-center gap-2 py-1.5 px-2.5 bg-enterprise-bg/40 border border-enterprise-border rounded-lg">
+            <MapPin className="w-3.5 h-3.5 text-enterprise-accent shrink-0" />
+            <span className="text-xs text-enterprise-subtext font-semibold">Region</span>
+            <span className="ml-auto text-[10px] text-gray-300 font-mono">{formatRegion(nodeData.region)}</span>
           </div>
         )}
 

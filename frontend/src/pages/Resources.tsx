@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getCloudResources } from '../api/resources';
+import { formatRegion } from '../utils/regionNames';
 import type { CloudResource } from '../types';
 
 interface ResourcesProps {
@@ -148,7 +149,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
           >
             {uniqueRegions.map((reg) => (
               <option key={reg} value={reg} className="bg-enterprise-card">
-                {reg === 'ALL' ? 'All Regions' : reg}
+                {reg === 'ALL' ? 'All Regions' : formatRegion(reg)}
               </option>
             ))}
           </select>
@@ -190,7 +191,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
                           <span>{res.type}</span>
                         </div>
                       </td>
-                      <td className="p-4 font-mono text-[10px] text-gray-300">{res.region}</td>
+                      <td className="p-4 font-mono text-[10px] text-gray-300">{formatRegion(res.region)}</td>
                       <td className="p-4">
                         <div className="flex items-center gap-2">
                           <span className="font-bold">{res.riskScore}</span>

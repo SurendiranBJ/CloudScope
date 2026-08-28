@@ -4,6 +4,7 @@ import dagre from 'cytoscape-dagre';
 import { ZoomIn, ZoomOut, Maximize2, ChevronDown, List, Download } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
+import { formatRegion } from '../utils/regionNames';
 
 // Register dagre extension
 cytoscape.use(dagre);
@@ -417,11 +418,13 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     cy.on('mouseover', 'node', (evt) => {
       const node = evt.target;
       const label = node.data('label') || node.id();
+      const region = node.data('region');
       const renderedPos = node.renderedPosition();
+      const tooltipLines = [label, ...(region ? [`📍 ${formatRegion(region)}`] : [])];
       setTooltip({
         x: renderedPos.x,
         y: renderedPos.y - 30, // Offset above the node
-        text: label,
+        text: tooltipLines.join('\n'),
         visible: true
       });
     });
@@ -610,7 +613,14 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             top: `${tooltip.y}px`
           }}
         >
-          <span className="font-semibold whitespace-nowrap">{tooltip.text}</span>
+          {tooltip.text.split('\n').map((line, i) => (
+            <span
+              key={i}
+              className={i === 0 ? 'font-semibold whitespace-nowrap' : 'text-[10px] text-gray-400 whitespace-nowrap'}
+            >
+              {line}
+            </span>
+          ))}
         </div>
       )}
 

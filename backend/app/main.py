@@ -11,7 +11,7 @@ from app.database import get_driver, close_driver
 from app.utils.scheduler import start_scheduler, stop_scheduler
 from app.schemas import APIResponse
 from app.cache import cache
-from app.services.aws.region_cache import get_all_regions
+from app.services.aws.region_cache import get_all_regions, get_scan_mode_state
 
 # Set up logging reference
 logger = logging.getLogger("backend")
@@ -108,8 +108,10 @@ app.include_router(api_v1_router)
 def get_api_v1_health():
     try:
         regions = get_all_regions()
+        mode_state = get_scan_mode_state()
     except Exception:
         regions = "unavailable (check AWS credentials)"
+        mode_state = {"mode": "unknown", "selected_region": None}
 
     return APIResponse(
         success=True,
@@ -119,7 +121,9 @@ def get_api_v1_health():
             "status": "healthy",
             "commit": commit_hash,
             "start_time": start_time,
-            "scan_regions": regions
+            "scan_regions": regions,
+            "scan_mode": mode_state["mode"],
+            "selected_region": mode_state["selected_region"],
         }
     )
 

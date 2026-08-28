@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -21,15 +21,33 @@ import {
   Sparkles
 } from 'lucide-react';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
+import { RegionSelector } from '../components/RegionSelector';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { ScanTrigger, useScanTrigger } from '../components/ScanTrigger';
+import { apiClient } from '../api/client';
+import { formatRegion } from '../utils/regionNames';
 import type { SecurityAlert, AttackPath } from '../types';
 
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const { isScanning, scanSuccess, handleScanClick } = useScanTrigger();
+
+  // Health data for the active region / scan mode (used to seed the RegionSelector)
+  const [healthData, setHealthData] = useState<{
+    scan_mode?: string;
+    selected_region?: string | null;
+    scan_regions?: string[];
+  } | null>(null);
+
+  useEffect(() => {
+    apiClient.get('/health')
+      .then(res => {
+        if (res.data?.success) setHealthData(res.data.data);
+      })
+      .catch(() => {});
+  }, []);
 
   const { data, isLoading } = useQuery({
     queryKey: ['dashboardSummary'],
@@ -125,14 +143,15 @@ export const Dashboard: React.FC = () => {
     <div className="flex-1 flex overflow-hidden bg-enterprise-bg">
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {/* Welcome Banner */}
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-white tracking-tight">Security Posture Dashboard</h1>
             <p className="text-xs text-enterprise-subtext mt-1">
               Live identity-centric attack path mappings and permissions configurations.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Live scan indicator */}
             <div className="text-xs text-enterprise-subtext flex items-center gap-2 bg-enterprise-card border border-enterprise-border px-3 py-1.5 rounded-lg">
               <span className={`w-2 h-2 rounded-full ${isScanning ? 'bg-blue-500 animate-pulse' : 'bg-enterprise-success animate-ping'}`} />
               <span>
@@ -143,6 +162,18 @@ export const Dashboard: React.FC = () => {
                     : 'Live'}
               </span>
             </div>
+            {/* Region selector — pre-seeded from health endpoint */}
+            <RegionSelector
+              currentMode={healthData?.scan_mode}
+              currentRegion={healthData?.selected_region}
+              onRegionChanged={() => {
+                // Re-fetch health to reflect the new selection, then start scan polling
+                apiClient.get('/health')
+                  .then(res => { if (res.data?.success) setHealthData(res.data.data); })
+                  .catch(() => {});
+                handleScanClick();
+              }}
+            />
             <ScanTrigger isScanning={isScanning} scanSuccess={scanSuccess} onScanClick={handleScanClick} />
           </div>
         </div>
@@ -157,7 +188,12 @@ export const Dashboard: React.FC = () => {
             <svg className="animate-spin w-5 h-5 text-blue-400 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
             <div>
               <p className="text-sm font-bold text-blue-300">Scanning your AWS environment...</p>
-              <p className="text-xs text-blue-400/70 mt-0.5">Collecting IAM, EC2, S3, Lambda, RDS, DynamoDB, Secrets, and CloudTrail data across all regions. The dashboard will refresh automatically when complete.</p>
+              <p className="text-xs text-blue-400/70 mt-0.5">
+                {healthData?.scan_mode === 'global'
+                  ? 'Collecting IAM, EC2, S3, Lambda, RDS, DynamoDB, Secrets, and CloudTrail data across all enabled regions. This may take several minutes.'
+                  : `Collecting data from ${healthData?.scan_regions?.map(r => formatRegion(r)).join(', ') ?? 'the configured region'}. The dashboard will refresh automatically when complete.`
+                }
+              </p>
             </div>
           </motion.div>
         )}
