@@ -22,7 +22,13 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => {
-  const [health, setHealth] = useState<{ commit: string; start_time: string } | null>(null);
+  const [health, setHealth] = useState<{ commit: string; start_time: string; scan_regions?: string[] | string } | null>(null);
+
+  const formatRegions = (regions: string | string[] | undefined) => {
+    if (!regions) return 'unknown';
+    if (Array.isArray(regions)) return regions.join(', ');
+    return regions;
+  };
 
   useEffect(() => {
     apiClient.get('/health')
@@ -113,11 +119,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
               <div className="mt-0.5 text-[9px] truncate" title={`Started: ${new Date(health.start_time).toLocaleString()}`}>
                 Started: {new Date(health.start_time).toLocaleTimeString()}
               </div>
+              <div className="mt-0.5 text-[9px] truncate" title={`Scanning region(s): ${formatRegions(health.scan_regions)}`}>
+                Regions: {formatRegions(health.scan_regions)}
+              </div>
             </div>
           ) : (
             <div 
               className="py-2 text-center text-[10px] text-enterprise-accent font-mono cursor-default font-bold" 
-              title={`Backend Commit: ${health.commit}\nStarted: ${new Date(health.start_time).toLocaleString()}`}
+              title={`Backend Commit: ${health.commit}\nStarted: ${new Date(health.start_time).toLocaleString()}\nScanning region(s): ${formatRegions(health.scan_regions)}`}
             >
               v:{health.commit.substring(0, 4)}
             </div>

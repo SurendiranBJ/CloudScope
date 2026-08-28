@@ -11,6 +11,7 @@ from app.database import get_driver, close_driver
 from app.utils.scheduler import start_scheduler, stop_scheduler
 from app.schemas import APIResponse
 from app.cache import cache
+from app.services.aws.region_cache import get_all_regions
 
 # Set up logging reference
 logger = logging.getLogger("backend")
@@ -105,6 +106,11 @@ app.include_router(api_v1_router)
 # Health & Metrics Endpoints
 @api_v1_router.get("/health", tags=["Health"], response_model=APIResponse[dict])
 def get_api_v1_health():
+    try:
+        regions = get_all_regions()
+    except Exception:
+        regions = "unavailable (check AWS credentials)"
+
     return APIResponse(
         success=True,
         message="Service is running normally",
@@ -112,7 +118,8 @@ def get_api_v1_health():
         data={
             "status": "healthy",
             "commit": commit_hash,
-            "start_time": start_time
+            "start_time": start_time,
+            "scan_regions": regions
         }
     )
 
