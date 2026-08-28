@@ -29,7 +29,7 @@ import type { SecurityAlert, AttackPath } from '../types';
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [selectedNode, setSelectedNode] = useState<any>(null);
-  const { isScanning } = useScanTrigger();
+  const { isScanning, scanSuccess, handleScanClick } = useScanTrigger();
 
   const { data, isLoading } = useQuery({
     queryKey: ['dashboardSummary'],
@@ -143,7 +143,7 @@ export const Dashboard: React.FC = () => {
                     : 'Live'}
               </span>
             </div>
-            <ScanTrigger />
+            <ScanTrigger isScanning={isScanning} scanSuccess={scanSuccess} onScanClick={handleScanClick} />
           </div>
         </div>
 

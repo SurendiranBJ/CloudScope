@@ -87,13 +87,21 @@ export const useScanTrigger = () => {
   };
 };
 
-export const ScanTrigger: React.FC = () => {
-  const { isScanning, scanSuccess, handleScanClick } = useScanTrigger();
+interface ScanTriggerPresenterProps {
+  isScanning: boolean;
+  scanSuccess: boolean;
+  onClick: () => void;
+}
 
+const ScanTriggerPresenter: React.FC<ScanTriggerPresenterProps> = ({
+  isScanning,
+  scanSuccess,
+  onClick,
+}) => {
   return (
     <button
       disabled={isScanning}
-      onClick={handleScanClick}
+      onClick={onClick}
       className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
         scanSuccess
           ? 'bg-enterprise-success/20 text-enterprise-success border border-enterprise-success/30'
@@ -126,4 +134,40 @@ export const ScanTrigger: React.FC = () => {
       {scanSuccess ? 'Scan Complete!' : isScanning ? 'Scanning AWS...' : 'Scan Again'}
     </button>
   );
+};
+
+const ScanTriggerWithInternalState: React.FC = () => {
+  const { isScanning, scanSuccess, handleScanClick } = useScanTrigger();
+  return (
+    <ScanTriggerPresenter
+      isScanning={isScanning}
+      scanSuccess={scanSuccess}
+      onClick={handleScanClick}
+    />
+  );
+};
+
+interface ScanTriggerProps {
+  isScanning?: boolean;
+  scanSuccess?: boolean;
+  onScanClick?: () => void;
+}
+
+export const ScanTrigger: React.FC<ScanTriggerProps> = ({
+  isScanning,
+  scanSuccess,
+  onScanClick,
+}) => {
+  // If external state is passed, bypass the hook call completely to avoid extra timers/polling
+  if (isScanning !== undefined && scanSuccess !== undefined && onScanClick !== undefined) {
+    return (
+      <ScanTriggerPresenter
+        isScanning={isScanning}
+        scanSuccess={scanSuccess}
+        onClick={onScanClick}
+      />
+    );
+  }
+
+  return <ScanTriggerWithInternalState />;
 };
