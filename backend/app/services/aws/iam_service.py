@@ -148,10 +148,35 @@ def collect_groups() -> list:
 
         for page in paginator.paginate():
             for g in page['Groups']:
+                group_name = g['GroupName']
+
+                # Get Attached Managed Policies
+                attached_policy_names = []
+                attached_policy_arns = {}
+                try:
+                    group_policies = client.list_attached_group_policies(GroupName=group_name)
+                    attached_policy_names = [p['PolicyName'] for p in group_policies.get('AttachedPolicies', [])]
+                    attached_policy_arns = {
+                        p['PolicyName']: p['PolicyArn']
+                        for p in group_policies.get('AttachedPolicies', [])
+                    }
+                except Exception:
+                    pass
+
+                # Get Inline Policies
+                try:
+                    inline_policies = client.list_group_policies(GroupName=group_name)
+                    inline_names = inline_policies.get('PolicyNames', [])
+                    attached_policy_names.extend([f"[inline] {name}" for name in inline_names])
+                except Exception:
+                    pass
+
                 groups_data.append({
                     "id": g['GroupId'],
-                    "name": g['GroupName'],
-                    "arn": g['Arn']
+                    "name": group_name,
+                    "arn": g['Arn'],
+                    "attachedPolicies": attached_policy_names,
+                    "attachedPolicyArns": attached_policy_arns,
                 })
         logger.info(f"IAM Collector: Discovered {len(groups_data)} groups")
     except Exception as e:

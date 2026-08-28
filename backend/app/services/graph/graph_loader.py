@@ -118,6 +118,13 @@ def build_local_graph(inventory) -> nx.DiGraph:
             if G.has_node(p_name):
                 G.add_edge(r['name'], p_name, label='HAS_POLICY')
 
+    # Groups -> their attached policies
+    for g in inventory.groups:
+        for p_name in g.get('attachedPolicies', []):
+            clean_name = p_name.replace('[inline] ', '')
+            if G.has_node(clean_name):
+                G.add_edge(g['id'], clean_name, label='HAS_POLICY')
+
     # Roles -> Roles (trust policy: who can assume this role)
     role_name_set = {r['name'] for r in inventory.roles}
     for r in inventory.roles:
@@ -195,6 +202,24 @@ def build_local_graph(inventory) -> nx.DiGraph:
             if 'dynamo' in p_lower or 'database' in p_lower or 'admin' in p_lower:
                 for ddb in inventory.dynamodb:
                     G.add_edge(u['id'], ddb['id'], label='ALLOWS')
+
+    # Groups -> Resources (connect groups with broad access policies to S3/Secrets/DBs)
+    # This enables attack paths through group membership: User -> MEMBER_OF -> Group -> ALLOWS -> Resource
+    for g in inventory.groups:
+        for p_name in g.get('attachedPolicies', []):
+            p_lower = p_name.lower()
+            if 's3' in p_lower or 'storage' in p_lower or 'admin' in p_lower:
+                for s in inventory.s3:
+                    G.add_edge(g['id'], s['id'], label='ALLOWS')
+            if 'secret' in p_lower or 'admin' in p_lower:
+                for sec in inventory.secrets:
+                    G.add_edge(g['id'], sec['id'], label='ALLOWS')
+            if 'rds' in p_lower or 'database' in p_lower or 'admin' in p_lower:
+                for rds in inventory.rds:
+                    G.add_edge(g['id'], rds['id'], label='ALLOWS')
+            if 'dynamo' in p_lower or 'database' in p_lower or 'admin' in p_lower:
+                for ddb in inventory.dynamodb:
+                    G.add_edge(g['id'], ddb['id'], label='ALLOWS')
 
     logger.info(f"Built local NetworkX Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G

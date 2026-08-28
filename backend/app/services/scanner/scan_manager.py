@@ -317,6 +317,11 @@ class ScanManager:
                     arn for arn in r.get('attachedPolicyArns', {}).values()
                     if '::aws:policy/' in arn
                 )
+            for g in self.inventory.groups:
+                aws_managed_arns.update(
+                    arn for arn in g.get('attachedPolicyArns', {}).values()
+                    if '::aws:policy/' in arn
+                )
             if aws_managed_arns:
                 logger.info(
                     f"Fetching documents for {len(aws_managed_arns)} unique "
