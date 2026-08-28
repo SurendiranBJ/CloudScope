@@ -327,7 +327,10 @@ class ScanManager:
                     f"Fetching documents for {len(aws_managed_arns)} unique "
                     f"AWS-managed policies attached in this scan"
                 )
+                start_managed = time.time()
                 managed_docs = iam_service.fetch_managed_policy_documents(aws_managed_arns)
+                elapsed_managed = time.time() - start_managed
+                logger.info(f"Managed-policy resolution step completed in {elapsed_managed:.2f}s")
                 # Merge; customer-managed entries already in the map take precedence
                 # (though name collisions between customer and AWS-managed are
                 # extremely unlikely in practice).
@@ -368,7 +371,7 @@ class ScanManager:
             attack_paths = path_engine.find_attack_paths(G)
 
             duration = round(time.time() - start_time, 2)
-            logger.info(f"AWS Scan completed in {duration}s")
+            logger.info(f"Total scan duration: {duration}s (AWS Scan completed)")
 
             # 6. Record ScanHistory node in Neo4j
             scan_timestamp = datetime.utcnow().isoformat() + "Z"

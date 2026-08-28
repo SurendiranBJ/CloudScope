@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     AWS_PROFILE: str = "identityscope-scanner"
     AWS_DEFAULT_REGION: str = "ap-south-1"
+    SCAN_REGIONS: str | None = None
     
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"

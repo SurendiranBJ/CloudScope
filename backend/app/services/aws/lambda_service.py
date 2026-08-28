@@ -1,5 +1,6 @@
 import logging
 import concurrent.futures
+import time
 from app.services.aws.session import get_aws_session, get_account_id
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
@@ -13,6 +14,7 @@ def collect_lambda_functions() -> list:
         region_sessions = make_region_sessions(regions)
 
         def fetch_region_lambdas(region_name):
+            start = time.time()
             region_funcs = []
             try:
                 client = region_sessions[region_name].client('lambda', region_name=region_name)
@@ -61,6 +63,8 @@ def collect_lambda_functions() -> list:
                         })
             except Exception as e:
                 logger.debug(f"Failed to fetch lambdas in {region_name}: {e}")
+            elapsed = time.time() - start
+            logger.info(f"Lambda collection for region {region_name} completed in {elapsed:.2f}s")
             return region_funcs
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:

@@ -1,5 +1,6 @@
 import logging
 import json
+import concurrent.futures
 from datetime import datetime, timezone
 from app.services.aws.session import get_aws_session, get_account_id
 
@@ -300,23 +301,30 @@ def fetch_managed_policy_documents(policy_arns: set) -> dict:
         logger.error(f"IAM fetch_managed_policy_documents: failed to create client: {e}")
         return result
 
-    for arn in policy_arns:
-        # Only handle AWS-managed policies; customer-managed ARNs contain the
-        # account ID, not '::aws:policy/' — skip them to avoid duplicate work.
-        if '::aws:policy/' not in arn:
-            continue
+    target_arns = [arn for arn in policy_arns if '::aws:policy/' in arn]
+    if not target_arns:
+        return result
+
+    def fetch_single_policy(arn):
         try:
             pol = client.get_policy(PolicyArn=arn)
             default_ver = pol['Policy']['DefaultVersionId']
             pol_ver = client.get_policy_version(PolicyArn=arn, VersionId=default_ver)
             doc = pol_ver.get('PolicyVersion', {}).get('Document', {})
             policy_name = pol['Policy']['PolicyName']
-            result[policy_name] = json.dumps(doc)
             logger.debug(f"Resolved AWS-managed policy document: {policy_name} ({arn})")
+            return policy_name, json.dumps(doc)
         except Exception as e:
-            # Rate-limit or permission error — log and continue; the risk_engine
-            # name-substring fallback will handle this policy.
             logger.warning(f"Could not fetch document for AWS-managed policy {arn}: {e}")
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_single_policy, arn): arn for arn in target_arns}
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res:
+                policy_name, doc_str = res
+                result[policy_name] = doc_str
 
     logger.info(
         f"IAM fetch_managed_policy_documents: resolved {len(result)}/{len(policy_arns)} "

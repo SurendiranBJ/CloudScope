@@ -1,5 +1,6 @@
 import logging
 import concurrent.futures
+import time
 from app.services.aws.session import get_account_id
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
@@ -13,6 +14,7 @@ def collect_rds_instances() -> list:
         region_sessions = make_region_sessions(regions)
 
         def fetch_region_rds(region_name):
+            start = time.time()
             region_db = []
             try:
                 client = region_sessions[region_name].client('rds', region_name=region_name)
@@ -45,6 +47,8 @@ def collect_rds_instances() -> list:
                         })
             except Exception as e:
                 logger.debug(f"Failed to fetch RDS in {region_name}: {e}")
+            elapsed = time.time() - start
+            logger.info(f"RDS collection for region {region_name} completed in {elapsed:.2f}s")
             return region_db
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:

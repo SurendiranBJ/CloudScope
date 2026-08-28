@@ -1,5 +1,6 @@
 import logging
 import concurrent.futures
+import time
 from app.services.aws.session import get_aws_session, get_account_id
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
@@ -13,6 +14,7 @@ def collect_ec2_instances() -> list:
         region_sessions = make_region_sessions(regions)
 
         def fetch_region_ec2(region_name):
+            start = time.time()
             region_instances = []
             try:
                 client = region_sessions[region_name].client('ec2', region_name=region_name)
@@ -61,6 +63,8 @@ def collect_ec2_instances() -> list:
                             })
             except Exception as e:
                 logger.debug(f"Failed to fetch EC2 in {region_name}: {e}")
+            elapsed = time.time() - start
+            logger.info(f"EC2 collection for region {region_name} completed in {elapsed:.2f}s")
             return region_instances
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:

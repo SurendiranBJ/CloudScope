@@ -17,7 +17,7 @@ To achieve this, CloudScope is architected around a strict **Two-Phase Security 
 ### Phase A: Static Configuration Baseline (The "State" of the Cloud)
 Phase A is responsible for understanding the exact configuration of the AWS environment at a given point in time. It answers the question: *"What dangerous permissions exist right now, and how can they be chained together to compromise critical infrastructure?"*
 
-1. **Multithreaded AWS Discovery (Boto3)**: The backend `ScanManager` orchestrates a highly concurrent data collection process using Python's `ThreadPoolExecutor`. It pre-caches available AWS regions to prevent redundant API calls, and then simultaneously dispatches collection threads for:
+1. **Multithreaded AWS Discovery (Boto3)**: The backend `ScanManager` orchestrates a highly concurrent data collection process using Python's `ThreadPoolExecutor`. It pre-caches the target AWS regions (configured via `SCAN_REGIONS` or defaulting to the default AWS session region) to prevent redundant API calls, and then simultaneously dispatches collection threads for:
    - **Identity Access Management (IAM)**: Users, Groups, Roles, Customer-Managed Policies, and AWS-Managed Policies (`arn:aws:iam::aws:policy/...`).
    - **Compute**: EC2 Instances and Lambda Execution Environments.
    - **Storage & Databases**: S3 Buckets, RDS Instances, and DynamoDB Tables.
@@ -148,9 +148,12 @@ CloudScope operates on a **Scheduled + Manual-Trigger** refresh model rather tha
 
 ## ⚠️ Current Scope & Limitations
 
-> **Single-region scanning**: CloudScope currently scans a **single AWS region** — whichever region the configured `AWS_PROFILE` / credentials default to (typically set via `AWS_DEFAULT_REGION` or the profile's `region` in `~/.aws/config`). All API endpoints, graph data, and risk scores reflect this single region only.
+> **Region Scoping & Configured Scan Regions**: By default, CloudScope is scoped to a **single AWS region** — whichever region the AWS session defaults to (or set via `AWS_DEFAULT_REGION`).
 >
-> Multi-region support (the ability to enumerate and scan resources across all enabled regions in a single pass) is documented future work — see the Roadmap below. The non-functional region selector that was previously present in the frontend has been removed to avoid implying multi-region capability that does not yet exist.
+> To scan specific target region(s), configure the `SCAN_REGIONS` setting in the backend `.env` file (e.g., `SCAN_REGIONS=us-east-1,ap-south-1`). If this setting is omitted, the scan defaults to a single region (matching the AWS session default).
+>
+> Multi-region auto-discovery (which described and queried all enabled regions by default) is disabled to prevent scanning empty regions and optimize performance. Explicitly configure target regions in `SCAN_REGIONS` to scan multiple regions.
+
 
 ---
 

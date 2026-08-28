@@ -1,5 +1,6 @@
 import boto3
 import logging
+from app.config import settings
 from app.services.aws.session import get_aws_session
 
 logger = logging.getLogger("scanner")
@@ -7,18 +8,26 @@ logger = logging.getLogger("scanner")
 _cached_regions: list | None = None
 
 def get_all_regions() -> list:
-    """Return the list of all enabled AWS regions. Cached after first call."""
+    """Return the list of configured scan regions, or default to the session's default region. Cached after first call."""
     global _cached_regions
     if _cached_regions is not None:
         return _cached_regions
+
+    if settings.SCAN_REGIONS:
+        regions = [r.strip() for r in settings.SCAN_REGIONS.split(",") if r.strip()]
+        if regions:
+            _cached_regions = regions
+            logger.info(f"Using configured scan regions: {_cached_regions}")
+            return _cached_regions
+
     try:
         session = get_aws_session()
-        ec2_client = session.client('ec2', region_name=session.region_name or 'us-east-1')
-        _cached_regions = [r['RegionName'] for r in ec2_client.describe_regions()['Regions']]
-        logger.info(f"Cached {len(_cached_regions)} AWS regions")
+        region = session.region_name or settings.AWS_DEFAULT_REGION or 'us-east-1'
+        _cached_regions = [region]
+        logger.info(f"Using default region from AWS session: {_cached_regions}")
     except Exception as e:
-        logger.error(f"Failed to list AWS regions: {e}")
-        _cached_regions = ['us-east-1', 'us-west-2', 'eu-west-1', 'ap-south-1']
+        logger.error(f"Failed to get default region from session: {e}")
+        _cached_regions = [settings.AWS_DEFAULT_REGION or 'us-east-1']
     return _cached_regions
 
 

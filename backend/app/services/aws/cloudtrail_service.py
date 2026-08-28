@@ -1,4 +1,6 @@
 import logging
+import concurrent.futures
+import time
 from datetime import datetime
 from app.services.aws.session import get_aws_session
 
@@ -11,10 +13,13 @@ def collect_recent_alerts() -> list:
         session = get_aws_session()
         client = session.client('cloudtrail')
 
-        # Lookup recent events - AWS only allows one LookupAttribute per call
+        event_names = ['AssumeRole', 'PutBucketPolicy', 'CreateUser', 'AttachUserPolicy',
+                       'CreateAccessKey', 'PutRolePolicy', 'DeleteBucketPolicy']
+
         all_events = []
-        for event_name in ['AssumeRole', 'PutBucketPolicy', 'CreateUser', 'AttachUserPolicy',
-                           'CreateAccessKey', 'PutRolePolicy', 'DeleteBucketPolicy']:
+        start_time = time.time()
+
+        def fetch_events_for_name(event_name):
             try:
                 response = client.lookup_events(
                     LookupAttributes=[
@@ -22,9 +27,18 @@ def collect_recent_alerts() -> list:
                     ],
                     MaxResults=5
                 )
-                all_events.extend(response.get('Events', []))
-            except Exception:
-                pass
+                return response.get('Events', [])
+            except Exception as e:
+                logger.debug(f"Failed to lookup CloudTrail events for {event_name}: {e}")
+                return []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = executor.map(fetch_events_for_name, event_names)
+            for events in results:
+                all_events.extend(events)
+
+        elapsed = time.time() - start_time
+        logger.info(f"CloudTrail collection step completed in {elapsed:.2f}s")
 
         for event in all_events:
             event_id = event['EventId']

@@ -1,5 +1,6 @@
 import logging
 import concurrent.futures
+import time
 from app.services.aws.session import get_account_id
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
@@ -13,6 +14,7 @@ def collect_dynamodb_tables() -> list:
         region_sessions = make_region_sessions(regions)
 
         def fetch_region_ddb(region_name):
+            start = time.time()
             region_tables = []
             try:
                 client = region_sessions[region_name].client('dynamodb', region_name=region_name)
@@ -55,6 +57,8 @@ def collect_dynamodb_tables() -> list:
                             logger.debug(f"Failed to describe table {table_name} in {region_name}: {e}")
             except Exception as e:
                 logger.debug(f"Failed to fetch DynamoDB in {region_name}: {e}")
+            elapsed = time.time() - start
+            logger.info(f"DynamoDB collection for region {region_name} completed in {elapsed:.2f}s")
             return region_tables
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
