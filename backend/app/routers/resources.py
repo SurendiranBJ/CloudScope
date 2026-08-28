@@ -11,9 +11,12 @@ router = APIRouter(tags=["AWS Resources"])
 def get_cloud_resources():
     data = cache.get("v1:resources")
     if not data:
-        scan_manager.run_scan()
-        data = cache.get("v1:resources") or []
-        
+        # Cache is cold — trigger async scan if not already running (matches dashboard.py pattern)
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
+        # Return empty list — frontend will get data on next poll
+        data = []
+
     return APIResponse(
         success=True,
         message="Cloud Resources catalog retrieved successfully",

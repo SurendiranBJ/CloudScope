@@ -3,6 +3,7 @@ import concurrent.futures
 import time
 from datetime import datetime
 from app.services.aws.session import get_aws_session
+from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
 logger = logging.getLogger("scanner")
 
@@ -10,8 +11,8 @@ logger = logging.getLogger("scanner")
 def collect_recent_alerts() -> list:
     alerts = []
     try:
-        session = get_aws_session()
-        client = session.client('cloudtrail')
+        regions = get_all_regions()
+        region_sessions = make_region_sessions(regions)
 
         event_names = ['AssumeRole', 'PutBucketPolicy', 'CreateUser', 'AttachUserPolicy',
                        'CreateAccessKey', 'PutRolePolicy', 'DeleteBucketPolicy']
@@ -19,26 +20,42 @@ def collect_recent_alerts() -> list:
         all_events = []
         start_time = time.time()
 
-        def fetch_events_for_name(event_name):
+        def fetch_events_for_region(region_name):
+            """Fetch CloudTrail events for all event names in a single region."""
+            region_events = []
             try:
-                response = client.lookup_events(
-                    LookupAttributes=[
-                        {'AttributeKey': 'EventName', 'AttributeValue': event_name}
-                    ],
-                    MaxResults=5
-                )
-                return response.get('Events', [])
-            except Exception as e:
-                logger.debug(f"Failed to lookup CloudTrail events for {event_name}: {e}")
-                return []
+                client = region_sessions[region_name].client('cloudtrail', region_name=region_name)
 
+                def fetch_events_for_name(event_name):
+                    try:
+                        response = client.lookup_events(
+                            LookupAttributes=[
+                                {'AttributeKey': 'EventName', 'AttributeValue': event_name}
+                            ],
+                            MaxResults=5
+                        )
+                        return response.get('Events', [])
+                    except Exception as e:
+                        logger.debug(f"Failed to lookup CloudTrail events for {event_name} in {region_name}: {e}")
+                        return []
+
+                # Parallelize event-name lookups within this region
+                with concurrent.futures.ThreadPoolExecutor(max_workers=7) as name_executor:
+                    results = name_executor.map(fetch_events_for_name, event_names)
+                    for events in results:
+                        region_events.extend(events)
+
+            except Exception as e:
+                logger.debug(f"Failed to create CloudTrail client for {region_name}: {e}")
+            return region_events
+
+        # Parallelize across regions
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            results = executor.map(fetch_events_for_name, event_names)
-            for events in results:
-                all_events.extend(events)
+            for region_events in executor.map(fetch_events_for_region, regions):
+                all_events.extend(region_events)
 
         elapsed = time.time() - start_time
-        logger.info(f"CloudTrail collection step completed in {elapsed:.2f}s")
+        logger.info(f"CloudTrail collection step completed in {elapsed:.2f}s across {len(regions)} region(s)")
 
         for event in all_events:
             event_id = event['EventId']

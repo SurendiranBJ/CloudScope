@@ -108,3 +108,15 @@ def clear_region_cache():
     """Force re-fetch on next call to get_all_regions()."""
     global _cached_regions
     _cached_regions = None
+
+
+def get_selected_region() -> str:
+    """Return the single target region for services that don't iterate regions.
+
+    Resolution: _selected_region if set, otherwise the first entry from get_all_regions().
+    Used by CloudTrail, AccessAnalyzer, and similar region-scoped but non-iterable services.
+    """
+    if _selected_region:
+        return _selected_region
+    regions = get_all_regions()
+    return regions[0] if regions else "us-east-1"
