@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -21,77 +21,21 @@ import {
   Sparkles
 } from 'lucide-react';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
-import { rebuildGraph, getScanStatus } from '../api/graph';
+import { ScanTrigger, useScanTrigger } from '../components/ScanTrigger';
 import type { SecurityAlert, AttackPath } from '../types';
 
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanSuccess, setScanSuccess] = useState(false);
   const [selectedNode, setSelectedNode] = useState<any>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { isScanning } = useScanTrigger();
 
   const { data, isLoading } = useQuery({
     queryKey: ['dashboardSummary'],
     queryFn: getDashboardSummary,
     refetchInterval: 5000
   });
-
-  // On first mount, check if a scan is already running (e.g. auto-scan or startup scan)
-  useEffect(() => {
-    getScanStatus().then((status) => {
-      if (status.is_scanning) {
-        setIsScanning(true);
-        startPolling();
-      }
-    }).catch(() => {});
-    return () => stopPolling();
-  }, []);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  const startPolling = useCallback(() => {
-    stopPolling();
-    pollRef.current = setInterval(async () => {
-      try {
-        const status = await getScanStatus();
-        if (!status.is_scanning) {
-          // Scan finished!
-          stopPolling();
-          setIsScanning(false);
-          setScanSuccess(true);
-          // Refresh all dashboard data
-          queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
-          queryClient.invalidateQueries({ queryKey: ['graphElements'] });
-          queryClient.invalidateQueries({ queryKey: ['cloudResources'] });
-          setTimeout(() => setScanSuccess(false), 4000);
-        }
-      } catch {
-        // Ignore network blips during polling
-      }
-    }, 2000); // Poll every 2 seconds
-  }, [queryClient, stopPolling]);
-
-  const handleScanClick = useCallback(async () => {
-    if (isScanning) return;
-    setIsScanning(true);
-    setScanSuccess(false);
-    try {
-      await rebuildGraph(); // Returns immediately (async on backend)
-      startPolling(); // Start polling for completion
-    } catch (err) {
-      console.error('Failed to trigger scan:', err);
-      setIsScanning(false);
-    }
-  }, [isScanning, startPolling]);
 
   // Show loading spinner when initial data is loading OR a scan is in progress
   if (isLoading || !data) {
@@ -199,24 +143,7 @@ export const Dashboard: React.FC = () => {
                     : 'Live'}
               </span>
             </div>
-            <button
-              disabled={isScanning}
-              onClick={handleScanClick}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                scanSuccess
-                  ? 'bg-enterprise-success/20 text-enterprise-success border border-enterprise-success/30'
-                  : isScanning
-                    ? 'bg-blue-600/10 text-blue-400/50 border border-blue-500/10 cursor-not-allowed'
-                    : 'bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30'
-              }`}
-            >
-              {scanSuccess ? (
-                <ShieldCheck className="w-3.5 h-3.5" />
-              ) : (
-                <svg className={isScanning ? "animate-spin" : ""} xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
-              )}
-              {scanSuccess ? 'Scan Complete!' : isScanning ? 'Scanning AWS...' : 'Scan Again'}
-            </button>
+            <ScanTrigger />
           </div>
         </div>
 

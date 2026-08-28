@@ -15,6 +15,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { getAttackPaths } from '../api/attack';
 import { postCopilotMessage } from '../api/copilot';
+import { ScanTrigger } from '../components/ScanTrigger';
 import type { AttackPath } from '../types';
 
 export const AttackPaths: FC = () => {
@@ -65,14 +66,17 @@ export const AttackPaths: FC = () => {
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-          <GitMerge className="w-6 h-6 text-enterprise-accent" />
-          <span>Identity-Centric Attack Paths</span>
-        </h1>
-        <p className="text-xs text-enterprise-subtext mt-1">
-          Explore lateral movement vectors mapped by permissions analysis from compromised users to core database objects.
-        </p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+            <GitMerge className="w-6 h-6 text-enterprise-accent" />
+            <span>Identity-Centric Attack Paths</span>
+          </h1>
+          <p className="text-xs text-enterprise-subtext mt-1">
+            Explore lateral movement vectors mapped by permissions analysis from compromised users to core database objects.
+          </p>
+        </div>
+        <ScanTrigger />
       </div>
 
       {/* Pathways List */}

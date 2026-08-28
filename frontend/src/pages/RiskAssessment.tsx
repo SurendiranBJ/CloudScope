@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { ShieldAlert, Search, ArrowUpDown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getRiskAssessmentFindings } from '../api/risks';
+import { ScanTrigger } from '../components/ScanTrigger';
 import type { RiskFinding } from '../types';
 
 interface RiskAssessmentProps {
@@ -68,14 +69,17 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-          <ShieldAlert className="w-6 h-6 text-enterprise-critical" />
-          <span>Security Risk Assessment</span>
-        </h1>
-        <p className="text-xs text-enterprise-subtext mt-1">
-          Review regulatory audit compliance scores and explore active configuration vulnerability flags.
-        </p>
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+            <ShieldAlert className="w-6 h-6 text-enterprise-critical" />
+            <span>Security Risk Assessment</span>
+          </h1>
+          <p className="text-xs text-enterprise-subtext mt-1">
+            Review regulatory audit compliance scores and explore active configuration vulnerability flags.
+          </p>
+        </div>
+        <ScanTrigger />
       </div>
 
       {/* Compliance Scores Grid */}

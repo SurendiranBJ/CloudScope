@@ -136,6 +136,16 @@ Navigate to `http://localhost:5173` in your web browser. The dashboard will auto
 
 ---
 
+## 🔄 Scan Refresh Model & Lifecycle
+
+CloudScope operates on a **Scheduled + Manual-Trigger** refresh model rather than a real-time event-driven detection system for raw baseline configuration changes. 
+
+*   **Manual Trigger**: Users can click the **Scan Again** button (available on the Dashboard, Attack Paths, and Risk Assessment pages) to force an immediate scan of the AWS environment.
+*   **Scheduled Scans**: Automatic scans occur periodically based on the `SCAN_INTERVAL_MINUTES` setting (configurable dynamically in the Settings panel).
+*   **Delayed Visibility**: Any configuration changes made in your AWS environment (e.g., policy updates, group membership changes, or new resources) will not be visible in CloudScope until either a manual scan is triggered or the next scheduled scan executes.
+
+---
+
 ## ⚠️ Current Scope & Limitations
 
 > **Single-region scanning**: CloudScope currently scans a **single AWS region** — whichever region the configured `AWS_PROFILE` / credentials default to (typically set via `AWS_DEFAULT_REGION` or the profile's `region` in `~/.aws/config`). All API endpoints, graph data, and risk scores reflect this single region only.

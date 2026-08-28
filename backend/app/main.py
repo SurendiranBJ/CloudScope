@@ -125,6 +125,9 @@ def get_health():
         data={"status": "healthy", "service": "IdentityScope API"}
     )
 
+
+
+
 @app.get("/ready", tags=["Health"], response_model=APIResponse[dict])
 def get_readiness():
     neo4j_ready = False

@@ -3,6 +3,7 @@ import { Search, Bell, ChevronDown, User, AlertOctagon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
+import { getScanStatus } from '../api/graph';
 
 interface NavbarProps {
   onSearchChange?: (val: string) => void;
@@ -21,6 +22,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
     queryKey: ['dashboardSummary'],
     queryFn: getDashboardSummary,
     refetchInterval: 10000
+  });
+
+  const { data: scanStatus } = useQuery({
+    queryKey: ['scanStatus'],
+    queryFn: getScanStatus,
+    refetchInterval: (query) => {
+      return query.state.data?.is_scanning ? 2000 : 10000;
+    }
   });
 
   const alerts = data?.recentAlerts || [];
@@ -42,6 +51,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
 
       {/* Right Controls */}
       <div className="flex items-center gap-4">
+        {/* Global Scan Status Indicator */}
+        {scanStatus?.is_scanning && (
+          <div className="flex items-center gap-2 bg-blue-500/10 border border-blue-500/20 px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-400 select-none animate-pulse">
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-ping absolute opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            <span>Scanning AWS...</span>
+          </div>
+        )}
+
         {/* Notifications Dropdown */}
         <div className="relative">
           <button
