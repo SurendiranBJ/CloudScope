@@ -42,7 +42,7 @@ def collect_recent_alerts() -> list:
 
         for event in all_events:
             event_id = event['EventId']
-            time = event.get('EventTime', datetime.utcnow())
+            event_time = event.get('EventTime', datetime.utcnow())
             username = event.get('Username', 'Unknown')
             name = event.get('EventName', 'ConfigDrift')
 
@@ -62,7 +62,7 @@ def collect_recent_alerts() -> list:
 
             alerts.append({
                 "id": event_id,
-                "timestamp": time.isoformat() + "Z" if hasattr(time, 'isoformat') else str(time),
+                "timestamp": event_time.isoformat() + "Z" if hasattr(event_time, 'isoformat') else str(event_time),
                 "severity": severity,
                 "resource": resource_name,
                 "description": f"CloudTrail Audit Alert: {name} action executed by {username}.",

@@ -295,10 +295,9 @@ def fetch_managed_policy_documents(policy_arns: set) -> dict:
         return result
 
     try:
-        session = get_aws_session()
-        client = session.client('iam')
+        get_aws_session()
     except Exception as e:
-        logger.error(f"IAM fetch_managed_policy_documents: failed to create client: {e}")
+        logger.error(f"IAM fetch_managed_policy_documents: failed to get session: {e}")
         return result
 
     target_arns = [arn for arn in policy_arns if '::aws:policy/' in arn]
@@ -307,6 +306,8 @@ def fetch_managed_policy_documents(policy_arns: set) -> dict:
 
     def fetch_single_policy(arn):
         try:
+            session = get_aws_session()
+            client = session.client('iam')
             pol = client.get_policy(PolicyArn=arn)
             default_ver = pol['Policy']['DefaultVersionId']
             pol_ver = client.get_policy_version(PolicyArn=arn, VersionId=default_ver)
