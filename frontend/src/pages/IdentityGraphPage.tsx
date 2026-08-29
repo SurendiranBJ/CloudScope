@@ -6,7 +6,7 @@ import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { 
   Network, Search, LayoutTemplate, Maximize, RefreshCw, 
   AlertTriangle, Info, ChevronDown, ShieldAlert, Filter, 
-  Target, Focus, Globe
+  Target, Focus, Globe, Layers
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
@@ -89,7 +89,7 @@ export const IdentityGraphPage: React.FC = () => {
               <Network className="w-5 h-5 text-blue-500" />
               <span>Identity Graph</span>
             </h1>
-            <p className="text-[11px] text-gray-400">Layered Security Architecture (Top → Bottom)</p>
+            <p className="text-[11px] text-gray-400">Security Access Map & Attack Path Traversal</p>
           </div>
           
           <div className="flex items-center gap-2.5">
@@ -98,10 +98,11 @@ export const IdentityGraphPage: React.FC = () => {
             {/* Display Mode Tabs */}
             <div className="hidden lg:flex items-center bg-gray-900 border border-gray-800 p-0.5 rounded-lg text-xs font-semibold">
               <button
-                onClick={() => setDisplayMode('overview')}
+                onClick={() => { setDisplayMode('overview'); setSelectedNode(null); }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
                   displayMode === 'overview' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
                 }`}
+                title="4-Layer Clean Security Access Map"
               >
                 <Globe className="w-3.5 h-3.5" />
                 <span>Overview</span>
@@ -111,6 +112,7 @@ export const IdentityGraphPage: React.FC = () => {
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
                   displayMode === 'identity_focus' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
                 }`}
+                title="Single Identity Chain Traversal"
               >
                 <Focus className="w-3.5 h-3.5" />
                 <span>Identity Focus</span>
@@ -120,9 +122,20 @@ export const IdentityGraphPage: React.FC = () => {
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
                   displayMode === 'attack_path' ? 'bg-red-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
                 }`}
+                title="Critical Attack Paths Only"
               >
                 <Target className="w-3.5 h-3.5" />
                 <span>Attack Path</span>
+              </button>
+              <button
+                onClick={() => setDisplayMode('raw_topology')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
+                  displayMode === 'raw_topology' ? 'bg-gray-800 text-gray-200 shadow' : 'text-gray-500 hover:text-gray-300'
+                }`}
+                title="Full 6-Tier Entity Topology"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Full Graph</span>
               </button>
             </div>
 
@@ -131,7 +144,7 @@ export const IdentityGraphPage: React.FC = () => {
               <Search className="w-4 h-4 absolute left-3 text-gray-500" />
               <input 
                 type="text" 
-                placeholder="Search user, group, policy, ARN..." 
+                placeholder="Search user, group, role, resource..." 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="bg-gray-900 border border-gray-700 text-xs rounded-lg pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500 w-56 transition-colors text-white placeholder-gray-500"
@@ -162,18 +175,18 @@ export const IdentityGraphPage: React.FC = () => {
               <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors">
                 <LayoutTemplate className="w-3.5 h-3.5 text-blue-400" />
                 <span>
-                  {layoutMode === 'structured' ? 'Layered Security Architecture' :
-                   layoutMode === 'vertical' ? 'Strict Vertical (6 Layers)' :
-                   layoutMode === 'dagre' ? 'Dagre Top-To-Bottom' :
+                  {layoutMode === 'structured' ? 'Security Architecture (Default)' :
+                   layoutMode === 'vertical' ? 'Strict Vertical (Top-To-Bottom)' :
+                   layoutMode === 'dagre' ? 'Dagre Hierarchical' :
                    layoutMode === 'breadthfirst' ? 'Concentric' : 'Force Directed'}
                 </span>
                 <ChevronDown className="w-3 h-3 text-gray-400" />
               </button>
               <div className="absolute right-0 mt-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
                 <div className="p-1">
-                  <button onClick={() => setLayoutMode('structured')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'structured' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Layered Security Architecture (Default)</button>
-                  <button onClick={() => setLayoutMode('vertical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'vertical' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Strict Vertical (6 Layers)</button>
-                  <button onClick={() => setLayoutMode('dagre')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'dagre' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Dagre Top-To-Bottom</button>
+                  <button onClick={() => setLayoutMode('structured')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'structured' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Security Architecture (Default)</button>
+                  <button onClick={() => setLayoutMode('vertical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'vertical' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Strict Vertical (Top-To-Bottom)</button>
+                  <button onClick={() => setLayoutMode('dagre')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'dagre' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Dagre Hierarchical</button>
                   <button onClick={() => setLayoutMode('breadthfirst')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'breadthfirst' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Concentric Radial</button>
                   <button onClick={() => setLayoutMode('cose')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'cose' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Force Directed (Physics)</button>
                 </div>

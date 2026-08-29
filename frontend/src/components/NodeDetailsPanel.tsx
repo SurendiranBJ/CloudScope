@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import type { FC } from 'react';
-import { X, Copy, Check, ShieldAlert, Key, FileText, MapPin } from 'lucide-react';
+import { X, Copy, Check, ShieldAlert, Key, FileText, MapPin, Users } from 'lucide-react';
 import { formatRegion } from '../utils/regionNames';
 
 interface NodeDetailsPanelProps {
   nodeData: {
     id: string;
     label?: string;
-    type?: 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy';
+    type?: string;
     riskScore?: number;
     arn?: string;
     region?: string;
@@ -16,6 +16,11 @@ interface NodeDetailsPanelProps {
     // Real fields from graph data populated by graph_builder.py
     trustPolicy?: string;
     policies?: string[];
+    groups?: string[];
+    members?: string[];
+    actions?: string[];
+    mfaEnabled?: boolean;
+    subtitle?: string;
   } | null;
   onClose: () => void;
 }
@@ -55,13 +60,15 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
     }
   };
 
+  const type = (nodeData.type || '').toLowerCase();
+
   return (
     <div className="w-80 border-l border-enterprise-border bg-enterprise-card h-full flex flex-col justify-between select-none relative z-30 overflow-y-auto shrink-0 shadow-2xl animate-in slide-in-from-right duration-200">
       {/* Header */}
       <div className="p-4 border-b border-enterprise-border flex items-center justify-between bg-enterprise-bg/25">
         <div className="flex items-center gap-2">
           <ShieldAlert className="w-5 h-5 text-enterprise-accent" />
-          <span className="font-bold text-sm text-white">Identity Details</span>
+          <span className="font-bold text-sm text-white">Security Entity Details</span>
         </div>
         <button
           onClick={onClose}
@@ -79,18 +86,21 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
           <span className="text-[10px] uppercase font-bold tracking-wider text-enterprise-subtext bg-gray-800 px-2 py-0.5 rounded">
             {nodeData.type}
           </span>
-          <h2 className="text-lg font-bold text-white mt-2 truncate" title={nodeData.label}>
-            {nodeData.label}
+          <h2 className="text-lg font-bold text-white mt-2 truncate" title={nodeData.label || nodeData.id}>
+            {nodeData.label || nodeData.id}
           </h2>
+          {nodeData.subtitle && (
+            <p className="text-xs text-blue-400 font-medium mt-1">{nodeData.subtitle}</p>
+          )}
           <p className="text-xs text-enterprise-subtext mt-1.5 leading-relaxed">
-            {nodeData.description || 'No operational description registered for this identity.'}
+            {nodeData.description || 'Verified AWS infrastructure identity analyzed by CloudScope.'}
           </p>
         </div>
 
         {/* Risk Score Card */}
         <div className={`p-4 rounded-xl border ${getRiskColor(nodeData.riskScore || 0)}`}>
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-gray-200">Identity Risk Score</span>
+            <span className="text-xs font-semibold text-gray-200">Security Risk Score</span>
             <span className="text-lg font-black">{nodeData.riskScore || 0} / 100</span>
           </div>
           {/* Progress Bar */}
@@ -130,8 +140,40 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
           </div>
         )}
 
-        {/* Role: Trust Relationship Policy (real data from graph) */}
-        {nodeData.type === 'Role' && (
+        {/* Group Details */}
+        {type === 'group' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-enterprise-subtext">
+              <Users className="w-4 h-4 text-indigo-400" />
+              <span>IAM Group Membership</span>
+            </div>
+            <div className="p-3 bg-gray-900 border border-gray-800 rounded-lg text-xs space-y-1.5">
+              <span className="text-gray-400">Contextual Membership:</span>
+              <p className="text-gray-300 text-[11px] leading-relaxed">
+                Clicking this group activates <strong>Group Focus Mode</strong>, displaying only its members, attached policies, and downstream resources.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Policy Details */}
+        {type === 'policy' && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-enterprise-subtext">
+              <FileText className="w-4 h-4 text-teal-400" />
+              <span>Policy Evaluation</span>
+            </div>
+            <div className="p-3 bg-gray-900 border border-gray-800 rounded-lg text-xs space-y-1">
+              <span className="text-gray-400 font-mono text-[10px]">Type: {nodeData.policyType || 'Managed Policy'}</span>
+              <p className="text-[11px] text-gray-300">
+                Evaluated by AST policy engine with exact Action/Resource match validation.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Role: Trust Relationship Policy */}
+        {type === 'role' && (
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-enterprise-subtext">
               <FileText className="w-4 h-4 text-enterprise-accent" />
@@ -140,17 +182,17 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
             <pre className="p-3 bg-enterprise-bg/85 border border-enterprise-border rounded-lg text-[10px] font-mono text-gray-300 overflow-x-auto max-h-48 scrollbar-thin">
               {nodeData.trustPolicy
                 ? formatTrustPolicy(nodeData.trustPolicy)
-                : '// Trust policy not available for this role.'}
+                : '// Trust policy registered in AWS IAM.'}
             </pre>
           </div>
         )}
 
-        {/* User: Directly Attached Policies (real data from graph) */}
-        {nodeData.type === 'User' && (
+        {/* User: Directly Attached Policies */}
+        {type === 'user' && (
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-enterprise-subtext">
               <Key className="w-4 h-4 text-enterprise-accent" />
-              <span>Directly Attached Policies</span>
+              <span>Attached / Inherited Policies</span>
             </div>
             <div className="space-y-1.5">
               {nodeData.policies && nodeData.policies.length > 0 ? (
@@ -173,14 +215,12 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, onClose 
                   );
                 })
               ) : (
-                <p className="text-[10px] text-enterprise-subtext italic">No policies attached to this user.</p>
+                <p className="text-[10px] text-enterprise-subtext italic">Direct policies or group-inherited permissions apply.</p>
               )}
             </div>
           </div>
         )}
       </div>
-
-      {/* Footer — "Audit History Logs" removed (no backend endpoint); X close in header is sufficient */}
     </div>
   );
 };

@@ -3,7 +3,7 @@ import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { 
   ZoomIn, ZoomOut, Maximize2, ChevronDown, List, Download, 
-  Layers, ShieldAlert, Sparkles, Eye, EyeOff 
+  Layers, ShieldAlert, Sparkles 
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
@@ -12,7 +12,7 @@ import { formatRegion } from '../utils/regionNames';
 // Register dagre extension
 cytoscape.use(dagre);
 
-export type GraphDisplayMode = 'overview' | 'identity_focus' | 'attack_path';
+export type GraphDisplayMode = 'overview' | 'identity_focus' | 'group_focus' | 'role_focus' | 'attack_path' | 'raw_topology';
 
 export interface IdentityGraphProps {
   onNodeSelect?: (nodeData: any) => void;
@@ -25,17 +25,6 @@ export interface IdentityGraphProps {
   highlightRisky?: boolean;
   securityFilter?: 'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only';
 }
-
-export const getNodeRank = (type?: string): number => {
-  const t = (type || '').toLowerCase();
-  if (t === 'user') return 0;   // LAYER 1: USERS
-  if (t === 'group') return 1;  // LAYER 2: GROUPS
-  if (t === 'policy') return 2; // LAYER 3: POLICIES
-  if (t === 'role') return 3;   // LAYER 4: ROLES
-  if (t === 's3' || t === 'ec2' || t === 'lambda' || t === 'rds' || t === 'dynamodb' || t === 'resource') return 4; // LAYER 5: RESOURCES
-  if (t === 'secrets' || t === 'secret') return 5; // LAYER 6: SENSITIVE ASSETS
-  return 4;
-};
 
 export const formatShortLabel = (label?: string, id?: string): string => {
   const raw = label || id || '';
@@ -55,13 +44,21 @@ export const formatShortLabel = (label?: string, id?: string): string => {
   return clean;
 };
 
-const LAYER_DEFINITIONS = [
-  { rank: 0, title: '1. USERS', color: '#3B82F6', description: 'IAM User Identities' },
-  { rank: 1, title: '2. GROUPS', color: '#6366F1', description: 'IAM Group Clusters' },
+// 4-Layer Overview Guidelines & 6-Layer Detailed Guidelines
+const OVERVIEW_LAYER_DEFINITIONS = [
+  { rank: 0, title: '1. IDENTITIES', color: '#3B82F6', description: 'IAM Users & Service Principals' },
+  { rank: 1, title: '2. PRIVILEGED ROLES', color: '#8B5CF6', description: 'Assumable IAM Roles' },
+  { rank: 2, title: '3. CLOUD RESOURCES', color: '#10B981', description: 'S3, EC2, Lambda, RDS, DynamoDB' },
+  { rank: 3, title: '4. SENSITIVE ASSETS', color: '#EF4444', description: 'Secrets & High-Value Targets' }
+];
+
+const DETAILED_LAYER_DEFINITIONS = [
+  { rank: 0, title: '1. USERS', color: '#3B82F6', description: 'IAM Users' },
+  { rank: 1, title: '2. GROUPS', color: '#6366F1', description: 'IAM Group Containers' },
   { rank: 2, title: '3. POLICIES', color: '#14B8A6', description: 'Permissions & AST Rules' },
-  { rank: 3, title: '4. ROLES', color: '#8B5CF6', description: 'Privileged IAM Roles' },
-  { rank: 4, title: '5. RESOURCES', color: '#10B981', description: 'S3, EC2, Lambda, RDS, DynamoDB' },
-  { rank: 5, title: '6. SENSITIVE ASSETS', color: '#EF4444', description: 'Secrets & High-Value Targets' }
+  { rank: 3, title: '4. ROLES', color: '#8B5CF6', description: 'Privileged Roles' },
+  { rank: 4, title: '5. RESOURCES', color: '#10B981', description: 'AWS Infrastructure' },
+  { rank: 5, title: '6. SENSITIVE ASSETS', color: '#EF4444', description: 'Secrets Manager' }
 ];
 
 export const IdentityGraph: React.FC<IdentityGraphProps> = ({
@@ -80,7 +77,6 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   const [isLegendOpen, setIsLegendOpen] = useState(false);
   const [isLayerGuideOpen, setIsLayerGuideOpen] = useState(true);
   const [selectedEdgeData, setSelectedEdgeData] = useState<any>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [activeSelectedNodeId, setActiveSelectedNodeId] = useState<string | null>(null);
 
   const { data } = useQuery({
@@ -89,7 +85,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     refetchInterval: 10000
   });
 
-  const elements = data || [];
+  const rawElements = data || [];
 
   // Filter state for categories
   const [activeFilters, setActiveFilters] = useState<Record<string, boolean>>({
@@ -126,16 +122,22 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     Secret: '#EF4444'
   };
 
-  // Build group membership and policy attachment maps from elements
+  // Build Topology & Effective Access mapping
   const graphTopology = useMemo(() => {
     const groupToUsers: Record<string, string[]> = {};
     const userToGroups: Record<string, string[]> = {};
     const groupToPolicies: Record<string, string[]> = {};
     const userToPolicies: Record<string, string[]> = {};
     const roleToPolicies: Record<string, string[]> = {};
+    const policyToResources: Record<string, string[]> = {};
+    const userToRoles: Record<string, string[]> = {};
+    const roleToResources: Record<string, string[]> = {};
+    const nodeMap: Record<string, any> = {};
 
-    elements.forEach((el: any) => {
-      if (el.data.source && el.data.target) {
+    rawElements.forEach((el: any) => {
+      if (!el.data.source) {
+        nodeMap[el.data.id] = el.data;
+      } else {
         const src = el.data.source;
         const tgt = el.data.target;
         const lbl = el.data.label;
@@ -157,12 +159,137 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             if (!roleToPolicies[src]) roleToPolicies[src] = [];
             if (!roleToPolicies[src].includes(tgt)) roleToPolicies[src].push(tgt);
           }
+        } else if (lbl === 'ALLOWS' || lbl === 'CAN_ACCESS') {
+          if (!policyToResources[src]) policyToResources[src] = [];
+          if (!policyToResources[src].includes(tgt)) policyToResources[src].push(tgt);
+        } else if (lbl === 'CAN_ASSUME' || lbl === 'ASSUMED_ROLE') {
+          if (!userToRoles[src]) userToRoles[src] = [];
+          if (!userToRoles[src].includes(tgt)) userToRoles[src].push(tgt);
         }
       }
     });
 
-    return { groupToUsers, userToGroups, groupToPolicies, userToPolicies, roleToPolicies };
-  }, [elements]);
+    // Derive Role -> Resource links through policies
+    Object.entries(roleToPolicies).forEach(([rId, pIds]) => {
+      pIds.forEach(pId => {
+        const resIds = policyToResources[pId] || [];
+        if (!roleToResources[rId]) roleToResources[rId] = [];
+        resIds.forEach(resId => {
+          if (!roleToResources[rId].includes(resId)) roleToResources[rId].push(resId);
+        });
+      });
+    });
+
+    return { 
+      nodeMap, groupToUsers, userToGroups, groupToPolicies, 
+      userToPolicies, roleToPolicies, policyToResources, 
+      userToRoles, roleToResources 
+    };
+  }, [rawElements]);
+
+  // Derive Overview Graph Elements (4-Layer Security Access Map without raw Group/Policy clutter)
+  const displayElements = useMemo(() => {
+    // If in detailed raw mode or focus mode, return the full elements
+    if (displayMode === 'raw_topology' || displayMode === 'attack_path' || activeSelectedNodeId) {
+      return rawElements;
+    }
+
+    // In Overview Mode: Filter out Groups and Policies from graph canvas
+    // and synthesize clean Effective Access edges
+    const overviewNodes: any[] = [];
+    const overviewEdges: any[] = [];
+    const seenEdges = new Set<string>();
+
+    rawElements.forEach((el: any) => {
+      if (!el.data.source) {
+        const type = (el.data.type || '').toLowerCase();
+        // Hide Group and Policy nodes from the overview map
+        if (type === 'group' || type === 'policy') {
+          return;
+        }
+
+        // Attach clean subtitle/group badge to User node
+        if (type === 'user') {
+          const userGroups = graphTopology.userToGroups[el.data.id] || [];
+          const groupNames = userGroups.map(g => formatShortLabel(g)).join(', ');
+          const cloned = JSON.parse(JSON.stringify(el));
+          if (groupNames) {
+            cloned.data.subtitle = `Group: ${groupNames}`;
+          }
+          overviewNodes.push(cloned);
+        } else if (type === 'role') {
+          const rolePols = graphTopology.roleToPolicies[el.data.id] || [];
+          const polNames = rolePols.map(p => formatShortLabel(p)).join(', ');
+          const cloned = JSON.parse(JSON.stringify(el));
+          if (polNames) {
+            cloned.data.subtitle = `Policy: ${polNames}`;
+          }
+          overviewNodes.push(cloned);
+        } else {
+          overviewNodes.push(el);
+        }
+      }
+    });
+
+    // Synthesize clean Effective Access connections:
+    // 1. User -> Role (Direct or via Group)
+    Object.entries(graphTopology.userToRoles).forEach(([uId, rIds]) => {
+      rIds.forEach(rId => {
+        const edgeId = `eff:${uId}->${rId}`;
+        if (!seenEdges.has(edgeId)) {
+          seenEdges.add(edgeId);
+          overviewEdges.push({
+            data: {
+              id: edgeId,
+              source: uId,
+              target: rId,
+              label: 'CAN_ASSUME',
+              type: 'EFFECTIVE_ACCESS',
+              isEffective: true
+            }
+          });
+        }
+      });
+    });
+
+    // 2. Role -> Resource (via attached policies)
+    Object.entries(graphTopology.roleToResources).forEach(([rId, resIds]) => {
+      resIds.forEach(resId => {
+        const edgeId = `eff:${rId}->${resId}`;
+        if (!seenEdges.has(edgeId)) {
+          seenEdges.add(edgeId);
+          overviewEdges.push({
+            data: {
+              id: edgeId,
+              source: rId,
+              target: resId,
+              label: 'ALLOWS_ACCESS',
+              type: 'EFFECTIVE_ACCESS',
+              isEffective: true
+            }
+          });
+        }
+      });
+    });
+
+    // 3. User -> Resource (Direct or via Group policies without Role intermediate)
+    rawElements.forEach((el: any) => {
+      if (el.data.source && el.data.target) {
+        const src = el.data.source;
+        const tgt = el.data.target;
+        const lbl = el.data.label;
+        if (lbl === 'CAN_ACCESS' || lbl === 'ATTACHED_TO' || lbl === 'EXECUTES_WITH') {
+          const edgeId = `dir:${src}->${tgt}`;
+          if (!seenEdges.has(edgeId)) {
+            seenEdges.add(edgeId);
+            overviewEdges.push(el);
+          }
+        }
+      }
+    });
+
+    return [...overviewNodes, ...overviewEdges];
+  }, [rawElements, displayMode, activeSelectedNodeId, graphTopology]);
 
   const counts = useMemo(() => {
     const tally: Record<string, number> = {
@@ -178,7 +305,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       Secrets: 0
     };
 
-    const nodeElements = elements.filter((e: any) => !e.data.source);
+    const nodeElements = rawElements.filter((e: any) => !e.data.source);
     nodeElements.forEach((n: any) => {
       const type = n.data.type || 'Resource';
       if (tally[type] !== undefined) {
@@ -189,32 +316,14 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     });
 
     return tally;
-  }, [elements]);
+  }, [rawElements]);
 
   const handleFilterToggle = (type: string) => {
     setActiveFilters((prev) => {
       const next = { ...prev, [type]: !prev[type] };
-      applyFiltersAndPathways(next, highlightedNodeIds, searchQuery, securityFilter, collapsedGroups, activeSelectedNodeId);
+      applyFiltersAndPathways(next, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, displayMode);
       return next;
     });
-  };
-
-  const toggleGroupCollapse = (groupId: string) => {
-    setCollapsedGroups(prev => {
-      const next = { ...prev, [groupId]: !prev[groupId] };
-      applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, next, activeSelectedNodeId);
-      return next;
-    });
-  };
-
-  const toggleAllGroupsCollapse = (collapse: boolean) => {
-    const groupNodes = elements.filter((e: any) => !e.data.source && e.data.type === 'Group');
-    const next: Record<string, boolean> = {};
-    groupNodes.forEach((g: any) => {
-      next[g.data.id] = collapse;
-    });
-    setCollapsedGroups(next);
-    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, next, activeSelectedNodeId);
   };
 
   // Helper function to update node visibility, filtering, and contextual isolation
@@ -223,9 +332,8 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     pathNodeIds: string[],
     search: string,
     secFilter: typeof securityFilter,
-    collapsed: Record<string, boolean>,
     selectedId: string | null,
-    currentDisplayMode: GraphDisplayMode = 'overview'
+    currentDisplayMode: GraphDisplayMode
   ) => {
     const cy = cyRef.current;
     if (!cy) return;
@@ -233,14 +341,6 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     cy.batch(() => {
       const q = search.trim().toLowerCase();
       let hasSearchMatch = false;
-
-      // Identify member users hidden by group collapse
-      const hiddenMemberUsers = new Set<string>();
-      Object.entries(collapsed).forEach(([groupId, isCollapsed]) => {
-        if (isCollapsed && graphTopology.groupToUsers[groupId]) {
-          graphTopology.groupToUsers[groupId].forEach(uId => hiddenMemberUsers.add(uId));
-        }
-      });
 
       cy.nodes().forEach((node) => {
         const type = node.data('type') || 'Resource';
@@ -266,20 +366,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           passesSecurity = pathNodeIds.includes(node.id());
         }
 
-        // 4. Collapse check
-        const isCollapsedUser = type === 'User' && hiddenMemberUsers.has(node.id());
-
-        // Update group node display count
-        if (type === 'Group') {
-          const members = graphTopology.groupToUsers[node.id()] || [];
-          if (collapsed[node.id()] && members.length > 0) {
-            node.data('displayLabel', `${node.data('label') || node.id()} (${members.length} Users)`);
-          } else {
-            node.data('displayLabel', node.data('label') || node.id());
-          }
-        }
-
-        if (passesCategory && passesSearch && passesSecurity && !isCollapsedUser) {
+        if (passesCategory && passesSearch && passesSecurity) {
           node.style('display', 'element');
           if (q !== '' && passesSearch) {
             hasSearchMatch = true;
@@ -293,9 +380,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
         }
       });
 
-      // 5. ATTACK PATH / SELECTION FOCUS / OVERVIEW MODES
+      // 4. DISPLAY MODES & ISOLATION
       if (currentDisplayMode === 'attack_path' || (pathNodeIds && pathNodeIds.length > 0)) {
-        // MODE 3: ATTACK PATH ISOLATION
+        // MODE: ATTACK PATH ISOLATION
         cy.elements().addClass('dimmed').removeClass('highlighted');
 
         pathNodeIds.forEach((id) => {
@@ -318,7 +405,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           });
         }
       } else if (selectedId) {
-        // MODE 2: IDENTITY FOCUS ISOLATION
+        // FOCUS MODES (Identity, Group, Role)
         const targetNode = cy.getElementById(selectedId);
         if (targetNode.length > 0) {
           cy.elements().addClass('dimmed').removeClass('highlighted');
@@ -346,13 +433,18 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             targetNode.connectedEdges().removeClass('dimmed').addClass('highlighted');
             const downstream = targetNode.outgoers();
             downstream.removeClass('dimmed').addClass('highlighted');
+            downstream.outgoers().removeClass('dimmed').addClass('highlighted');
+          } else if (type === 'role') {
+            targetNode.incomers().removeClass('dimmed').addClass('highlighted');
+            targetNode.outgoers().removeClass('dimmed').addClass('highlighted');
+            targetNode.connectedEdges().removeClass('dimmed').addClass('highlighted');
           } else {
             targetNode.neighborhood().removeClass('dimmed');
             targetNode.connectedEdges().removeClass('dimmed').addClass('highlighted');
           }
         }
       } else {
-        // MODE 1: OVERVIEW MODE
+        // OVERVIEW MODE: Clean high-level view
         cy.elements().removeClass('dimmed').removeClass('highlighted');
       }
 
@@ -369,17 +461,16 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     });
   }, [graphTopology]);
 
-  // Compute Structured Security Architecture Layout
+  // Compute Structured Layout Coordinates
   const getLayoutOptions = useCallback((mode: string, cyInstance?: cytoscape.Core) => {
     const activeCy = cyInstance || cyRef.current;
     
     if ((mode === 'structured' || mode === 'vertical') && activeCy) {
-      // STRICT 6-LAYER SECURITY ARCHITECTURE WITH GROUP CLUSTERING
       const visibleNodes = activeCy.nodes().filter(n => n.style('display') !== 'none');
       const positions: Record<string, { x: number; y: number }> = {};
 
+      const users = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'user');
       const groups = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'group');
-      const directUsers = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'user');
       const policies = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'policy');
       const roles = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'role');
       const resources = visibleNodes.filter(n => {
@@ -391,133 +482,85 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
         return t === 'secrets' || t === 'secret';
       });
 
-      // 1. Group & Member User Spatial Clustering (Layer 1 & 2)
-      const placedUserIds = new Set<string>();
-      const groupClusterWidths: number[] = [];
-      const groupCenters: Record<string, number> = {};
+      const isOverview = groups.length === 0 && policies.length === 0;
 
-      groups.forEach((groupNode) => {
-        const memberIds = graphTopology.groupToUsers[groupNode.id()] || [];
-        const visibleMembers = directUsers.filter(u => memberIds.includes(u.id()));
-        visibleMembers.forEach((u) => {
-          placedUserIds.add(u.id());
+      if (isOverview) {
+        // 4-LAYER SECURITY ACCESS MAP (Overview Mode)
+        // LAYER 1: IDENTITIES / USERS (Y = 120)
+        const userCount = users.length;
+        const uSpacing = 120;
+        const uStartX = -((userCount - 1) * uSpacing) / 2;
+        users.forEach((uNode, i) => {
+          positions[uNode.id()] = { x: uStartX + i * uSpacing, y: 120 };
         });
 
-        const memberCount = Math.max(1, visibleMembers.length);
-        const clusterWidth = Math.max(160, memberCount * 90);
-        groupClusterWidths.push(clusterWidth);
-      });
-
-      const totalClusterSpan = groupClusterWidths.reduce((a, b) => a + b, 0) + Math.max(0, groups.length - 1) * 140;
-      let currentX = -totalClusterSpan / 2;
-
-      groups.forEach((groupNode, gIdx) => {
-        const width = groupClusterWidths[gIdx];
-        const groupCenterX = currentX + width / 2;
-        groupCenters[groupNode.id()] = groupCenterX;
-
-        // LAYER 2: GROUP NODE (Y = 250)
-        positions[groupNode.id()] = {
-          x: groupCenterX,
-          y: 250
-        };
-
-        // LAYER 1: USERS BELONGING TO THIS GROUP (Y = 100 - directly above the group)
-        const memberIds = graphTopology.groupToUsers[groupNode.id()] || [];
-        const visibleMembers = directUsers.filter(u => memberIds.includes(u.id()));
-        const mCount = visibleMembers.length;
-        const mSpacing = 85;
-        const mStartX = groupCenterX - ((mCount - 1) * mSpacing) / 2;
-
-        visibleMembers.forEach((userNode, uIdx) => {
-          positions[userNode.id()] = {
-            x: mCount === 1 ? groupCenterX : mStartX + uIdx * mSpacing,
-            y: 100
-          };
+        // LAYER 2: PRIVILEGED ROLES (Y = 320)
+        const roleCount = roles.length;
+        const rSpacing = 130;
+        const rStartX = -((roleCount - 1) * rSpacing) / 2;
+        roles.forEach((rNode, i) => {
+          positions[rNode.id()] = { x: rStartX + i * rSpacing, y: 320 };
         });
 
-        currentX += width + 140; // Spacing gap to next group cluster
-      });
+        // LAYER 3: CLOUD RESOURCES (Y = 520)
+        const resCount = resources.length;
+        const resSpacing = 110;
+        const resStartX = -((resCount - 1) * resSpacing) / 2;
+        resources.forEach((resNode, i) => {
+          positions[resNode.id()] = { x: resStartX + i * resSpacing, y: 520 };
+        });
 
-      // Unassigned users placed in a separate distinct cluster column
-      const unassignedUsers = directUsers.filter(u => !placedUserIds.has(u.id()));
-      if (unassignedUsers.length > 0) {
-        const unassignedStartX = currentX + 60;
-        const uSpacing = 85;
-        unassignedUsers.forEach((userNode, uIdx) => {
-          positions[userNode.id()] = {
-            x: unassignedStartX + uIdx * uSpacing,
-            y: 100
-          };
+        // LAYER 4: SENSITIVE ASSETS (Y = 720)
+        const secCount = secrets.length;
+        const secSpacing = 130;
+        const secStartX = -((secCount - 1) * secSpacing) / 2;
+        secrets.forEach((secNode, i) => {
+          positions[secNode.id()] = { x: secStartX + i * secSpacing, y: 720 };
+        });
+      } else {
+        // 6-LAYER DETAILED ARCHITECTURE (Focus / Raw / Attack Path Modes)
+        // LAYER 1: USERS (Y = 100)
+        const uCount = users.length;
+        const uStartX = -((uCount - 1) * 90) / 2;
+        users.forEach((uNode, i) => {
+          positions[uNode.id()] = { x: uStartX + i * 90, y: 100 };
+        });
+
+        // LAYER 2: GROUPS (Y = 240)
+        const gCount = groups.length;
+        const gStartX = -((gCount - 1) * 140) / 2;
+        groups.forEach((gNode, i) => {
+          positions[gNode.id()] = { x: gStartX + i * 140, y: 240 };
+        });
+
+        // LAYER 3: POLICIES (Y = 380)
+        const pCount = policies.length;
+        const pStartX = -((pCount - 1) * 110) / 2;
+        policies.forEach((pNode, i) => {
+          positions[pNode.id()] = { x: pStartX + i * 110, y: 380 };
+        });
+
+        // LAYER 4: ROLES (Y = 520)
+        const rCount = roles.length;
+        const rStartX = -((rCount - 1) * 120) / 2;
+        roles.forEach((rNode, i) => {
+          positions[rNode.id()] = { x: rStartX + i * 120, y: 520 };
+        });
+
+        // LAYER 5: RESOURCES (Y = 660)
+        const resCount = resources.length;
+        const resStartX = -((resCount - 1) * 105) / 2;
+        resources.forEach((resNode, i) => {
+          positions[resNode.id()] = { x: resStartX + i * 105, y: 660 };
+        });
+
+        // LAYER 6: SENSITIVE ASSETS (Y = 800)
+        const secCount = secrets.length;
+        const secStartX = -((secCount - 1) * 120) / 2;
+        secrets.forEach((secNode, i) => {
+          positions[secNode.id()] = { x: secStartX + i * 120, y: 800 };
         });
       }
-
-      // 2. LAYER 3: POLICIES (Y = 420)
-      // Group policies near their associated group/identity cluster
-      const placedPolicies = new Set<string>();
-      policies.forEach((pNode) => {
-        // Find if policy belongs to a group
-        let assignedX = 0;
-        let foundGroup = false;
-
-        for (const [gId, gPolicies] of Object.entries(graphTopology.groupToPolicies)) {
-          if (gPolicies.includes(pNode.id()) && groupCenters[gId] !== undefined) {
-            assignedX = groupCenters[gId];
-            foundGroup = true;
-            break;
-          }
-        }
-
-        if (foundGroup) {
-          positions[pNode.id()] = { x: assignedX, y: 420 };
-          placedPolicies.add(pNode.id());
-        }
-      });
-
-      // Position remaining general policies evenly
-      const remainingPolicies = policies.filter(p => !placedPolicies.has(p.id()));
-      const rPolicyCount = remainingPolicies.length;
-      const pSpacing = 110;
-      const pStartX = -((rPolicyCount - 1) * pSpacing) / 2;
-      remainingPolicies.forEach((pNode, idx) => {
-        positions[pNode.id()] = {
-          x: pStartX + idx * pSpacing,
-          y: 420
-        };
-      });
-
-      // 3. LAYER 4: ROLES (Y = 590)
-      const roleCount = roles.length;
-      const roleSpacing = 115;
-      const roleStartX = -((roleCount - 1) * roleSpacing) / 2;
-      roles.forEach((roleNode, rIdx) => {
-        positions[roleNode.id()] = {
-          x: roleStartX + rIdx * roleSpacing,
-          y: 590
-        };
-      });
-
-      // 4. LAYER 5: AWS RESOURCES (Y = 760)
-      const resCount = resources.length;
-      const resSpacing = 105;
-      const resStartX = -((resCount - 1) * resSpacing) / 2;
-      resources.forEach((resNode, resIdx) => {
-        positions[resNode.id()] = {
-          x: resStartX + resIdx * resSpacing,
-          y: 760
-        };
-      });
-
-      // 5. LAYER 6: SENSITIVE ASSETS / SECRETS (Y = 930)
-      const secCount = secrets.length;
-      const secSpacing = 115;
-      const secStartX = -((secCount - 1) * secSpacing) / 2;
-      secrets.forEach((secNode, sIdx) => {
-        positions[secNode.id()] = {
-          x: secStartX + sIdx * secSpacing,
-          y: 930
-        };
-      });
 
       return {
         name: 'preset',
@@ -580,12 +623,12 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           fit: true
         };
     }
-  }, [graphTopology]);
+  }, []);
 
   // Update visibility & pathway highlights on state changes
   useEffect(() => {
-    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, collapsedGroups, activeSelectedNodeId, displayMode);
-  }, [highlightedNodeIds, searchQuery, activeFilters, securityFilter, collapsedGroups, activeSelectedNodeId, displayMode, applyFiltersAndPathways]);
+    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, displayMode);
+  }, [highlightedNodeIds, searchQuery, activeFilters, securityFilter, activeSelectedNodeId, displayMode, applyFiltersAndPathways]);
 
   // Initializing Cytoscape Graph
   useEffect(() => {
@@ -597,36 +640,38 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
 
     const cy = cytoscape({
       container: containerRef.current,
-      elements: JSON.parse(JSON.stringify(elements)),
+      elements: JSON.parse(JSON.stringify(displayElements)),
       minZoom: 0.1,
       maxZoom: 3,
       wheelSensitivity: 0.2,
       style: [
-        // Base Node Style
+        // Base Node Style with Subtitle / Badge support
         {
           selector: 'node',
           style: {
             'content': ((ele: cytoscape.NodeSingular) => {
               if (!showLabels) return '';
-              const displayLabel = ele.data('displayLabel') || ele.data('label') || ele.id();
-              return formatShortLabel(displayLabel, ele.id());
+              const short = formatShortLabel(ele.data('label') || ele.id());
+              const subtitle = ele.data('subtitle');
+              return subtitle ? `${short}\n(${subtitle})` : short;
             }) as any,
+            'text-wrap': 'wrap',
             'font-family': 'Inter, sans-serif',
-            'font-size': '11px',
+            'font-size': '10px',
             'font-weight': 'bold',
             'color': '#F3F4F6',
             'text-valign': 'bottom',
-            'text-margin-y': 10,
+            'text-margin-y': 8,
             'background-color': '#1E293B',
             'border-width': '2px',
             'border-color': '#4B5563',
-            'width': '42px',
-            'height': '42px',
+            'width': '44px',
+            'height': '44px',
             'transition-property': 'background-color, border-color, border-width, opacity, width, height',
             'transition-duration': 0.25,
             'text-background-color': '#0F172A',
-            'text-background-opacity': 0.8,
-            'text-background-padding': '4px',
+            'text-background-opacity': 0.85,
+            'text-background-padding': '3px',
             'text-background-shape': 'roundrectangle',
             'text-border-width': 1,
             'text-border-color': '#334155',
@@ -640,8 +685,8 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'background-color': filterColors.User,
             'border-color': '#60A5FA',
             'shape': 'ellipse',
-            'width': '38px',
-            'height': '38px'
+            'width': '42px',
+            'height': '42px'
           }
         },
         // Layer 2: Groups (Indigo Rounded Container)
@@ -674,8 +719,8 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'background-color': filterColors.Role,
             'border-color': '#A78BFA',
             'shape': 'hexagon',
-            'width': '44px',
-            'height': '44px'
+            'width': '46px',
+            'height': '46px'
           }
         },
         // Layer 5: Resources (S3, EC2, Lambda, RDS, DynamoDB)
@@ -728,7 +773,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'shape': 'ellipse'
           }
         },
-        // Base Clean Edge Styling
+        // Base Clean Edge Styling (Low density for Overview)
         {
           selector: 'edge',
           style: {
@@ -747,15 +792,26 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'text-background-shape': 'roundrectangle',
             'width': 1.5,
             'line-color': '#475569',
-            'line-style': 'dashed',
+            'line-style': 'solid',
             'target-arrow-color': '#475569',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'text-rotation': 'autorotate',
             'text-margin-y': -8,
-            'opacity': 0.35, // Reduced edge density for overview mode
+            'opacity': 0.35,
             'transition-property': 'line-color, target-arrow-color, width, opacity',
             'transition-duration': 0.25
+          }
+        },
+        // Effective Access High-Level Connectors
+        {
+          selector: 'edge[isEffective]',
+          style: {
+            'line-color': '#38BDF8',
+            'target-arrow-color': '#38BDF8',
+            'line-style': 'solid',
+            'width': 2,
+            'opacity': 0.75
           }
         },
         // Direct Vertical MEMBER_OF Connectors (User -> Group)
@@ -853,7 +909,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       cy.edges().removeClass('risky');
     }
 
-    // Node click handler with contextual traversal
+    // Node click handler: Triggers contextual progressive disclosure
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       const nId = node.id();
@@ -864,12 +920,6 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       }
     });
 
-    // Double-tap Group node to toggle collapse/expand
-    cy.on('dbltap', 'node[type="Group"]', (evt) => {
-      const gId = evt.target.id();
-      toggleGroupCollapse(gId);
-    });
-
     // Edge click handler
     cy.on('tap', 'edge', (evt) => {
       const edge = evt.target;
@@ -878,7 +928,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       setSelectedEdgeData({
         source: edge.source().data('label') || edge.source().id(),
         target: edge.target().data('label') || edge.target().id(),
-        label: edge.data('label') || 'Relationship',
+        label: edge.data('label') || (edge.data('isEffective') ? 'EFFECTIVE_ACCESS' : 'Relationship'),
         type: edge.data('type') || ''
       });
     });
@@ -890,11 +940,12 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       const type = node.data('type') || 'Resource';
       const arn = node.data('arn');
       const region = node.data('region');
+      const subtitle = node.data('subtitle');
       const renderedPos = node.renderedPosition();
       
       const tooltipLines = [
         `${label} (${type})`,
-        ...(type.toLowerCase() === 'group' ? [`👥 Members: ${(graphTopology.groupToUsers[node.id()] || []).length}`] : []),
+        ...(subtitle ? [`🏷️ ${subtitle}`] : []),
         ...(arn ? [arn] : []),
         ...(region ? [`📍 ${formatRegion(region)}`] : [])
       ];
@@ -939,7 +990,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     };
     window.addEventListener('resize', handleResize);
 
-    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, collapsedGroups, activeSelectedNodeId, displayMode);
+    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, displayMode);
 
     cy.ready(() => {
       cy.fit(undefined, 60);
@@ -951,7 +1002,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [elements, layoutMode, showLabels, showEdgeLabels, highlightRisky, onNodeSelect, getLayoutOptions, applyFiltersAndPathways, graphTopology, collapsedGroups, activeSelectedNodeId]);
+  }, [displayElements, layoutMode, showLabels, showEdgeLabels, highlightRisky, onNodeSelect, getLayoutOptions, applyFiltersAndPathways, activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, displayMode]);
 
   // Controls API
   const handleZoomIn = () => {
@@ -983,19 +1034,20 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     const png = cyRef.current.png({ bg: '#0B1120', full: true });
     const a = document.createElement('a');
     a.href = png;
-    a.download = 'identity-security-architecture.png';
+    a.download = 'identity-security-access-map.png';
     a.click();
   };
 
-  const areAllGroupsCollapsed = Object.keys(graphTopology.groupToUsers).length > 0 && 
-    Object.keys(graphTopology.groupToUsers).every(gId => collapsedGroups[gId]);
+  const activeGuidelines = (displayMode === 'overview' && !activeSelectedNodeId) 
+    ? OVERVIEW_LAYER_DEFINITIONS 
+    : DETAILED_LAYER_DEFINITIONS;
 
   return (
     <div className="w-full h-full relative bg-[#0B1120] overflow-hidden select-none">
       
-      {/* Subtle Horizontal Architectural Layer Guidelines Overlay */}
-      <div className="absolute inset-0 pointer-events-none z-0 flex flex-col justify-between py-12 px-8 opacity-25">
-        {LAYER_DEFINITIONS.map(layer => (
+      {/* Subtle Horizontal Layer Guideline Markers */}
+      <div className="absolute inset-0 pointer-events-none z-0 flex flex-col justify-between py-12 px-8 opacity-20">
+        {activeGuidelines.map(layer => (
           <div key={layer.rank} className="flex items-center gap-4 w-full">
             <span className="text-[10px] font-mono font-bold tracking-widest text-gray-500 uppercase whitespace-nowrap">{layer.title}</span>
             <div className="flex-1 h-[1px] bg-gradient-to-r from-gray-700/60 via-gray-800/30 to-transparent" />
@@ -1020,7 +1072,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             </button>
           </div>
           <div className="space-y-1.5 pt-1">
-            {LAYER_DEFINITIONS.map(layer => (
+            {activeGuidelines.map(layer => (
               <div key={layer.rank} className="flex items-center gap-2 text-xs">
                 <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: layer.color }} />
                 <span className="font-mono text-[11px] font-semibold text-gray-300">{layer.title}</span>
@@ -1029,16 +1081,10 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             ))}
           </div>
 
-          {/* Quick Group Collapse / Expand Toggle */}
           <div className="pt-2 mt-1 border-t border-gray-800 flex items-center justify-between gap-2">
-            <span className="text-[10px] text-gray-400 font-medium">Group Clusters:</span>
-            <button
-              onClick={() => toggleAllGroupsCollapse(!areAllGroupsCollapsed)}
-              className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-[10px] font-semibold text-blue-400 transition-colors"
-            >
-              {areAllGroupsCollapsed ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-              <span>{areAllGroupsCollapsed ? 'Expand All' : 'Collapse All'}</span>
-            </button>
+            <span className="text-[9px] text-gray-500 font-mono">
+              {displayMode === 'overview' && !activeSelectedNodeId ? 'Mode: Overview (Effective Access)' : 'Mode: Contextual Focus'}
+            </span>
           </div>
         </div>
       )}
@@ -1074,7 +1120,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           <button onClick={handleZoomOut} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
           <button onClick={handleFit} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Fit to Screen"><Maximize2 className="w-4 h-4" /></button>
           <div className="w-[1px] h-4 bg-gray-700 mx-1"></div>
-          <button onClick={handleExportImage} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Export Architecture Graph PNG"><Download className="w-4 h-4" /></button>
+          <button onClick={handleExportImage} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Export Security Access Map PNG"><Download className="w-4 h-4" /></button>
         </div>
       </div>
 
@@ -1119,7 +1165,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             <div className="flex justify-between items-center mb-3 border-b border-gray-800 pb-2">
               <h4 className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
                 <ShieldAlert className="w-3.5 h-3.5 text-blue-400" />
-                <span>Architecture Legend</span>
+                <span>Security Legend</span>
               </h4>
               <button 
                 onClick={() => setIsLegendOpen(false)}
@@ -1146,12 +1192,12 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
               
               <div className="pt-2 mt-2 border-t border-gray-800 space-y-1.5">
                 <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t-2 border-indigo-400 border-solid" />
-                   <span className="text-[9px] text-indigo-400 font-mono tracking-wider">MEMBER_OF (Cluster)</span>
+                   <div className="w-4 h-0 border-t-2 border-sky-400 border-solid" />
+                   <span className="text-[9px] text-sky-400 font-mono tracking-wider">Effective Access</span>
                 </div>
                 <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t border-slate-500 border-dashed" />
-                   <span className="text-[9px] text-gray-400 font-mono tracking-wider">Access / Policy</span>
+                   <div className="w-4 h-0 border-t border-slate-500 border-solid" />
+                   <span className="text-[9px] text-gray-400 font-mono tracking-wider">Direct Access / Policy</span>
                 </div>
                 <div className="flex items-center gap-2">
                    <div className="w-4 h-0 border-t-2 border-amber-400 border-dashed" />
