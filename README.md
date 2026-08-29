@@ -133,6 +133,7 @@ npm run build
 | `GET` | `/api/v1/attack-paths` | Lateral movement attack paths with MITRE ATT&CK techniques |
 | `GET` | `/api/v1/risk-assessment` | Risk assessment findings and remediation recommendations |
 | `GET` | `/api/v1/alerts` | CloudTrail audit events |
+| `GET` | `/api/v1/correlated-risks` | Correlated security findings linking CloudTrail activity to attack paths |
 | `POST` | `/api/v1/settings/scan-region` | Update runtime scan region (`single` or `global`) |
 | `POST` | `/api/v1/settings/scan-interval` | Reschedule automated scan frequency |
 
@@ -142,3 +143,4 @@ npm run build
 *   **Zero Credential Exposure**: Never logs, exposes, or stores AWS access keys, secret keys, or secret values.
 *   **Secrets Manager**: Collects metadata only (ARN, name, rotation status, tags, dates); never calls `GetSecretValue`.
 *   **Read-Only Operations**: Uses read-only AWS APIs exclusively (`list_*`, `describe_*`, `get_*_policy`, `lookup_events`).
+*   **Near-Real-Time Activity Monitoring**: Correlates recent CloudTrail management events against graph topologies to detect active attack execution without requiring intrusive inline agent installations.
