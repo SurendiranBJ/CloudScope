@@ -15,6 +15,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { getCloudResources } from '../api/resources';
 import { formatRegion } from '../utils/regionNames';
+import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import type { CloudResource } from '../types';
 
 interface ResourcesProps {
@@ -99,12 +100,17 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
 
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
-      {/* Header — Register Asset removed (CloudScope is read-only scanner) */}
-      <div>
-        <h1 className="text-2xl font-bold text-white tracking-tight">Cloud Resources Ledger</h1>
-        <p className="text-xs text-enterprise-subtext mt-1">
-          Browse and search all tracked AWS IAM policies and database storage entities.
-        </p>
+      {/* Header */}
+      <div className="flex justify-between items-center flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Cloud Resources Ledger</h1>
+          <p className="text-xs text-enterprise-subtext mt-1">
+            Browse and search all tracked AWS IAM policies and database storage entities.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <ScannedRegionBadge />
+        </div>
       </div>
 
       {/* Filter and Search controls */}

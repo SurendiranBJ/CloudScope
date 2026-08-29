@@ -107,6 +107,7 @@ class ScanHistoryItem(BaseModel):
     risks_found: int
     graph_nodes_count: int
     graph_edges_count: int
+    scanned_regions: Optional[List[str]] = None
 
 # Dashboard Compilation
 class DashboardData(BaseModel):
@@ -119,6 +120,7 @@ class DashboardData(BaseModel):
     lastScan: Optional[ScanHistoryItem] = None
     topRiskyIdentities: Optional[List[dict]] = None
     resourceBreakdown: Optional[List[dict]] = None
+    scannedRegions: Optional[List[str]] = None
 
 # Copilot Request/Response
 class CopilotRequest(BaseModel):

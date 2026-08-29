@@ -96,7 +96,9 @@ export interface DashboardData {
     risks_found: number;
     graph_nodes_count: number;
     graph_edges_count: number;
+    scanned_regions?: string[];
   };
   topRiskyIdentities?: { name: string; type: 'User' | 'Role'; riskScore: number }[];
   resourceBreakdown?: { type: string; count: number }[];
+  scannedRegions?: string[];
 }

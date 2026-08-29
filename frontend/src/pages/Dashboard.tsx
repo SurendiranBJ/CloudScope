@@ -25,6 +25,7 @@ import { RegionSelector } from '../components/RegionSelector';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { ScanTrigger, useScanTrigger } from '../components/ScanTrigger';
+import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import { apiClient } from '../api/client';
 import { formatRegion } from '../utils/regionNames';
 import type { SecurityAlert, AttackPath } from '../types';
@@ -151,6 +152,9 @@ export const Dashboard: React.FC = () => {
             </p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
+            {/* Scanned region diagnostic badge */}
+            <ScannedRegionBadge scannedRegions={data?.scannedRegions || data?.lastScan?.scanned_regions} />
+
             {/* Live scan indicator */}
             <div className="text-xs text-enterprise-subtext flex items-center gap-2 bg-enterprise-card border border-enterprise-border px-3 py-1.5 rounded-lg">
               <span className={`w-2 h-2 rounded-full ${isScanning ? 'bg-blue-500 animate-pulse' : 'bg-enterprise-success animate-ping'}`} />
@@ -301,36 +305,40 @@ export const Dashboard: React.FC = () => {
                 DynamoDB: '#8B5CF6',// Purple
                 Secrets: '#EF4444'  // Red
               };
-              const chartData = (data.resourceBreakdown || []).map((item: any) => ({
-                name: item.type,
-                value: item.count,
-                color: resourceColors[item.type] || '#3B82F6'
-              }));
-              const hasData = chartData.length > 0 && chartData.some((c: any) => c.value > 0);
 
-              if (!hasData) {
-                return (
-                  <div className="flex-1 flex flex-col items-center justify-center text-enterprise-subtext italic text-xs">
-                    <Cloud className="w-8 h-8 mb-2 text-gray-600 animate-pulse" />
-                    <span>Calculating resource inventory breakdown...</span>
-                  </div>
-                );
-              }
+              const allTypes = ['S3', 'EC2', 'Lambda', 'RDS', 'DynamoDB', 'Secrets'];
+              const breakdownMap = Object.fromEntries(
+                (data.resourceBreakdown || []).map((item: any) => [item.type, item.count])
+              );
+
+              // Always include all 6 categories explicitly so 0-count categories are never hidden
+              const chartData = allTypes.map((type) => ({
+                name: type,
+                value: breakdownMap[type] ?? 0,
+                color: resourceColors[type] || '#3B82F6'
+              }));
+
+              const totalCount = chartData.reduce((acc, curr) => acc + curr.value, 0);
+
+              // If there are zero resources found across all types, display a subtle empty ring while showing full legend
+              const pieData = totalCount === 0
+                ? [{ name: 'Zero Resources', value: 1, color: '#374151' }]
+                : chartData.filter((c) => c.value > 0);
 
               return (
                 <div className="flex-1 h-64 w-full flex items-center justify-center">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
-                        data={chartData}
+                        data={pieData}
                         cx="40%"
                         cy="50%"
                         innerRadius={50}
                         outerRadius={80}
-                        paddingAngle={3}
+                        paddingAngle={totalCount === 0 ? 0 : 3}
                         dataKey="value"
                       >
-                        {chartData.map((entry: any, index: number) => (
+                        {pieData.map((entry: any, index: number) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
                         ))}
                       </Pie>
@@ -341,6 +349,10 @@ export const Dashboard: React.FC = () => {
                           color: '#FFF',
                           fontSize: '11px'
                         }}
+                        formatter={(value: any, name: any) => {
+                          if (totalCount === 0) return ['0 items', 'No resources in scope'];
+                          return [`${value} item${value !== 1 ? 's' : ''}`, name];
+                        }}
                       />
                       <Legend
                         layout="vertical"
@@ -348,7 +360,22 @@ export const Dashboard: React.FC = () => {
                         verticalAlign="middle"
                         iconSize={10}
                         iconType="circle"
-                        formatter={(value) => <span className="text-xs text-gray-300 font-medium">{value}</span>}
+                        content={() => (
+                          <div className="flex flex-col gap-1.5 pl-2">
+                            {chartData.map((item) => (
+                              <div key={item.name} className="flex items-center gap-2 text-xs">
+                                <span
+                                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                                  style={{ backgroundColor: item.color }}
+                                />
+                                <span className="text-gray-300 font-medium">{item.name}:</span>
+                                <span className="font-bold text-white ml-auto pl-2 font-mono">
+                                  {item.value}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       />
                     </PieChart>
                   </ResponsiveContainer>

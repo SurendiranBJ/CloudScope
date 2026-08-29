@@ -15,7 +15,7 @@ from app.services.aws import (
     rds_service,
     dynamodb_service
 )
-from app.services.aws.region_cache import clear_region_cache
+from app.services.aws.region_cache import clear_region_cache, get_all_regions
 from app.services.attack import risk_engine, path_engine
 from app.services.graph import graph_builder, graph_loader
 from app.database import execute_write
@@ -266,6 +266,8 @@ class ScanManager:
             self.inventory.clear()
             # Clear region cache so we get fresh regions
             clear_region_cache()
+            scanned_regions = list(get_all_regions())
+            logger.info(f"Scan running with target regions: {scanned_regions}")
 
             # 1. AWS API Data Collection (Concurrently)
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -542,10 +544,12 @@ class ScanManager:
                     "resources_found": resources_count,
                     "risks_found": risks_count,
                     "graph_nodes_count": nodes_count,
-                    "graph_edges_count": edges_count
+                    "graph_edges_count": edges_count,
+                    "scanned_regions": scanned_regions
                 },
                 "topRiskyIdentities": top_risky_identities,
-                "resourceBreakdown": resource_breakdown
+                "resourceBreakdown": resource_breakdown,
+                "scannedRegions": scanned_regions
             }
             cache.set("v1:dashboard", dashboard_data)
 
@@ -554,7 +558,8 @@ class ScanManager:
                 "timestamp": scan_timestamp,
                 "duration": duration,
                 "resources": resources_count,
-                "risks": risks_count
+                "risks": risks_count,
+                "scanned_regions": scanned_regions
             }
             return self._last_result
 

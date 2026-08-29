@@ -6,6 +6,7 @@ import { Network, Search, LayoutTemplate, Maximize, RefreshCw, AlertTriangle, In
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
 import { getRiskAssessmentFindings } from '../api/risks';
+import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 
 export const IdentityGraphPage: React.FC = () => {
   const location = useLocation();
@@ -79,6 +80,8 @@ export const IdentityGraphPage: React.FC = () => {
           </div>
           
           <div className="flex items-center gap-3">
+            <ScannedRegionBadge />
+
             {/* Search */}
             <div className="relative hidden md:flex items-center">
               <Search className="w-4 h-4 absolute left-3 text-gray-500" />
