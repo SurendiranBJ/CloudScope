@@ -5,7 +5,7 @@ import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import {
   GitMerge,
-  ArrowRight,
+  ArrowDown,
   Sparkles,
   RefreshCw,
   Bot,
@@ -21,21 +21,38 @@ import {
   Layers,
   Flame,
   Radio,
-  SlidersHorizontal
+  SlidersHorizontal,
+  FolderGit2,
+  Share2
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getAttackPaths } from '../api/attack';
 import { postCopilotMessage } from '../api/copilot';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
-import type { AttackPath } from '../types';
+import type { AttackPath, AttackPathNode } from '../types';
 
-// Register dagre
+// Register dagre layout
 cytoscape.use(dagre);
+
+export interface ConsolidatedAttackPathGroup {
+  groupId: string;
+  name: string;
+  sourceNode: AttackPathNode;
+  sharedNodes: AttackPathNode[];
+  targets: AttackPathNode[];
+  originalPaths: AttackPath[];
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  maxLikelihood: number;
+  blastRadiusSummary: string;
+  mitreTechniques: string[];
+  recommendation: string;
+  description: string;
+}
 
 export const AttackPaths: FC = () => {
   const navigate = useNavigate();
-  const [selectedPathId, setSelectedPathId] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all');
   const [resourceTypeFilter, setResourceTypeFilter] = useState<string>('all');
@@ -51,124 +68,12 @@ export const AttackPaths: FC = () => {
     refetchInterval: 10000
   });
 
-  const attackPaths = data || [];
+  const rawAttackPaths = data || [];
 
-  // Filtered attack paths
-  const filteredPaths = useMemo(() => {
-    return attackPaths.filter(p => {
-      const q = searchQuery.trim().toLowerCase();
-      const matchesSearch = q === '' || 
-        p.name.toLowerCase().includes(q) || 
-        p.description.toLowerCase().includes(q) ||
-        p.nodes.some(n => n.name.toLowerCase().includes(q) || n.type.toLowerCase().includes(q));
-
-      const matchesSeverity = severityFilter === 'all' || p.severity.toLowerCase() === severityFilter;
-
-      const targetNode = p.nodes[p.nodes.length - 1];
-      const matchesType = resourceTypeFilter === 'all' || 
-        (targetNode && targetNode.type.toLowerCase() === resourceTypeFilter.toLowerCase());
-
-      return matchesSearch && matchesSeverity && matchesType;
-    });
-  }, [attackPaths, searchQuery, severityFilter, resourceTypeFilter]);
-
-  // Selected path object
-  const selectedPath = useMemo(() => {
-    return attackPaths.find(p => p.id === selectedPathId) || filteredPaths[0] || null;
-  }, [attackPaths, filteredPaths, selectedPathId]);
-
-  // 1. Build Merged Branching Attack DAG Elements (Shared Nodes & Prefixes Deduplicated)
-  const treeElements = useMemo(() => {
-    const nodesMap: Record<string, any> = {};
-    const edgesMap: Record<string, any> = {};
-
-    const pathsToRender = filteredPaths.length > 0 ? filteredPaths : attackPaths;
-
-    pathsToRender.forEach((path) => {
-      // Add each unique node once
-      path.nodes.forEach((node, idx) => {
-        const nodeId = node.id || `node:${node.name}`;
-        if (!nodesMap[nodeId]) {
-          nodesMap[nodeId] = {
-            data: {
-              id: nodeId,
-              label: node.name,
-              type: node.type,
-              isRoot: idx === 0,
-              isTarget: idx === path.nodes.length - 1,
-              riskScore: path.likelihood || 75
-            },
-            classes: []
-          };
-        }
-      });
-
-      // Add edges between consecutive hops in the path
-      for (let i = 0; i < path.nodes.length - 1; i++) {
-        const sourceNode = path.nodes[i];
-        const targetNode = path.nodes[i + 1];
-        const sourceId = sourceNode.id || `node:${sourceNode.name}`;
-        const targetId = targetNode.id || `node:${targetNode.name}`;
-        const edgeId = `edge:${sourceId}->${targetId}`;
-
-        if (!edgesMap[edgeId]) {
-          edgesMap[edgeId] = {
-            data: {
-              id: edgeId,
-              source: sourceId,
-              target: targetId,
-              label: getHopRelationshipLabel(sourceNode.type, targetNode.type),
-              pathIds: [path.id],
-              severity: path.severity
-            },
-            classes: []
-          };
-        } else {
-          if (!edgesMap[edgeId].data.pathIds.includes(path.id)) {
-            edgesMap[edgeId].data.pathIds.push(path.id);
-          }
-        }
-      }
-    });
-
-    return [...Object.values(nodesMap), ...Object.values(edgesMap)];
-  }, [filteredPaths, attackPaths, selectedPath]);
-
-  // Compute Blast Radius Metrics across all attack vectors
-  const blastRadiusStats = useMemo(() => {
-    const uniqueIdentities = new Set<string>();
-    const uniqueTargets = new Set<string>();
-    let maxDepth = 0;
-    let criticalTargets = 0;
-
-    attackPaths.forEach(p => {
-      if (p.nodes.length > 0) {
-        uniqueIdentities.add(p.nodes[0].name);
-        const target = p.nodes[p.nodes.length - 1];
-        uniqueTargets.add(target.name);
-        const t = (target.type as string);
-        if (p.severity === 'critical' || t === 'Secrets' || t === 'Secret' || t === 'RDS') {
-          criticalTargets++;
-        }
-      }
-      if (p.nodes.length > maxDepth) {
-        maxDepth = p.nodes.length;
-      }
-    });
-
-    return {
-      totalPaths: attackPaths.length,
-      compromisedIdentities: uniqueIdentities.size,
-      reachableAssets: uniqueTargets.size,
-      criticalAssets: criticalTargets,
-      maxDepth: Math.max(1, maxDepth)
-    };
-  }, [attackPaths]);
-
-  // Helper for natural relationship labels
+  // Natural relationship labels lookup
   function getHopRelationshipLabel(srcType: string, tgtType: string): string {
-    const s = srcType.toLowerCase();
-    const t = tgtType.toLowerCase();
+    const s = (srcType || '').toLowerCase();
+    const t = (tgtType || '').toLowerCase();
     if (s === 'user' && t === 'group') return 'MEMBER_OF';
     if (s === 'group' && t === 'policy') return 'HAS_POLICY';
     if (s === 'user' && t === 'policy') return 'ATTACHED_POLICY';
@@ -179,6 +84,219 @@ export const AttackPaths: FC = () => {
     if (s === 'role') return 'ALLOWS_ACCESS';
     return 'CAN_ACCESS';
   }
+
+  // 1. PATH GROUPING ALGORITHM: Consolidate duplicate linear paths sharing common prefix
+  const consolidatedGroups = useMemo<ConsolidatedAttackPathGroup[]>(() => {
+    const groupMap: Record<string, ConsolidatedAttackPathGroup> = {};
+
+    rawAttackPaths.forEach((path) => {
+      if (!path.nodes || path.nodes.length === 0) return;
+
+      // The shared prefix consists of all hops except the final target
+      const sharedPrefixNodes = path.nodes.slice(0, -1);
+      const targetNode = path.nodes[path.nodes.length - 1];
+
+      // Build deterministic prefix key: source + ordered intermediate nodes
+      const prefixKey = sharedPrefixNodes.length > 0 
+        ? sharedPrefixNodes.map(n => n.id || n.name).join('->')
+        : (path.nodes[0]?.id || path.nodes[0]?.name || 'unknown');
+
+      const sev = (path.severity || 'high').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
+
+      if (!groupMap[prefixKey]) {
+        groupMap[prefixKey] = {
+          groupId: `group:${prefixKey}`,
+          name: path.name,
+          sourceNode: path.nodes[0],
+          sharedNodes: sharedPrefixNodes,
+          targets: targetNode ? [targetNode] : [],
+          originalPaths: [path],
+          severity: sev,
+          maxLikelihood: path.likelihood || 80,
+          blastRadiusSummary: path.blastRadius || 'Multiple connected resources',
+          mitreTechniques: [...(path.mitreTechniques || [])],
+          recommendation: path.recommendation || '',
+          description: path.description || ''
+        };
+      } else {
+        const group = groupMap[prefixKey];
+        group.originalPaths.push(path);
+        
+        // Add target if not already present
+        if (targetNode && !group.targets.some(t => (t.id || t.name) === (targetNode.id || targetNode.name))) {
+          group.targets.push(targetNode);
+        }
+
+        // Track max likelihood
+        if (path.likelihood && path.likelihood > group.maxLikelihood) {
+          group.maxLikelihood = path.likelihood;
+        }
+
+        // Elevate severity if higher
+        const severityValues: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+        const currentRank = severityValues[group.severity] || 1;
+        const incomingSev = (path.severity || 'low').toLowerCase();
+        const newRank = severityValues[incomingSev] || 1;
+        if (newRank > currentRank) {
+          group.severity = incomingSev as 'critical' | 'high' | 'medium' | 'low';
+        }
+
+        // Union MITRE techniques
+        (path.mitreTechniques || []).forEach(tech => {
+          if (!group.mitreTechniques.includes(tech)) {
+            group.mitreTechniques.push(tech);
+          }
+        });
+      }
+    });
+
+    return Object.values(groupMap);
+  }, [rawAttackPaths]);
+
+  // Filtered Consolidated Groups
+  const filteredGroups = useMemo(() => {
+    return consolidatedGroups.filter(g => {
+      const q = searchQuery.trim().toLowerCase();
+      const matchesSearch = q === '' || 
+        g.name.toLowerCase().includes(q) || 
+        g.description.toLowerCase().includes(q) ||
+        g.sourceNode.name.toLowerCase().includes(q) ||
+        g.sharedNodes.some(n => n.name.toLowerCase().includes(q) || n.type.toLowerCase().includes(q)) ||
+        g.targets.some(t => t.name.toLowerCase().includes(q) || t.type.toLowerCase().includes(q));
+
+      const matchesSeverity = severityFilter === 'all' || g.severity === severityFilter;
+
+      const matchesType = resourceTypeFilter === 'all' || 
+        g.targets.some(t => t.type.toLowerCase() === resourceTypeFilter.toLowerCase());
+
+      return matchesSearch && matchesSeverity && matchesType;
+    });
+  }, [consolidatedGroups, searchQuery, severityFilter, resourceTypeFilter]);
+
+  // Active selected group
+  const selectedGroup = useMemo(() => {
+    return consolidatedGroups.find(g => g.groupId === selectedGroupId) || filteredGroups[0] || null;
+  }, [consolidatedGroups, filteredGroups, selectedGroupId]);
+
+  // 2. Build Merged Branching Attack DAG Elements for Cytoscape Top Visualizer
+  const treeElements = useMemo(() => {
+    const nodesMap: Record<string, any> = {};
+    const edgesMap: Record<string, any> = {};
+
+    const groupsToRender = filteredGroups.length > 0 ? filteredGroups : consolidatedGroups;
+
+    groupsToRender.forEach((group) => {
+      // 1. Add shared prefix chain nodes exactly once
+      group.sharedNodes.forEach((node, idx) => {
+        const nodeId = node.id || `node:${node.name}`;
+        if (!nodesMap[nodeId]) {
+          nodesMap[nodeId] = {
+            data: {
+              id: nodeId,
+              label: node.name,
+              type: node.type,
+              isRoot: idx === 0,
+              isShared: true,
+              riskScore: group.maxLikelihood
+            }
+          };
+        }
+      });
+
+      // 2. Connect consecutive hops in the shared chain
+      for (let i = 0; i < group.sharedNodes.length - 1; i++) {
+        const sNode = group.sharedNodes[i];
+        const tNode = group.sharedNodes[i + 1];
+        const sId = sNode.id || `node:${sNode.name}`;
+        const tId = tNode.id || `node:${tNode.name}`;
+        const edgeId = `edge:${sId}->${tId}`;
+
+        if (!edgesMap[edgeId]) {
+          edgesMap[edgeId] = {
+            data: {
+              id: edgeId,
+              source: sId,
+              target: tId,
+              label: getHopRelationshipLabel(sNode.type, tNode.type),
+              groupIds: [group.groupId],
+              severity: group.severity
+            }
+          };
+        } else if (!edgesMap[edgeId].data.groupIds.includes(group.groupId)) {
+          edgesMap[edgeId].data.groupIds.push(group.groupId);
+        }
+      }
+
+      // 3. Connect the last shared node to all branching divergent targets
+      const lastSharedNode = group.sharedNodes[group.sharedNodes.length - 1] || group.sourceNode;
+      const lastSharedId = lastSharedNode.id || `node:${lastSharedNode.name}`;
+
+      group.targets.forEach((targetNode) => {
+        const targetId = targetNode.id || `node:${targetNode.name}`;
+        if (!nodesMap[targetId]) {
+          nodesMap[targetId] = {
+            data: {
+              id: targetId,
+              label: targetNode.name,
+              type: targetNode.type,
+              isTarget: true,
+              riskScore: group.maxLikelihood
+            }
+          };
+        }
+
+        const branchEdgeId = `branch:${lastSharedId}->${targetId}`;
+        if (!edgesMap[branchEdgeId]) {
+          edgesMap[branchEdgeId] = {
+            data: {
+              id: branchEdgeId,
+              source: lastSharedId,
+              target: targetId,
+              label: getHopRelationshipLabel(lastSharedNode.type, targetNode.type),
+              groupIds: [group.groupId],
+              severity: group.severity
+            }
+          };
+        } else if (!edgesMap[branchEdgeId].data.groupIds.includes(group.groupId)) {
+          edgesMap[branchEdgeId].data.groupIds.push(group.groupId);
+        }
+      });
+    });
+
+    return [...Object.values(nodesMap), ...Object.values(edgesMap)];
+  }, [filteredGroups, consolidatedGroups]);
+
+  // Blast Radius Metric Strip Stats
+  const blastRadiusStats = useMemo(() => {
+    const uniqueIdentities = new Set<string>();
+    const uniqueTargets = new Set<string>();
+    let maxDepth = 0;
+    let criticalTargets = 0;
+
+    rawAttackPaths.forEach(p => {
+      if (p.nodes.length > 0) {
+        uniqueIdentities.add(p.nodes[0].name);
+        const target = p.nodes[p.nodes.length - 1];
+        uniqueTargets.add(target.name);
+        const t = target.type as string;
+        if (p.severity === 'critical' || t === 'Secrets' || t === 'Secret' || t === 'RDS') {
+          criticalTargets++;
+        }
+      }
+      if (p.nodes.length > maxDepth) {
+        maxDepth = p.nodes.length;
+      }
+    });
+
+    return {
+      totalRawPaths: rawAttackPaths.length,
+      consolidatedGroupCount: consolidatedGroups.length,
+      compromisedIdentities: uniqueIdentities.size,
+      reachableAssets: uniqueTargets.size,
+      criticalAssets: criticalTargets,
+      maxDepth: Math.max(1, maxDepth)
+    };
+  }, [rawAttackPaths, consolidatedGroups]);
 
   // Cytoscape Instance Lifecycle
   useEffect(() => {
@@ -365,9 +483,9 @@ export const AttackPaths: FC = () => {
         directed: true,
         padding: 50,
         rankDir: 'TB',
-        nodeSep: 60,
-        rankSep: 100,
-        edgeSep: 30,
+        nodeSep: 70,
+        rankSep: 110,
+        edgeSep: 35,
         fit: true,
         spacingFactor: 1.15
       } as any
@@ -375,14 +493,18 @@ export const AttackPaths: FC = () => {
 
     cyRef.current = cy;
 
-    // Node click: Find associated paths and focus
+    // Node click: select associated consolidated attack path group
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       const nodeId = node.id();
       
-      const matchingPath = attackPaths.find(p => p.nodes.some(n => (n.id || `node:${n.name}`) === nodeId));
-      if (matchingPath) {
-        setSelectedPathId(matchingPath.id);
+      const matchingGroup = consolidatedGroups.find(g => 
+        g.sharedNodes.some(n => (n.id || `node:${n.name}`) === nodeId) ||
+        g.targets.some(t => (t.id || `node:${t.name}`) === nodeId)
+      );
+
+      if (matchingGroup) {
+        setSelectedGroupId(matchingGroup.groupId);
       }
     });
 
@@ -394,18 +516,21 @@ export const AttackPaths: FC = () => {
       cy.destroy();
       cyRef.current = null;
     };
-  }, [treeElements, attackPaths]);
+  }, [treeElements, consolidatedGroups]);
 
-  // Apply Branch Highlighting on selectedPath change
+  // Apply Branch Highlighting on selectedGroup change
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
 
     cy.batch(() => {
-      if (selectedPath) {
+      if (selectedGroup) {
         cy.elements().addClass('dimmed').removeClass('highlighted');
 
-        const activeNodeIds = selectedPath.nodes.map(n => n.id || `node:${n.name}`);
+        const activeNodeIds = [
+          ...selectedGroup.sharedNodes.map(n => n.id || `node:${n.name}`),
+          ...selectedGroup.targets.map(t => t.id || `node:${t.name}`)
+        ];
 
         // Highlight nodes
         activeNodeIds.forEach(nId => {
@@ -415,48 +540,48 @@ export const AttackPaths: FC = () => {
           }
         });
 
-        // Highlight edges
-        for (let i = 0; i < activeNodeIds.length - 1; i++) {
-          const s = activeNodeIds[i];
-          const t = activeNodeIds[i + 1];
-          cy.edges().forEach(edge => {
-            if (
-              (edge.source().id() === s && edge.target().id() === t) ||
-              (edge.source().id() === t && edge.target().id() === s)
-            ) {
-              edge.removeClass('dimmed').addClass('highlighted');
-            }
-          });
-        }
+        // Highlight shared chain edges + branching target edges
+        cy.edges().forEach(edge => {
+          const groupIds: string[] = edge.data('groupIds') || [];
+          if (groupIds.includes(selectedGroup.groupId)) {
+            edge.removeClass('dimmed').addClass('highlighted');
+          }
+        });
       } else {
         cy.elements().removeClass('dimmed').removeClass('highlighted');
       }
     });
-  }, [selectedPath]);
+  }, [selectedGroup]);
 
-  // AI Copilot Explainer
-  const handleExplainAI = async (path: AttackPath) => {
-    const current = aiExpanded[path.id];
+  // AI Copilot Explainer on Consolidated Group
+  const handleExplainAI = async (group: ConsolidatedAttackPathGroup) => {
+    const current = aiExpanded[group.groupId];
     if (current && !current.loading) {
-      setAiExpanded(prev => ({ ...prev, [path.id]: null }));
+      setAiExpanded(prev => ({ ...prev, [group.groupId]: null }));
       return;
     }
 
-    setAiExpanded(prev => ({ ...prev, [path.id]: { loading: true, text: '' } }));
+    setAiExpanded(prev => ({ ...prev, [group.groupId]: { loading: true, text: '' } }));
 
     try {
-      const prompt = `Analyze the attack path named "${path.name}". Severity: ${path.severity}. Description: ${path.description}. Nodes involved: ${path.nodes.map(n => `${n.name} (${n.type})`).join(' → ')}. MITRE techniques: ${path.mitreTechniques.join(', ')}. Explain the risk and suggest a specific IAM remediation.`;
+      const prompt = `Analyze the consolidated attack path for identity "${group.sourceNode.name}". 
+Severity: ${group.severity}. 
+Shared Privilege Path: ${group.sharedNodes.map(n => `${n.name} (${n.type})`).join(' → ')}. 
+Reachable Branching Targets (${group.targets.length}): ${group.targets.map(t => `${t.name} (${t.type})`).join(', ')}. 
+MITRE techniques: ${group.mitreTechniques.join(', ')}. 
+Explain why this identity's privilege chain allows it to reach multiple cloud assets and suggest an IAM remediation.`;
+      
       const response = await postCopilotMessage(prompt);
       setAiExpanded(prev => ({
         ...prev,
-        [path.id]: { loading: false, text: response.text, codeBlock: response.codeBlock }
+        [group.groupId]: { loading: false, text: response.text, codeBlock: response.codeBlock }
       }));
     } catch {
       setAiExpanded(prev => ({
         ...prev,
-        [path.id]: {
+        [group.groupId]: {
           loading: false,
-          text: `This lateral pathway leverages transitive privileges. An attacker gaining access to the ${path.nodes[0]?.name} identity could inherit attached policies, execute sts:AssumeRole, and elevate to high-risk assets. Recommendation: ${path.recommendation}`
+          text: `This consolidated attack path reveals that the identity "${group.sourceNode.name}" traverses a single shared privilege chain (${group.sharedNodes.map(n => n.name).join(' → ')}) to access ${group.targets.length} distinct cloud targets (${group.targets.map(t => t.name).join(', ')}). Recommendation: ${group.recommendation || 'Apply least-privilege scoping to the attached IAM policy.'}`
         }
       }));
     }
@@ -489,13 +614,16 @@ export const AttackPaths: FC = () => {
     const png = cyRef.current.png({ bg: '#0B1120', full: true });
     const a = document.createElement('a');
     a.href = png;
-    a.download = 'attack-path-dag-tree.png';
+    a.download = 'consolidated-attack-dag-tree.png';
     a.click();
   };
 
-  const handleHighlightInFullGraph = (path: AttackPath) => {
-    const nodeIds = path.nodes.map((n) => n.id).join(',');
-    navigate(`/graph?highlight=${nodeIds}`);
+  const handleHighlightInFullGraph = (group: ConsolidatedAttackPathGroup) => {
+    const allNodeIds = [
+      ...group.sharedNodes.map(n => n.id || n.name),
+      ...group.targets.map(t => t.id || t.name)
+    ];
+    navigate(`/graph?highlight=${allNodeIds.join(',')}`);
   };
 
   return (
@@ -509,7 +637,7 @@ export const AttackPaths: FC = () => {
             <span>Attack Paths & Lateral Movement DAG</span>
           </h1>
           <p className="text-xs text-enterprise-subtext mt-1">
-            Compressed branching attack tree mapping shared identity prefixes to divergent high-value assets.
+            Consolidated branching attack trees merging duplicate common prefixes into single multi-target lateral vectors.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -522,11 +650,14 @@ export const AttackPaths: FC = () => {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <div className="p-3.5 bg-enterprise-card border border-enterprise-border rounded-xl flex items-center gap-3">
           <div className="p-2.5 rounded-lg bg-blue-500/10 text-blue-400">
-            <GitMerge className="w-4 h-4" />
+            <FolderGit2 className="w-4 h-4" />
           </div>
           <div>
-            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Attack Paths</p>
-            <p className="text-lg font-black text-white">{blastRadiusStats.totalPaths}</p>
+            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Consolidated Trees</p>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-lg font-black text-white">{blastRadiusStats.consolidatedGroupCount}</span>
+              <span className="text-[10px] text-gray-400 font-mono">({blastRadiusStats.totalRawPaths} raw)</span>
+            </div>
           </div>
         </div>
 
@@ -545,7 +676,7 @@ export const AttackPaths: FC = () => {
             <Flame className="w-4 h-4" />
           </div>
           <div>
-            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Reachable Assets</p>
+            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Reachable Targets</p>
             <p className="text-lg font-black text-white">{blastRadiusStats.reachableAssets}</p>
           </div>
         </div>
@@ -565,7 +696,7 @@ export const AttackPaths: FC = () => {
             <Layers className="w-4 h-4" />
           </div>
           <div>
-            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Max Depth / Hops</p>
+            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Max Chain Depth</p>
             <p className="text-lg font-black text-white">{blastRadiusStats.maxDepth}</p>
           </div>
         </div>
@@ -628,7 +759,7 @@ export const AttackPaths: FC = () => {
           className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg text-gray-300 border border-gray-700 transition-colors"
         >
           <SlidersHorizontal className="w-3.5 h-3.5 text-blue-400" />
-          <span>{isTreeExpanded ? 'Collapse Tree' : 'Expand Tree'}</span>
+          <span>{isTreeExpanded ? 'Collapse DAG Visualizer' : 'Expand DAG Visualizer'}</span>
         </button>
       </div>
 
@@ -638,9 +769,9 @@ export const AttackPaths: FC = () => {
           <div className="flex items-center justify-between mb-2 z-10 pb-2 border-b border-gray-800">
             <div className="flex items-center gap-2">
               <GitMerge className="w-4 h-4 text-enterprise-accent" />
-              <span className="text-xs font-bold text-white uppercase tracking-wider">Branching Attack Path DAG</span>
+              <span className="text-xs font-bold text-white uppercase tracking-wider">Branching Attack Path DAG Tree</span>
               <span className="text-[10px] text-gray-400 font-mono">
-                ({filteredPaths.length} Active Paths Merged)
+                ({filteredGroups.length} Consolidated Trees | {blastRadiusStats.totalRawPaths} Underlying Paths)
               </span>
             </div>
 
@@ -671,17 +802,19 @@ export const AttackPaths: FC = () => {
         </div>
       )}
 
-      {/* PATHWAYS LIST & SELECTED BRANCH INSPECTOR */}
-      <div className="space-y-4">
+      {/* CONSOLIDATED ATTACK PATH GROUPS LIST */}
+      <div className="space-y-6">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
             <Target className="w-4 h-4 text-red-400" />
-            <span>Detected Attack Vector Sequences</span>
+            <span>Consolidated Attack Path Groups</span>
           </h3>
-          <span className="text-xs text-gray-400 font-mono">{filteredPaths.length} vectors matching filters</span>
+          <span className="text-xs text-gray-400 font-mono">
+            {filteredGroups.length} unique privilege vectors ({blastRadiusStats.totalRawPaths} raw paths consolidated)
+          </span>
         </div>
 
-        {filteredPaths.length === 0 ? (
+        {filteredGroups.length === 0 ? (
           <div className="flex flex-col items-center justify-center p-12 border border-dashed border-enterprise-border rounded-xl bg-enterprise-card/50">
             <Sparkles className="w-12 h-12 text-enterprise-subtext mb-4" />
             <h3 className="text-lg font-bold text-white mb-2">No Attack Paths Found</h3>
@@ -690,56 +823,60 @@ export const AttackPaths: FC = () => {
             </p>
           </div>
         ) : (
-          filteredPaths.map((path) => {
-            const isSelected = selectedPath && selectedPath.id === path.id;
-            const aiState = aiExpanded[path.id];
+          filteredGroups.map((group) => {
+            const isSelected = selectedGroup && selectedGroup.groupId === group.groupId;
+            const aiState = aiExpanded[group.groupId];
             const isAIExpanded = !!aiState && !aiState.loading;
             const isAILoading = !!aiState?.loading;
 
             return (
               <div
-                key={path.id}
-                onClick={() => setSelectedPathId(path.id)}
-                className={`bg-enterprise-card border rounded-xl p-5 transition-all shadow-lg flex flex-col gap-4 cursor-pointer ${
+                key={group.groupId}
+                onClick={() => setSelectedGroupId(group.groupId)}
+                className={`bg-enterprise-card border rounded-2xl p-6 transition-all shadow-xl flex flex-col gap-5 cursor-pointer ${
                   isSelected
-                    ? 'border-red-500/80 bg-[#161D2F] ring-1 ring-red-500/50 shadow-red-500/10'
+                    ? 'border-red-500/80 bg-[#141B2D] ring-1 ring-red-500/50 shadow-red-500/10'
                     : 'border-enterprise-border hover:border-gray-700'
                 }`}
               >
-                {/* Path Header */}
-                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-enterprise-border pb-3">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2 flex-wrap">
+                {/* Group Card Top Header Bar */}
+                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-enterprise-border pb-4">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2.5 flex-wrap">
                       <span
-                        className={`text-[9px] font-bold px-2 py-0.5 rounded border capitalize ${
-                          path.severity === 'critical'
-                            ? 'bg-enterprise-critical/20 text-enterprise-critical border-enterprise-critical/30'
-                            : 'bg-enterprise-warning/20 text-enterprise-warning border-enterprise-warning/30'
+                        className={`text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider border ${
+                          group.severity === 'critical'
+                            ? 'bg-enterprise-critical/20 text-enterprise-critical border-enterprise-critical/40'
+                            : 'bg-enterprise-warning/20 text-enterprise-warning border-enterprise-warning/40'
                         }`}
                       >
-                        {path.severity} Risk
+                        {group.severity} RISK
                       </span>
-                      <span className="text-[10px] text-enterprise-accent bg-enterprise-accent/10 border border-enterprise-accent/20 px-2 py-0.5 rounded font-bold">
-                        {path.likelihood}% Likelihood
+                      <span className="text-[10px] text-enterprise-accent bg-enterprise-accent/10 border border-enterprise-accent/30 px-2.5 py-0.5 rounded font-bold">
+                        {group.maxLikelihood}% LIKELIHOOD
                       </span>
-                      <h3 className="text-sm font-bold text-white ml-2">{path.name}</h3>
+                      <span className="text-[10px] text-purple-300 bg-purple-950/50 border border-purple-500/40 px-2.5 py-0.5 rounded font-mono font-bold flex items-center gap-1">
+                        <Share2 className="w-3 h-3 text-purple-400" />
+                        <span>{group.targets.length} Reachable Target{group.targets.length > 1 ? 's' : ''}</span>
+                      </span>
+                      <h3 className="text-base font-bold text-white ml-1">{group.name}</h3>
                     </div>
-                    <p className="text-xs text-enterprise-subtext">{path.description}</p>
+                    <p className="text-xs text-enterprise-subtext leading-relaxed">{group.description}</p>
                   </div>
 
                   {/* Action Buttons */}
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={(e) => { e.stopPropagation(); handleHighlightInFullGraph(path); }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-enterprise-accent hover:bg-blue-600 text-white font-semibold rounded-lg text-xs transition-colors"
+                      onClick={(e) => { e.stopPropagation(); handleHighlightInFullGraph(group); }}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-enterprise-accent hover:bg-blue-600 text-white font-semibold rounded-lg text-xs transition-colors shadow"
                     >
                       <GitMerge className="w-3.5 h-3.5" />
                       <span>Trace in Full Graph</span>
                     </button>
                     <button
-                      onClick={(e) => { e.stopPropagation(); handleExplainAI(path); }}
+                      onClick={(e) => { e.stopPropagation(); handleExplainAI(group); }}
                       disabled={isAILoading}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-60 text-white border border-enterprise-border font-semibold rounded-lg text-xs transition-colors"
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-60 text-white border border-enterprise-border font-semibold rounded-lg text-xs transition-colors"
                     >
                       {isAILoading ? (
                         <RefreshCw className="w-3.5 h-3.5 animate-spin text-enterprise-accent" />
@@ -752,68 +889,134 @@ export const AttackPaths: FC = () => {
                   </div>
                 </div>
 
-                {/* Branch Sequence Flow */}
-                <div className="flex items-center flex-wrap gap-2 bg-enterprise-bg/60 p-3.5 rounded-xl border border-enterprise-border">
-                  {path.nodes.map((node, index) => (
-                    <div key={node.id} className="flex items-center gap-2">
-                      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border shadow-sm ${
-                        index === path.nodes.length - 1
-                          ? 'bg-red-950/40 border-red-500/50'
-                          : 'bg-enterprise-card border-enterprise-border'
-                      }`}>
-                        <span
-                          className={`w-2 h-2 rounded-full ${
+                {/* EXACT REFERENCE DESIGN: VERTICAL HIERARCHICAL BRANCHING DIAGRAM */}
+                <div className="bg-[#0B1120]/80 rounded-xl p-5 border border-enterprise-border/80 flex flex-col items-center select-none shadow-inner">
+                  
+                  {/* Shared Linear Privilege Chain: User -> Roles -> Policies */}
+                  <div className="flex flex-col items-center w-full max-w-xl">
+                    {group.sharedNodes.map((node, index) => {
+                      const nextNode = group.sharedNodes[index + 1];
+                      const relLabel = nextNode ? getHopRelationshipLabel(node.type, nextNode.type) : 'ALLOWS';
+
+                      return (
+                        <div key={node.id || node.name} className="flex flex-col items-center w-full">
+                          {/* Node Box */}
+                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-3 shadow-md min-w-[240px] justify-center ${
                             (node.type as string) === 'User'
-                              ? 'bg-blue-500'
+                              ? 'bg-blue-950/40 border-blue-500/50 text-blue-100'
                               : (node.type as string) === 'Group'
-                              ? 'bg-indigo-500'
+                              ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-100'
                               : (node.type as string) === 'Policy'
-                              ? 'bg-teal-500'
+                              ? 'bg-teal-950/40 border-teal-500/50 text-teal-100'
                               : (node.type as string) === 'Role'
-                              ? 'bg-purple-500'
-                              : (node.type as string) === 'Secrets' || (node.type as string) === 'Secret'
-                              ? 'bg-red-500'
-                              : 'bg-amber-500'
-                          }`}
-                        />
-                        <div className="text-[10px]">
-                          <p className="font-bold text-white leading-none">{node.name}</p>
-                          <p className="text-[8px] text-enterprise-subtext mt-0.5 leading-none">{node.type}</p>
+                              ? 'bg-purple-950/40 border-purple-500/50 text-purple-100'
+                              : 'bg-slate-900 border-gray-700 text-gray-200'
+                          }`}>
+                            <span
+                              className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
+                                (node.type as string) === 'User'
+                                  ? 'bg-blue-400'
+                                  : (node.type as string) === 'Group'
+                                  ? 'bg-indigo-400'
+                                  : (node.type as string) === 'Policy'
+                                  ? 'bg-teal-400'
+                                  : (node.type as string) === 'Role'
+                                  ? 'bg-purple-400'
+                                  : 'bg-amber-400'
+                              }`}
+                            />
+                            <div className="text-center">
+                              <p className="font-bold text-xs text-white leading-tight font-mono">{node.name}</p>
+                              <p className="text-[9px] text-gray-400 uppercase tracking-wider font-semibold mt-0.5">{node.type}</p>
+                            </div>
+                          </div>
+
+                          {/* Vertical Connector Down */}
+                          <div className="flex flex-col items-center py-1">
+                            <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
+                              {relLabel}
+                            </span>
+                            <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
+                            <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* BRANCHING FORK CONNECTOR TO MULTIPLE TARGET ASSETS */}
+                  <div className="w-full flex flex-col items-center mt-1">
+                    
+                    {/* Multi-Target Horizontal Distribution Line */}
+                    {group.targets.length > 1 ? (
+                      <div className="w-full flex flex-col items-center">
+                        <div className="w-3/4 max-w-2xl h-[2px] bg-gradient-to-r from-red-500/20 via-red-500 to-red-500/20 my-1 relative">
+                          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-[#0B1120] px-2 text-[8px] font-mono font-bold text-red-400 uppercase tracking-widest border border-red-500/40 rounded">
+                            {group.targets.length} Target Branches
+                          </div>
                         </div>
                       </div>
-                      {index < path.nodes.length - 1 && (
-                        <div className="flex flex-col items-center">
-                          <span className="text-[7px] text-gray-500 font-mono tracking-tight leading-none mb-0.5">
-                            {getHopRelationshipLabel(node.type, path.nodes[index + 1].type)}
-                          </span>
-                          <ArrowRight className="w-3.5 h-3.5 text-enterprise-subtext" />
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                    ) : null}
 
-                {/* Blast Radius & MITRE Techniques */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs pt-1">
-                  <div className="space-y-1">
-                    <span className="font-bold text-enterprise-subtext">Blast Radius:</span>
-                    <p className="text-gray-300 text-xs font-semibold">{path.blastRadius}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <span className="font-bold text-enterprise-subtext">MITRE ATT&CK Techniques:</span>
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {path.mitreTechniques.map((tech) => (
-                        <span key={tech} className="px-2 py-0.5 bg-gray-800 text-[9px] text-gray-300 rounded font-semibold font-mono border border-gray-700">
-                          {tech}
+                    {/* Target Resources Grid */}
+                    <div className="flex flex-wrap items-center justify-center gap-3 mt-3 w-full">
+                      {group.targets.map((target) => {
+                        const t = target.type as string;
+                        const isCritical = t === 'Secrets' || t === 'Secret' || t === 'RDS';
+
+                        return (
+                          <div
+                            key={target.id || target.name}
+                            className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-transform hover:scale-105 ${
+                              isCritical
+                                ? 'bg-red-950/50 border-red-500/70 text-red-100 ring-1 ring-red-500/30'
+                                : 'bg-amber-950/30 border-amber-500/50 text-amber-100'
+                            }`}
+                          >
+                            <span
+                              className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
+                                isCritical ? 'bg-red-400 animate-pulse' : 'bg-amber-400'
+                              }`}
+                            />
+                            <div>
+                              <p className="font-bold text-xs text-white leading-tight font-mono">{target.name}</p>
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <span className="text-[8px] text-gray-400 uppercase font-semibold">{target.type}</span>
+                                {isCritical && (
+                                  <span className="text-[8px] text-red-400 font-bold bg-red-950 px-1 rounded uppercase">CRITICAL</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Bottom Impact Summary Bar */}
+                    <div className="mt-4 pt-3 border-t border-gray-800/80 w-full flex items-center justify-between text-xs text-gray-400 flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <Flame className="w-3.5 h-3.5 text-red-400" />
+                        <span className="font-mono text-[11px]">
+                          <strong className="text-white">Blast Radius:</strong> {group.blastRadiusSummary}
                         </span>
-                      ))}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">MITRE ATT&CK:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {group.mitreTechniques.map(tech => (
+                            <span key={tech} className="px-1.5 py-0.5 bg-gray-900 text-[9px] font-mono text-gray-300 rounded border border-gray-700">
+                              {tech}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
 
                 {/* AI Explanation Card */}
                 {isAIExpanded && aiState && (
-                  <div className="bg-enterprise-accent/5 p-4 rounded-xl border border-enterprise-accent/20 flex gap-3 text-xs leading-relaxed text-gray-200 mt-2">
+                  <div className="bg-enterprise-accent/5 p-4 rounded-xl border border-enterprise-accent/20 flex gap-3 text-xs leading-relaxed text-gray-200 mt-1">
                     <Bot className="w-5 h-5 text-enterprise-accent shrink-0 mt-0.5" />
                     <div className="space-y-3 w-full">
                       <h4 className="font-extrabold text-white text-xs flex items-center gap-1.5">
