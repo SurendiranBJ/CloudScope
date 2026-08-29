@@ -20,11 +20,12 @@ def test_ready_endpoint():
     assert response.status_code == 200
     res_json = response.json()
     assert "data" in res_json
-    assert "checks" in res_json["data"]
+    assert "backend" in res_json["data"]
+    assert "status" in res_json["data"]
 
 
 def test_health_aws_endpoint():
-    with patch("app.services.aws.session.get_aws_diagnostic_info") as mock_diag:
+    with patch("app.main.get_aws_diagnostic_info") as mock_diag:
         mock_diag.return_value = {
             "authenticated": True,
             "account_id": "123456789012",
@@ -49,7 +50,11 @@ def test_dashboard_endpoint():
         "riskDistribution": [{"name": "Critical", "value": 1, "color": "#EF4444"}],
         "recentAlerts": [],
         "criticalPaths": [],
-        "recommendations": []
+        "recommendations": [],
+        "topRiskyIdentities": [{"name": "alice", "type": "User", "riskScore": 75}],
+        "resourceBreakdown": [{"type": "S3", "count": 2}],
+        "scannedRegions": ["ap-south-1"],
+        "correlatedRisks": []
     })
     response = client.get("/api/v1/dashboard")
     assert response.status_code == 200
