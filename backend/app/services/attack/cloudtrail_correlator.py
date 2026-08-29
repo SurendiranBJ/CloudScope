@@ -155,6 +155,15 @@ def correlate_activity_with_graph(
         if event_name == 'AssumeRole':
             target_role_node = get_node_id("Role", target)
             if actor_node_id and G.has_node(actor_node_id) and G.has_node(target_role_node):
+                # Check if a static CAN_ASSUME or Attack Path exists between them BEFORE adding dynamic edge
+                has_static_can_assume = False
+                if G.has_edge(actor_node_id, target_role_node):
+                    edge_data = G.get_edge_data(actor_node_id, target_role_node, default={})
+                    if edge_data.get('label') == 'CAN_ASSUME':
+                        has_static_can_assume = True
+
+                has_reachability = nx.has_path(G, actor_node_id, target_role_node)
+
                 # 1. Record dynamic ASSUMED_ROLE edge in NetworkX
                 G.add_edge(
                     actor_node_id,
@@ -173,15 +182,6 @@ def correlate_activity_with_graph(
                     "eventId": event_id,
                     "sourceIp": source_ip
                 })
-
-                # 2. Check if a static CAN_ASSUME or Attack Path exists between them
-                has_static_can_assume = False
-                if G.has_edge(actor_node_id, target_role_node):
-                    edge_data = G.get_edge_data(actor_node_id, target_role_node, default={})
-                    if edge_data.get('label') == 'CAN_ASSUME':
-                        has_static_can_assume = True
-
-                has_reachability = nx.has_path(G, actor_node_id, target_role_node)
 
                 target_risk = role_risk_map.get(target, 0)
                 is_admin_target = 'admin' in target.lower() or target_risk >= 70
