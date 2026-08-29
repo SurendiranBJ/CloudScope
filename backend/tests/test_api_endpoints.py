@@ -10,17 +10,17 @@ client = TestClient(app)
 def test_health_endpoint():
     response = client.get("/health")
     assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "healthy"
-    assert "version" in data
+    res_json = response.json()
+    assert res_json["success"] is True
+    assert res_json["data"]["status"] == "healthy"
 
 
 def test_ready_endpoint():
     response = client.get("/ready")
     assert response.status_code == 200
-    data = response.json()
-    assert "status" in data
-    assert "checks" in data
+    res_json = response.json()
+    assert "data" in res_json
+    assert "checks" in res_json["data"]
 
 
 def test_health_aws_endpoint():
@@ -61,14 +61,14 @@ def test_dashboard_endpoint():
 def test_users_endpoint():
     cache.set("v1:users", [{
         "id": "u1",
-        "username": "alice",
         "name": "alice",
         "arn": "arn:aws:iam::123:user/alice",
-        "mfaEnabled": True,
-        "riskScore": 25,
         "status": "active",
+        "policies": ["DevPolicy"],
         "groups": ["Devs"],
-        "policies": ["DevPolicy"]
+        "riskScore": 25,
+        "mfaEnabled": True,
+        "lastActive": "2026-08-29T12:00:00Z"
     }])
     response = client.get("/api/v1/users")
     assert response.status_code == 200
@@ -79,13 +79,12 @@ def test_users_endpoint():
 
 def test_roles_endpoint():
     cache.set("v1:roles", [{
-        "id": "r1",
         "name": "AdminRole",
         "arn": "arn:aws:iam::123:role/AdminRole",
         "trustPolicy": "{}",
-        "riskScore": 85,
-        "status": "active",
-        "attachedPolicies": ["AdministratorAccess"]
+        "description": "Administrator Role",
+        "activeSessions": 1,
+        "riskScore": 85
     }])
     response = client.get("/api/v1/roles")
     assert response.status_code == 200
@@ -96,14 +95,13 @@ def test_roles_endpoint():
 
 def test_resources_endpoint():
     cache.set("v1:resources", [{
-        "id": "b1",
         "name": "my-bucket",
         "type": "S3",
-        "arn": "arn:aws:s3:::my-bucket",
-        "status": "configured",
-        "riskScore": 20,
         "region": "ap-south-1",
-        "owner": "123456789012"
+        "status": "configured",
+        "owner": "123456789012",
+        "arn": "arn:aws:s3:::my-bucket",
+        "riskScore": 20
     }])
     response = client.get("/api/v1/resources")
     assert response.status_code == 200
