@@ -103,11 +103,19 @@ def collect_users() -> list:
                     policy_names = []
                     policy_arns = {}
 
-                # Get Inline Policies
+                # Get Inline Policies & Documents
+                user_inline_docs = {}
                 try:
                     inline_policies = client.list_user_policies(UserName=username)
                     inline_names = inline_policies.get('PolicyNames', [])
-                    policy_names.extend([f"[inline] {name}" for name in inline_names])
+                    for in_name in inline_names:
+                        inline_label = f"[inline] {in_name}"
+                        policy_names.append(inline_label)
+                        try:
+                            in_doc_resp = client.get_user_policy(UserName=username, PolicyName=in_name)
+                            user_inline_docs[inline_label] = json.dumps(in_doc_resp.get('PolicyDocument', {}))
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -126,6 +134,7 @@ def collect_users() -> list:
                     "status": status,
                     "policies": policy_names,
                     "attachedPolicyArns": policy_arns,  # name -> ARN, for AWS-managed doc resolution
+                    "inlinePolicyDocuments": user_inline_docs,
                     "groups": group_names,
                     "riskScore": 0,  # Calculated downstream by risk_engine
                     "mfaEnabled": mfa_enabled,
@@ -164,11 +173,19 @@ def collect_groups() -> list:
                 except Exception:
                     pass
 
-                # Get Inline Policies
+                # Get Inline Policies & Documents
+                group_inline_docs = {}
                 try:
                     inline_policies = client.list_group_policies(GroupName=group_name)
                     inline_names = inline_policies.get('PolicyNames', [])
-                    attached_policy_names.extend([f"[inline] {name}" for name in inline_names])
+                    for in_name in inline_names:
+                        inline_label = f"[inline] {in_name}"
+                        attached_policy_names.append(inline_label)
+                        try:
+                            in_doc_resp = client.get_group_policy(GroupName=group_name, PolicyName=in_name)
+                            group_inline_docs[inline_label] = json.dumps(in_doc_resp.get('PolicyDocument', {}))
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -178,6 +195,7 @@ def collect_groups() -> list:
                     "arn": g['Arn'],
                     "attachedPolicies": attached_policy_names,
                     "attachedPolicyArns": attached_policy_arns,
+                    "inlinePolicyDocuments": group_inline_docs
                 })
         logger.info(f"IAM Collector: Discovered {len(groups_data)} groups")
     except Exception as e:
@@ -216,6 +234,22 @@ def collect_roles() -> list:
                 except Exception:
                     pass
 
+                # Get Inline Policies & Documents
+                role_inline_docs = {}
+                try:
+                    inline_policies = client.list_role_policies(RoleName=role_name)
+                    inline_names = inline_policies.get('PolicyNames', [])
+                    for in_name in inline_names:
+                        inline_label = f"[inline] {in_name}"
+                        attached_policy_names.append(inline_label)
+                        try:
+                            in_doc_resp = client.get_role_policy(RoleName=role_name, PolicyName=in_name)
+                            role_inline_docs[inline_label] = json.dumps(in_doc_resp.get('PolicyDocument', {}))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
                 roles_data.append({
                     "name": role_name,
                     "arn": arn,
@@ -225,6 +259,7 @@ def collect_roles() -> list:
                     "riskScore": 0,  # Calculated downstream
                     "attachedPolicies": attached_policy_names,
                     "attachedPolicyArns": attached_policy_arns,  # name -> ARN, for AWS-managed doc resolution
+                    "inlinePolicyDocuments": role_inline_docs,
                     "type": "Role",
                     "region": "global",
                     "status": "active",

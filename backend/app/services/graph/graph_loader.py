@@ -1,23 +1,51 @@
-import logging
 import json
+import logging
 import networkx as nx
+from typing import Any
 from app.database import execute_read
+from app.services.attack.policy_evaluator import (
+    evaluate_policy_allows_resources,
+    evaluate_assume_role_trust
+)
+from app.services.aws.session import get_account_id
 
 logger = logging.getLogger("scanner")
 
 
+def get_node_id(res_type: str, item_id: str) -> str:
+    """Generate a stable globally unique node ID for a given resource type and item identifier."""
+    type_map = {
+        "User": "aws:user",
+        "Role": "aws:role",
+        "Group": "aws:group",
+        "Policy": "aws:policy",
+        "S3": "aws:s3",
+        "EC2": "aws:ec2",
+        "Lambda": "aws:lambda",
+        "RDS": "aws:rds",
+        "DynamoDB": "aws:dynamodb",
+        "Secrets": "aws:secret"
+    }
+    prefix = type_map.get(res_type, f"aws:{res_type.lower()}")
+    return f"{prefix}:{item_id}"
+
+
 def load_graph_from_neo4j() -> nx.DiGraph:
+    """Sync Neo4j nodes and edges into an in-memory NetworkX directed graph."""
     logger.info("Syncing Neo4j nodes to in-memory NetworkX directed graph")
     G = nx.DiGraph()
     try:
         # 1. Fetch nodes
-        nodes = execute_read("MATCH (n) RETURN n.id as id, labels(n)[0] as type, n.label as label, n.riskScore as riskScore, n.arn as arn, n.description as desc")
+        nodes = execute_read(
+            "MATCH (n) RETURN n.id as id, labels(n)[0] as type, n.label as label, "
+            "n.riskScore as riskScore, n.arn as arn, n.description as desc"
+        )
         for n in nodes:
             node_id = n['id']
             if node_id:
                 G.add_node(
                     node_id,
-                    type=n['type'],
+                    type=n.get('type', 'Resource'),
                     label=n.get('label', node_id),
                     riskScore=n.get('riskScore', 0),
                     arn=n.get('arn', ''),
@@ -25,7 +53,9 @@ def load_graph_from_neo4j() -> nx.DiGraph:
                 )
 
         # 2. Fetch edges
-        edges = execute_read("MATCH (s)-[r]->(t) RETURN s.id as source, t.id as target, type(r) as label")
+        edges = execute_read(
+            "MATCH (s)-[r]->(t) RETURN s.id as source, t.id as target, type(r) as label"
+        )
         for e in edges:
             source = e['source']
             target = e['target']
@@ -38,188 +68,226 @@ def load_graph_from_neo4j() -> nx.DiGraph:
     return G
 
 
-def build_local_graph(inventory) -> nx.DiGraph:
-    """Build a NetworkX directed graph directly from scan inventory data without Neo4j."""
+def build_local_graph(inventory: Any) -> nx.DiGraph:
+    """Build a NetworkX directed graph directly from scan inventory using the exact same
+
+    stable unique IDs and policy evaluator rules as Neo4j.
+    """
     G = nx.DiGraph()
-    logger.info("Building local NetworkX graph from scan inventory")
+    logger.info("Building local NetworkX graph from scan inventory using policy evaluator")
+
+    account_id = get_account_id()
 
     # 1. Add User nodes
     for u in inventory.users:
-        G.add_node(u['id'], type='User', label=u['name'], riskScore=u.get('riskScore', 0),
-                   arn=u['arn'], description=f"IAM User: {u['name']}")
+        u_id = get_node_id("User", u['name'])
+        G.add_node(
+            u_id,
+            type='User',
+            label=u['name'],
+            riskScore=u.get('riskScore', 0),
+            arn=u['arn'],
+            description=f"IAM User: {u['name']}"
+        )
 
     # 2. Add Group nodes
     for g in inventory.groups:
-        G.add_node(g['id'], type='Group', label=g['name'], riskScore=0,
-                   arn=g['arn'], description=f"IAM Group: {g['name']}")
+        g_id = get_node_id("Group", g['name'])
+        G.add_node(
+            g_id,
+            type='Group',
+            label=g['name'],
+            riskScore=0,
+            arn=g['arn'],
+            description=f"IAM Group: {g['name']}"
+        )
 
     # 3. Add Role nodes
     for r in inventory.roles:
-        G.add_node(r['name'], type='Role', label=r['name'], riskScore=r.get('riskScore', 0),
-                   arn=r['arn'], description=r.get('description', ''))
+        r_id = get_node_id("Role", r['name'])
+        G.add_node(
+            r_id,
+            type='Role',
+            label=r['name'],
+            riskScore=r.get('riskScore', 0),
+            arn=r['arn'],
+            description=r.get('description', '')
+        )
 
     # 4. Add Policy nodes
     for p in inventory.policies:
-        G.add_node(p['name'], type='Policy', label=p['name'], riskScore=p.get('riskScore', 0),
-                   arn=p['arn'], description='')
+        p_id = get_node_id("Policy", p['name'])
+        G.add_node(
+            p_id,
+            type='Policy',
+            label=p['name'],
+            riskScore=p.get('riskScore', 0),
+            arn=p.get('arn', ''),
+            description=p.get('document', '')
+        )
 
     # 5. Add S3 nodes
     for s in inventory.s3:
-        G.add_node(s['id'], type='S3', label=s['name'], riskScore=s.get('riskScore', 0),
-                   arn=s['arn'], description=f"S3 Bucket: {s['name']}")
+        s_id = get_node_id("S3", s['name'])
+        G.add_node(
+            s_id,
+            type='S3',
+            label=s['name'],
+            riskScore=s.get('riskScore', 0),
+            arn=s['arn'],
+            description=f"S3 Bucket: {s['name']}"
+        )
 
     # 6. Add EC2 nodes
     for e in inventory.ec2:
-        G.add_node(e['id'], type='EC2', label=e['name'], riskScore=e.get('riskScore', 0),
-                   arn=e['arn'], description=f"EC2 Instance: {e['name']}")
+        e_id = get_node_id("EC2", e['id'])
+        G.add_node(
+            e_id,
+            type='EC2',
+            label=e['name'],
+            riskScore=e.get('riskScore', 0),
+            arn=e['arn'],
+            description=f"EC2 Instance: {e['name']}"
+        )
 
     # 7. Add Lambda nodes
     for l in inventory.lambdas:
-        G.add_node(l['id'], type='Lambda', label=l['name'], riskScore=l.get('riskScore', 0),
-                   arn=l['arn'], description=f"Lambda Function: {l['name']}")
+        l_id = get_node_id("Lambda", l['name'])
+        G.add_node(
+            l_id,
+            type='Lambda',
+            label=l['name'],
+            riskScore=l.get('riskScore', 0),
+            arn=l['arn'],
+            description=f"Lambda Function: {l['name']}"
+        )
 
     # 8. Add Secrets nodes
     for sec in inventory.secrets:
-        G.add_node(sec['id'], type='Secrets', label=sec['name'], riskScore=sec.get('riskScore', 0),
-                   arn=sec['arn'], description=f"Secret: {sec['name']}")
+        sec_id = get_node_id("Secrets", sec['name'])
+        G.add_node(
+            sec_id,
+            type='Secrets',
+            label=sec['name'],
+            riskScore=sec.get('riskScore', 0),
+            arn=sec['arn'],
+            description=f"Secret: {sec['name']}"
+        )
 
     # 9. Add RDS nodes
     for rds in inventory.rds:
-        G.add_node(rds['id'], type='RDS', label=rds['name'], riskScore=rds.get('riskScore', 0),
-                   arn=rds['arn'], description=f"RDS Instance: {rds['name']}")
+        rds_id = get_node_id("RDS", rds['name'])
+        G.add_node(
+            rds_id,
+            type='RDS',
+            label=rds['name'],
+            riskScore=rds.get('riskScore', 0),
+            arn=rds['arn'],
+            description=f"RDS Instance: {rds['name']}"
+        )
 
     # 10. Add DynamoDB nodes
     for ddb in inventory.dynamodb:
-        G.add_node(ddb['id'], type='DynamoDB', label=ddb['name'], riskScore=ddb.get('riskScore', 0),
-                   arn=ddb['arn'], description=f"DynamoDB Table: {ddb['name']}")
+        ddb_id = get_node_id("DynamoDB", ddb['name'])
+        G.add_node(
+            ddb_id,
+            type='DynamoDB',
+            label=ddb['name'],
+            riskScore=ddb.get('riskScore', 0),
+            arn=ddb['arn'],
+            description=f"DynamoDB Table: {ddb['name']}"
+        )
 
     # --- Build Relationships ---
 
-    # Group name -> Group ID lookup
-    group_id_map = {g['name']: g['id'] for g in inventory.groups}
-
-    # Users -> Groups
+    # 1. Users -> Groups
     for u in inventory.users:
+        u_id = get_node_id("User", u['name'])
         for g_name in u.get('groups', []):
-            g_id = group_id_map.get(g_name)
-            if g_id and G.has_node(g_id):
-                G.add_edge(u['id'], g_id, label='MEMBER_OF')
+            g_id = get_node_id("Group", g_name)
+            if G.has_node(u_id) and G.has_node(g_id):
+                G.add_edge(u_id, g_id, label='MEMBER_OF')
 
-    # Users -> Policies (only non-inline, matching existing policy nodes)
+    # 2. Users -> Policies
     for u in inventory.users:
+        u_id = get_node_id("User", u['name'])
         for p_name in u.get('policies', []):
             clean_name = p_name.replace('[inline] ', '')
-            if G.has_node(clean_name):
-                G.add_edge(u['id'], clean_name, label='HAS_POLICY')
+            p_id = get_node_id("Policy", clean_name)
+            if G.has_node(u_id) and G.has_node(p_id):
+                G.add_edge(u_id, p_id, label='HAS_POLICY')
 
-    # Roles -> their attached policies
-    for r in inventory.roles:
-        for p_name in r.get('attachedPolicies', []):
-            if G.has_node(p_name):
-                G.add_edge(r['name'], p_name, label='HAS_POLICY')
-
-    # Groups -> their attached policies
+    # 3. Groups -> Policies
     for g in inventory.groups:
+        g_id = get_node_id("Group", g['name'])
         for p_name in g.get('attachedPolicies', []):
             clean_name = p_name.replace('[inline] ', '')
-            if G.has_node(clean_name):
-                G.add_edge(g['id'], clean_name, label='HAS_POLICY')
+            p_id = get_node_id("Policy", clean_name)
+            if G.has_node(g_id) and G.has_node(p_id):
+                G.add_edge(g_id, p_id, label='HAS_POLICY')
 
-    # Roles -> Roles (trust policy: who can assume this role)
-    role_name_set = {r['name'] for r in inventory.roles}
+    # 4. Roles -> Policies
     for r in inventory.roles:
-        try:
-            trust = json.loads(r.get('trustPolicy', '{}'))
-            statements = trust.get('Statement', [])
-            for stmt in statements:
-                if stmt.get('Effect') == 'Allow' and 'AssumeRole' in str(stmt.get('Action', '')):
-                    principal = stmt.get('Principal', {})
-                    aws_principals = principal.get('AWS', [])
-                    if isinstance(aws_principals, str):
-                        aws_principals = [aws_principals]
-                    for p_arn in aws_principals:
-                        # Extract role/user name from principal ARN
-                        if ':role/' in p_arn:
-                            source_name = p_arn.split('/')[-1]
-                            if source_name in role_name_set and source_name != r['name']:
-                                G.add_edge(source_name, r['name'], label='CAN_ASSUME')
-                        elif ':user/' in p_arn:
-                            source_name = p_arn.split('/')[-1]
-                            # Find user ID by name
-                            for u in inventory.users:
-                                if u['name'] == source_name:
-                                    G.add_edge(u['id'], r['name'], label='CAN_ASSUME')
-                                    break
-                        elif ':root' in p_arn or p_arn == '*':
-                            # Entire account or wildcard can assume
-                            pass
-        except (json.JSONDecodeError, Exception):
-            pass
+        r_id = get_node_id("Role", r['name'])
+        for p_name in r.get('attachedPolicies', []):
+            clean_name = p_name.replace('[inline] ', '')
+            p_id = get_node_id("Policy", clean_name)
+            if G.has_node(r_id) and G.has_node(p_id):
+                G.add_edge(r_id, p_id, label='HAS_POLICY')
 
-    # EC2 -> Roles (instance profile)
+    # 5. EC2 -> Roles (instance profile)
     for e in inventory.ec2:
         role_name = e.get('details', {}).get('iam_role_name', 'None')
-        if role_name != 'None' and G.has_node(role_name):
-            G.add_edge(e['id'], role_name, label='ATTACHED_TO')
+        if role_name and role_name != 'None':
+            e_id = get_node_id("EC2", e['id'])
+            r_id = get_node_id("Role", role_name)
+            if G.has_node(e_id) and G.has_node(r_id):
+                G.add_edge(e_id, r_id, label='ATTACHED_TO')
 
-    # Lambda -> Roles (execution role)
+    # 6. Lambda -> Roles (execution role)
     for l in inventory.lambdas:
         role_name = l.get('details', {}).get('execution_role', 'None')
-        if role_name != 'None' and G.has_node(role_name):
-            G.add_edge(l['id'], role_name, label='EXECUTES_WITH')
+        if role_name and role_name != 'None':
+            l_id = get_node_id("Lambda", l['name'])
+            r_id = get_node_id("Role", role_name)
+            if G.has_node(l_id) and G.has_node(r_id):
+                G.add_edge(l_id, r_id, label='EXECUTES_WITH')
 
-    # Roles -> Resources (connect roles with broad access policies to S3/Secrets/DBs)
-    # Heuristic: if a role has policies with 's3' or 'secretsmanager' in name, connect to those resources
+    # 7. AssumeRole Trust: Users/Roles -> CAN_ASSUME -> Role
     for r in inventory.roles:
-        for p_name in r.get('attachedPolicies', []):
-            p_lower = p_name.lower()
-            if 's3' in p_lower or 'storage' in p_lower or 'admin' in p_lower:
-                for s in inventory.s3:
-                    G.add_edge(r['name'], s['id'], label='ALLOWS')
-            if 'secret' in p_lower or 'admin' in p_lower:
-                for sec in inventory.secrets:
-                    G.add_edge(r['name'], sec['id'], label='ALLOWS')
-            if 'rds' in p_lower or 'database' in p_lower or 'admin' in p_lower:
-                for rds in inventory.rds:
-                    G.add_edge(r['name'], rds['id'], label='ALLOWS')
-            if 'dynamo' in p_lower or 'database' in p_lower or 'admin' in p_lower:
-                for ddb in inventory.dynamodb:
-                    G.add_edge(r['name'], ddb['id'], label='ALLOWS')
+        r_id = get_node_id("Role", r['name'])
+        trust_analysis = evaluate_assume_role_trust(
+            r.get('trustPolicy', '{}'),
+            r['name'],
+            inventory.users,
+            inventory.roles,
+            account_id
+        )
+        for u in trust_analysis["users"]:
+            u_id = get_node_id("User", u['name'])
+            if G.has_node(u_id) and G.has_node(r_id):
+                G.add_edge(u_id, r_id, label='CAN_ASSUME')
+        for src_r in trust_analysis["roles"]:
+            src_r_id = get_node_id("Role", src_r['name'])
+            if G.has_node(src_r_id) and G.has_node(r_id) and src_r_id != r_id:
+                G.add_edge(src_r_id, r_id, label='CAN_ASSUME')
 
-    # Users -> Resources (connect users with broad access policies to S3/Secrets/DBs)
-    for u in inventory.users:
-        for p_name in u.get('policies', []):
-            p_lower = p_name.lower()
-            if 's3' in p_lower or 'storage' in p_lower or 'admin' in p_lower:
-                for s in inventory.s3:
-                    G.add_edge(u['id'], s['id'], label='ALLOWS')
-            if 'secret' in p_lower or 'admin' in p_lower:
-                for sec in inventory.secrets:
-                    G.add_edge(u['id'], sec['id'], label='ALLOWS')
-            if 'rds' in p_lower or 'database' in p_lower or 'admin' in p_lower:
-                for rds in inventory.rds:
-                    G.add_edge(u['id'], rds['id'], label='ALLOWS')
-            if 'dynamo' in p_lower or 'database' in p_lower or 'admin' in p_lower:
-                for ddb in inventory.dynamodb:
-                    G.add_edge(u['id'], ddb['id'], label='ALLOWS')
+    # 8. Policy -> ALLOWS -> Resource via policy_evaluator
+    all_resources = (
+        inventory.s3 + inventory.secrets + inventory.rds +
+        inventory.dynamodb + inventory.ec2 + inventory.lambdas
+    )
 
-    # Groups -> Resources (connect groups with broad access policies to S3/Secrets/DBs)
-    # This enables attack paths through group membership: User -> MEMBER_OF -> Group -> ALLOWS -> Resource
-    for g in inventory.groups:
-        for p_name in g.get('attachedPolicies', []):
-            p_lower = p_name.lower()
-            if 's3' in p_lower or 'storage' in p_lower or 'admin' in p_lower:
-                for s in inventory.s3:
-                    G.add_edge(g['id'], s['id'], label='ALLOWS')
-            if 'secret' in p_lower or 'admin' in p_lower:
-                for sec in inventory.secrets:
-                    G.add_edge(g['id'], sec['id'], label='ALLOWS')
-            if 'rds' in p_lower or 'database' in p_lower or 'admin' in p_lower:
-                for rds in inventory.rds:
-                    G.add_edge(g['id'], rds['id'], label='ALLOWS')
-            if 'dynamo' in p_lower or 'database' in p_lower or 'admin' in p_lower:
-                for ddb in inventory.dynamodb:
-                    G.add_edge(g['id'], ddb['id'], label='ALLOWS')
+    for p in inventory.policies:
+        p_id = get_node_id("Policy", p['name'])
+        doc = p.get('document', '{}')
+        allowed_res = evaluate_policy_allows_resources(doc, all_resources)
+        for res in allowed_res:
+            res_type = res.get('type')
+            item_ident = res.get('id') if res_type == 'EC2' else (res.get('name') or res.get('id'))
+            res_id = get_node_id(res_type, item_ident)
+            if G.has_node(p_id) and G.has_node(res_id):
+                G.add_edge(p_id, res_id, label='ALLOWS')
 
     logger.info(f"Built local NetworkX Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G

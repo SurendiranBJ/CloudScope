@@ -1,187 +1,422 @@
-import logging
 import json
+import logging
+from typing import Dict, Any, List
 from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
+from app.services.attack.policy_evaluator import (
+    evaluate_policy_allows_resources,
+    evaluate_assume_role_trust
+)
+from app.services.aws.session import get_account_id
 
 logger = logging.getLogger("scanner")
 
 
+def get_node_id(res_type: str, item_id: str) -> str:
+    """Generate a stable globally unique node ID for a given resource type and item identifier."""
+    type_map = {
+        "User": "aws:user",
+        "Role": "aws:role",
+        "Group": "aws:group",
+        "Policy": "aws:policy",
+        "S3": "aws:s3",
+        "EC2": "aws:ec2",
+        "Lambda": "aws:lambda",
+        "RDS": "aws:rds",
+        "DynamoDB": "aws:dynamodb",
+        "Secrets": "aws:secret"
+    }
+    prefix = type_map.get(res_type, f"aws:{res_type.lower()}")
+    return f"{prefix}:{item_id}"
+
+
 def build_graph_in_neo4j(inventory: AWSInventory):
+    """Build the Neo4j graph with stable unique IDs and real IAM policy AST analysis."""
     logger.info("Initializing Neo4j Graph DB update rebuild")
     try:
-        # 1. Clear database elements
+        account_id = get_account_id()
+
+        # 1. Clear database elements safely for full synchronization
         execute_write("MATCH (n) DETACH DELETE n")
 
         # 2. Write Users
         for u in inventory.users:
+            u_id = get_node_id("User", u['name'])
             execute_write(
-                "CREATE (n:User {id: $id, label: $username, arn: $arn, mfaEnabled: $mfa, riskScore: $riskScore, type: 'User'})",
-                {"id": u['id'], "username": u['name'], "arn": u['arn'], "mfa": u['mfaEnabled'], "riskScore": u.get('riskScore', 0)}
+                """
+                MERGE (n:User {id: $id})
+                SET n.label = $username,
+                    n.arn = $arn,
+                    n.mfaEnabled = $mfa,
+                    n.riskScore = $riskScore,
+                    n.status = $status,
+                    n.type = 'User',
+                    n.region = 'global',
+                    n.owner = $owner
+                """,
+                {
+                    "id": u_id,
+                    "username": u['name'],
+                    "arn": u['arn'],
+                    "mfa": u.get('mfaEnabled', False),
+                    "riskScore": u.get('riskScore', 0),
+                    "status": u.get('status', 'active'),
+                    "owner": u.get('owner', account_id)
+                }
             )
 
         # 3. Write Groups
         for g in inventory.groups:
+            g_id = get_node_id("Group", g['name'])
             execute_write(
-                "CREATE (n:Group {id: $id, label: $name, arn: $arn, type: 'Group'})",
-                {"id": g['id'], "name": g['name'], "arn": g['arn']}
+                """
+                MERGE (n:Group {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.type = 'Group',
+                    n.region = 'global'
+                """,
+                {"id": g_id, "name": g['name'], "arn": g['arn']}
             )
 
         # 4. Write Roles
         for r in inventory.roles:
+            r_id = get_node_id("Role", r['name'])
             execute_write(
-                "CREATE (n:Role {id: $id, label: $name, arn: $arn, trustPolicy: $trust, riskScore: $riskScore, description: $desc, type: 'Role'})",
-                {"id": r['name'], "name": r['name'], "arn": r['arn'], "trust": r['trustPolicy'], "riskScore": r.get('riskScore', 0), "desc": r['description']}
+                """
+                MERGE (n:Role {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.trustPolicy = $trust,
+                    n.riskScore = $riskScore,
+                    n.description = $desc,
+                    n.type = 'Role',
+                    n.region = 'global',
+                    n.status = $status,
+                    n.owner = $owner
+                """,
+                {
+                    "id": r_id,
+                    "name": r['name'],
+                    "arn": r['arn'],
+                    "trust": r.get('trustPolicy', '{}'),
+                    "riskScore": r.get('riskScore', 0),
+                    "desc": r.get('description', ''),
+                    "status": r.get('status', 'active'),
+                    "owner": r.get('owner', account_id)
+                }
             )
 
         # 5. Write Policies
         for p in inventory.policies:
+            p_id = get_node_id("Policy", p['name'])
             execute_write(
-                "CREATE (n:Policy {id: $id, label: $name, arn: $arn, document: $doc, isManaged: $managed, riskScore: $riskScore, type: 'Policy'})",
-                {"id": p['name'], "name": p['name'], "arn": p['arn'], "doc": p['document'], "managed": p['type'] == "aws-managed", "riskScore": p.get('riskScore', 0)}
+                """
+                MERGE (n:Policy {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.document = $doc,
+                    n.isManaged = $managed,
+                    n.riskScore = $riskScore,
+                    n.type = 'Policy'
+                """,
+                {
+                    "id": p_id,
+                    "name": p['name'],
+                    "arn": p.get('arn', ''),
+                    "doc": p.get('document', '{}'),
+                    "managed": p.get('type') == 'aws-managed',
+                    "riskScore": p.get('riskScore', 0)
+                }
             )
 
         # 6. Write S3
         for s in inventory.s3:
+            s_id = get_node_id("S3", s['name'])
             execute_write(
-                "CREATE (n:S3 {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'S3'})",
-                {"id": s['id'], "name": s['name'], "arn": s['arn'], "reg": s['region'], "riskScore": s.get('riskScore', 0), "status": s['status'], "owner": s['owner']}
+                """
+                MERGE (n:S3 {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.region = $reg,
+                    n.riskScore = $riskScore,
+                    n.status = $status,
+                    n.owner = $owner,
+                    n.type = 'S3'
+                """,
+                {
+                    "id": s_id,
+                    "name": s['name'],
+                    "arn": s['arn'],
+                    "reg": s.get('region', 'global'),
+                    "riskScore": s.get('riskScore', 0),
+                    "status": s.get('status', 'configured'),
+                    "owner": s.get('owner', account_id)
+                }
             )
 
         # 7. Write EC2
         for e in inventory.ec2:
+            e_id = get_node_id("EC2", e['id'])
             execute_write(
-                "CREATE (n:EC2 {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'EC2'})",
-                {"id": e['id'], "name": e['name'], "arn": e['arn'], "reg": e['region'], "riskScore": e.get('riskScore', 0), "status": e['status'], "owner": e['owner']}
+                """
+                MERGE (n:EC2 {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.region = $reg,
+                    n.riskScore = $riskScore,
+                    n.status = $status,
+                    n.owner = $owner,
+                    n.type = 'EC2'
+                """,
+                {
+                    "id": e_id,
+                    "name": e['name'],
+                    "arn": e['arn'],
+                    "reg": e.get('region', 'unknown'),
+                    "riskScore": e.get('riskScore', 0),
+                    "status": e.get('status', 'active'),
+                    "owner": e.get('owner', account_id)
+                }
             )
 
         # 8. Write Lambda
         for l in inventory.lambdas:
+            l_id = get_node_id("Lambda", l['name'])
             execute_write(
-                "CREATE (n:Lambda {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'Lambda'})",
-                {"id": l['id'], "name": l['name'], "arn": l['arn'], "reg": l['region'], "riskScore": l.get('riskScore', 0), "status": l['status'], "owner": l['owner']}
+                """
+                MERGE (n:Lambda {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.region = $reg,
+                    n.riskScore = $riskScore,
+                    n.status = $status,
+                    n.owner = $owner,
+                    n.type = 'Lambda'
+                """,
+                {
+                    "id": l_id,
+                    "name": l['name'],
+                    "arn": l['arn'],
+                    "reg": l.get('region', 'unknown'),
+                    "riskScore": l.get('riskScore', 0),
+                    "status": l.get('status', 'configured'),
+                    "owner": l.get('owner', account_id)
+                }
             )
 
         # 9. Write Secrets
         for sec in inventory.secrets:
+            sec_id = get_node_id("Secrets", sec['name'])
             execute_write(
-                "CREATE (n:Secrets {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'Secrets'})",
-                {"id": sec['id'], "name": sec['name'], "arn": sec['arn'], "reg": sec['region'], "riskScore": sec.get('riskScore', 0), "status": sec['status'], "owner": sec['owner']}
+                """
+                MERGE (n:Secrets {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.region = $reg,
+                    n.riskScore = $riskScore,
+                    n.status = $status,
+                    n.owner = $owner,
+                    n.type = 'Secrets'
+                """,
+                {
+                    "id": sec_id,
+                    "name": sec['name'],
+                    "arn": sec['arn'],
+                    "reg": sec.get('region', 'unknown'),
+                    "riskScore": sec.get('riskScore', 0),
+                    "status": sec.get('status', 'configured'),
+                    "owner": sec.get('owner', account_id)
+                }
             )
 
-        # 9.5 Write RDS & DynamoDB
+        # 10. Write RDS
         for rds in inventory.rds:
+            rds_id = get_node_id("RDS", rds['name'])
             execute_write(
-                "CREATE (n:RDS {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'RDS'})",
-                {"id": rds['id'], "name": rds['name'], "arn": rds['arn'], "reg": rds['region'], "riskScore": rds.get('riskScore', 0), "status": rds['status'], "owner": rds['owner']}
+                """
+                MERGE (n:RDS {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.region = $reg,
+                    n.riskScore = $riskScore,
+                    n.status = $status,
+                    n.owner = $owner,
+                    n.type = 'RDS'
+                """,
+                {
+                    "id": rds_id,
+                    "name": rds['name'],
+                    "arn": rds['arn'],
+                    "reg": rds.get('region', 'unknown'),
+                    "riskScore": rds.get('riskScore', 0),
+                    "status": rds.get('status', 'available'),
+                    "owner": rds.get('owner', account_id)
+                }
             )
-            
+
+        # 11. Write DynamoDB
         for ddb in inventory.dynamodb:
+            ddb_id = get_node_id("DynamoDB", ddb['name'])
             execute_write(
-                "CREATE (n:DynamoDB {id: $id, label: $name, arn: $arn, region: $reg, riskScore: $riskScore, status: $status, owner: $owner, type: 'DynamoDB'})",
-                {"id": ddb['id'], "name": ddb['name'], "arn": ddb['arn'], "reg": ddb['region'], "riskScore": ddb.get('riskScore', 0), "status": ddb['status'], "owner": ddb['owner']}
+                """
+                MERGE (n:DynamoDB {id: $id})
+                SET n.label = $name,
+                    n.arn = $arn,
+                    n.region = $reg,
+                    n.riskScore = $riskScore,
+                    n.status = $status,
+                    n.owner = $owner,
+                    n.type = 'DynamoDB'
+                """,
+                {
+                    "id": ddb_id,
+                    "name": ddb['name'],
+                    "arn": ddb['arn'],
+                    "reg": ddb.get('region', 'unknown'),
+                    "riskScore": ddb.get('riskScore', 0),
+                    "status": ddb.get('status', 'active'),
+                    "owner": ddb.get('owner', account_id)
+                }
             )
 
-        # 10. Write Relationships — all dynamically computed
+        # --- Relationships ---
 
-        # Connect Users to Groups
+        # 1. Users -> Groups
         for u in inventory.users:
+            u_id = get_node_id("User", u['name'])
             for g_name in u.get('groups', []):
+                g_id = get_node_id("Group", g_name)
                 execute_write(
-                    "MATCH (u:User {label: $username}), (g:Group {label: $gname}) "
-                    "CREATE (u)-[:MEMBER_OF]->(g)",
-                    {"username": u['name'], "gname": g_name}
+                    """
+                    MATCH (u:User {id: $uid}), (g:Group {id: $gid})
+                    MERGE (u)-[:MEMBER_OF]->(g)
+                    """,
+                    {"uid": u_id, "gid": g_id}
                 )
 
-        # Connect Users to Policies
+        # 2. Users -> Policies
         for u in inventory.users:
+            u_id = get_node_id("User", u['name'])
             for p_name in u.get('policies', []):
                 clean_name = p_name.replace('[inline] ', '')
+                p_id = get_node_id("Policy", clean_name)
                 execute_write(
-                    "MATCH (u:User {label: $username}), (p:Policy {label: $pname}) "
-                    "CREATE (u)-[:HAS_POLICY]->(p)",
-                    {"username": u['name'], "pname": clean_name}
+                    """
+                    MATCH (u:User {id: $uid}), (p:Policy {id: $pid})
+                    MERGE (u)-[:HAS_POLICY]->(p)
+                    """,
+                    {"uid": u_id, "pid": p_id}
                 )
 
-        # Connect Roles to their attached policies
+        # 3. Groups -> Policies
+        for g in inventory.groups:
+            g_id = get_node_id("Group", g['name'])
+            for p_name in g.get('attachedPolicies', []):
+                clean_name = p_name.replace('[inline] ', '')
+                p_id = get_node_id("Policy", clean_name)
+                execute_write(
+                    """
+                    MATCH (g:Group {id: $gid}), (p:Policy {id: $pid})
+                    MERGE (g)-[:HAS_POLICY]->(p)
+                    """,
+                    {"gid": g_id, "pid": p_id}
+                )
+
+        # 4. Roles -> Policies
         for r in inventory.roles:
+            r_id = get_node_id("Role", r['name'])
             for p_name in r.get('attachedPolicies', []):
+                clean_name = p_name.replace('[inline] ', '')
+                p_id = get_node_id("Policy", clean_name)
                 execute_write(
-                    "MATCH (r:Role {label: $rolename}), (p:Policy {label: $pname}) "
-                    "CREATE (r)-[:HAS_POLICY]->(p)",
-                    {"rolename": r['name'], "pname": p_name}
+                    """
+                    MATCH (r:Role {id: $rid}), (p:Policy {id: $pid})
+                    MERGE (r)-[:HAS_POLICY]->(p)
+                    """,
+                    {"rid": r_id, "pid": p_id}
                 )
 
-        # Connect EC2 instance profile roles
+        # 5. EC2 -> Roles (instance profile)
         for e in inventory.ec2:
-            role_name = e['details'].get('iam_role_name', 'None')
-            if role_name != 'None':
+            role_name = e.get('details', {}).get('iam_role_name', 'None')
+            if role_name and role_name != 'None':
+                e_id = get_node_id("EC2", e['id'])
+                r_id = get_node_id("Role", role_name)
                 execute_write(
-                    "MATCH (e:EC2 {label: $ec2name}), (r:Role {label: $rolename}) "
-                    "CREATE (e)-[:ATTACHED_TO]->(r)",
-                    {"ec2name": e['name'], "rolename": role_name}
+                    """
+                    MATCH (e:EC2 {id: $eid}), (r:Role {id: $rid})
+                    MERGE (e)-[:ATTACHED_TO]->(r)
+                    """,
+                    {"eid": e_id, "rid": r_id}
                 )
 
-        # Connect Lambda execution roles
+        # 6. Lambda -> Roles (execution role)
         for l in inventory.lambdas:
-            role_name = l['details'].get('execution_role', 'None')
-            if role_name != 'None':
+            role_name = l.get('details', {}).get('execution_role', 'None')
+            if role_name and role_name != 'None':
+                l_id = get_node_id("Lambda", l['name'])
+                r_id = get_node_id("Role", role_name)
                 execute_write(
-                    "MATCH (l:Lambda {label: $lambdaname}), (r:Role {label: $rolename}) "
-                    "CREATE (l)-[:EXECUTES_WITH]->(r)",
-                    {"lambdaname": l['name'], "rolename": role_name}
+                    """
+                    MATCH (l:Lambda {id: $lid}), (r:Role {id: $rid})
+                    MERGE (l)-[:EXECUTES_WITH]->(r)
+                    """,
+                    {"lid": l_id, "rid": r_id}
                 )
 
-        # Connect Roles via trust policies (dynamic AssumeRole relationships)
-        role_names = {r['name'] for r in inventory.roles}
-        user_names = {u['name'] for u in inventory.users}
+        # 7. AssumeRole Trust Relationships: Users/Roles -> CAN_ASSUME -> Role
         for r in inventory.roles:
-            try:
-                trust = json.loads(r.get('trustPolicy', '{}'))
-                statements = trust.get('Statement', [])
-                for stmt in statements:
-                    if stmt.get('Effect') == 'Allow' and 'AssumeRole' in str(stmt.get('Action', '')):
-                        principal = stmt.get('Principal', {})
-                        aws_principals = principal.get('AWS', [])
-                        if isinstance(aws_principals, str):
-                            aws_principals = [aws_principals]
-                        for p_arn in aws_principals:
-                            if ':role/' in p_arn:
-                                source_name = p_arn.split('/')[-1]
-                                if source_name in role_names and source_name != r['name']:
-                                    execute_write(
-                                        "MATCH (s:Role {label: $source}), (t:Role {label: $target}) "
-                                        "CREATE (s)-[:CAN_ASSUME]->(t)",
-                                        {"source": source_name, "target": r['name']}
-                                    )
-                            elif ':user/' in p_arn:
-                                source_name = p_arn.split('/')[-1]
-                                if source_name in user_names:
-                                    execute_write(
-                                        "MATCH (u:User {label: $username}), (r:Role {label: $rolename}) "
-                                        "CREATE (u)-[:CAN_ASSUME]->(r)",
-                                        {"username": source_name, "rolename": r['name']}
-                                    )
-            except (json.JSONDecodeError, Exception):
-                pass
+            r_id = get_node_id("Role", r['name'])
+            trust_analysis = evaluate_assume_role_trust(
+                r.get('trustPolicy', '{}'),
+                r['name'],
+                inventory.users,
+                inventory.roles,
+                account_id
+            )
+            # Link Users
+            for u in trust_analysis["users"]:
+                u_id = get_node_id("User", u['name'])
+                execute_write(
+                    """
+                    MATCH (u:User {id: $uid}), (r:Role {id: $rid})
+                    MERGE (u)-[:CAN_ASSUME]->(r)
+                    """,
+                    {"uid": u_id, "rid": r_id}
+                )
+            # Link Roles
+            for src_r in trust_analysis["roles"]:
+                src_r_id = get_node_id("Role", src_r['name'])
+                execute_write(
+                    """
+                    MATCH (s:Role {id: $srid}), (t:Role {id: $trid})
+                    MERGE (s)-[:CAN_ASSUME]->(t)
+                    """,
+                    {"srid": src_r_id, "trid": r_id}
+                )
 
-        # Connect Roles to Resources via policy name heuristics
-        for r in inventory.roles:
-            for p_name in r.get('attachedPolicies', []):
-                p_lower = p_name.lower()
-                if 's3' in p_lower or 'storage' in p_lower or 'admin' in p_lower:
-                    for s in inventory.s3:
-                        execute_write(
-                            "MATCH (r:Role {label: $rolename}), (s:S3 {label: $sname}) "
-                            "CREATE (r)-[:ALLOWS]->(s)",
-                            {"rolename": r['name'], "sname": s['name']}
-                        )
-                if 'secret' in p_lower or 'admin' in p_lower:
-                    for sec in inventory.secrets:
-                        execute_write(
-                            "MATCH (r:Role {label: $rolename}), (s:Secrets {label: $sname}) "
-                            "CREATE (r)-[:ALLOWS]->(s)",
-                            {"rolename": r['name'], "sname": sec['name']}
-                        )
+        # 8. Policy -> ALLOWS -> Resource via real IAM Policy Document Evaluation
+        all_resources = (
+            inventory.s3 + inventory.secrets + inventory.rds +
+            inventory.dynamodb + inventory.ec2 + inventory.lambdas
+        )
+
+        for p in inventory.policies:
+            p_id = get_node_id("Policy", p['name'])
+            doc = p.get('document', '{}')
+            allowed_res = evaluate_policy_allows_resources(doc, all_resources)
+            for res in allowed_res:
+                res_type = res.get('type')
+                item_ident = res.get('id') if res_type == 'EC2' else (res.get('name') or res.get('id'))
+                res_id = get_node_id(res_type, item_ident)
+                execute_write(
+                    f"""
+                    MATCH (p:Policy {{id: $pid}}), (r:{res_type} {{id: $rid}})
+                    MERGE (p)-[:ALLOWS]->(r)
+                    """,
+                    {"pid": p_id, "rid": res_id}
+                )
 
         logger.info("Successfully populated all nodes and relationships inside Neo4j database")
     except Exception as e:

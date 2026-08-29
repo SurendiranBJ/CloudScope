@@ -103,7 +103,29 @@ api_v1_router.include_router(settings.router)
 
 app.include_router(api_v1_router)
 
+from app.services.aws.session import get_aws_diagnostic_info
+
 # Health & Metrics Endpoints
+@api_v1_router.get("/health/aws", tags=["Health"], response_model=APIResponse[dict])
+def get_api_v1_aws_health():
+    diag = get_aws_diagnostic_info()
+    return APIResponse(
+        success=diag["authenticated"],
+        message="AWS connection verified" if diag["authenticated"] else "AWS connection failed",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data=diag
+    )
+
+@app.get("/health/aws", tags=["Health"], response_model=APIResponse[dict])
+def get_aws_health():
+    diag = get_aws_diagnostic_info()
+    return APIResponse(
+        success=diag["authenticated"],
+        message="AWS connection verified" if diag["authenticated"] else "AWS connection failed",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data=diag
+    )
+
 @api_v1_router.get("/health", tags=["Health"], response_model=APIResponse[dict])
 def get_api_v1_health():
     try:
@@ -113,33 +135,42 @@ def get_api_v1_health():
         regions = "unavailable (check AWS credentials)"
         mode_state = {"mode": "unknown", "selected_region": None}
 
+    aws_diag = get_aws_diagnostic_info()
+
     return APIResponse(
         success=True,
         message="Service is running normally",
         timestamp=datetime.utcnow().isoformat() + "Z",
         data={
             "status": "healthy",
+            "service": "CloudScope API",
             "commit": commit_hash,
             "start_time": start_time,
             "scan_regions": regions,
             "scan_mode": mode_state["mode"],
             "selected_region": mode_state["selected_region"],
+            "aws_authenticated": aws_diag["authenticated"],
+            "aws_account_id": aws_diag["account_id"],
+            "aws_arn": aws_diag["arn"]
         }
     )
 
 @app.get("/health", tags=["Health"], response_model=APIResponse[dict])
 def get_health():
+    aws_diag = get_aws_diagnostic_info()
     return APIResponse(
         success=True,
         message="Service is running normally",
         timestamp=datetime.utcnow().isoformat() + "Z",
-        data={"status": "healthy", "service": "IdentityScope API"}
+        data={
+            "status": "healthy",
+            "service": "CloudScope API",
+            "aws_authenticated": aws_diag["authenticated"]
+        }
     )
 
-
-
-
 @app.get("/ready", tags=["Health"], response_model=APIResponse[dict])
+@api_v1_router.get("/ready", tags=["Health"], response_model=APIResponse[dict])
 def get_readiness():
     neo4j_ready = False
     try:
@@ -149,12 +180,19 @@ def get_readiness():
     except Exception:
         pass
 
+    aws_diag = get_aws_diagnostic_info()
+
     return APIResponse(
-        success=neo4j_ready,
+        success=aws_diag["authenticated"],
         message="Readiness check finished",
         timestamp=datetime.utcnow().isoformat() + "Z",
         data={
-            "database_neo4j": "connected" if neo4j_ready else "disconnected",
-            "ready": neo4j_ready
+            "backend": "ok",
+            "aws": "ok" if aws_diag["authenticated"] else "failed",
+            "neo4j": "connected" if neo4j_ready else "disconnected",
+            "redis": "connected" if cache.is_redis else "in-memory fallback",
+            "aws_account": aws_diag.get("account_id"),
+            "aws_arn": aws_diag.get("arn"),
+            "ready": aws_diag["authenticated"]
         }
     )

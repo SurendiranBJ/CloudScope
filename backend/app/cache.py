@@ -22,6 +22,10 @@ class CacheManager:
             logger.warning("Redis is not accessible. Falling back to local in-memory caching.")
             self.redis_client = None
 
+    @property
+    def is_redis(self) -> bool:
+        return self.redis_client is not None
+
     def get(self, key: str) -> dict | list | None:
         if self.redis_client:
             try:
