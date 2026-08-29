@@ -1,4 +1,4 @@
-# CloudScope 🌩️ - AWS Cloud Security Posture Management & Identity Attack Path Analysis Platform
+# CloudScope — AWS Cloud Security Posture Management and Identity Attack Path Analysis
 
 CloudScope is an enterprise-grade Cloud Security Posture Management (CSPM) and Cloud Infrastructure Entitlement Management (CIEM) platform built for Amazon Web Services (AWS). It discovers cloud resources and identities, computes actual effective permissions through true IAM policy AST evaluation, builds graph-theoretic identity relationship topologies in **Neo4j** and **NetworkX**, detects lateral-movement attack paths, and displays actionable risk metrics via an interactive **React** dashboard.
 
@@ -6,38 +6,47 @@ CloudScope is an enterprise-grade Cloud Security Posture Management (CSPM) and C
 
 ## 🏛️ Unified Continuous Scanning Pipeline
 
-CloudScope operates on **ONE continuous, unified security scanning pipeline**:
+CloudScope uses **ONE unified continuous security analysis pipeline**:
 
 ```
 AWS Account
     ↓
-Boto3 Read-Only Scanner (identityscope-scanner Profile)
+Boto3 AWS Scanner
     ↓
-AWS Inventory (IAM, Compute, Storage, Databases, Secrets, CloudTrail)
+AWS Inventory
     ↓
-IAM Policy AST & Trust Evaluation (Action + Resource Analysis, AssumeRole)
+IAM / Security Policy Analysis
     ↓
-Neo4j Graph Construction (Stable Unique Node IDs, MERGE Idempotency)
+Neo4j Graph Database
     ↓
-NetworkX Graph Synchronization
+NetworkX Graph Analytics
     ↓
-Risk Engine & Blast Radius Analysis (Deterministic Scoring, Graph Reachability)
+Attack Path Analysis
     ↓
-FastAPI Asynchronous REST API
+Blast Radius Analysis
     ↓
-TanStack React Query / Axios
+Risk Assessment
     ↓
-React Dashboard & Cytoscape.js Identity Graph
+CloudTrail Activity Analysis
+    ↓
+Correlation
+    ↓
+FastAPI REST API
+    ↓
+React Dashboard
 ```
+
+CloudTrail is an additional activity and security event data source within the same unified pipeline to correlate runtime telemetry against reachable graph attack paths.
 
 ### Pipeline Execution Steps:
 1. **AWS Authentication & Diagnostics**: Authenticates via `boto3.Session` using the read-only AWS CLI profile (`identityscope-scanner`). Validates identity via STS `GetCallerIdentity` without exposing secrets.
-2. **Multi-Service Concurrent Discovery**: Scans IAM (Users, Groups, Roles, Managed Policies, Inline Policies), Compute (EC2, Lambda), Storage & Databases (S3, RDS, DynamoDB), Secrets (Secrets Manager metadata only), IAM Access Analyzer findings, and CloudTrail audit alerts using boto3 paginators across configured regions.
+2. **Multi-Service Concurrent Discovery**: Scans IAM (Users, Groups, Roles, Managed Policies, Inline Policies), Compute (EC2, Lambda), Storage & Databases (S3, RDS, DynamoDB), Secrets (Secrets Manager metadata only), IAM Access Analyzer findings, and CloudTrail recent audit events using boto3 paginators across configured regions.
 3. **IAM Policy Document Analysis (No Name Heuristics)**: Inspects the actual JSON policy document statements (`Effect`, `Action`, `Resource`, `Principal`, `Condition`, `NotAction`, `NotResource`). Evaluates wildcard actions/resources and specific ARN patterns.
 4. **AssumeRole Trust Policy Parsing**: Resolves `CAN_ASSUME` relationships between Users/Roles and target Roles based on IAM trust documents (supporting account root, wildcard, and specific principal ARNs).
 5. **Graph Topologies (Neo4j & NetworkX)**: Populates Neo4j and NetworkX with stable unique IDs (`aws:user:<name>`, `aws:role:<name>`, `aws:policy:<name>`, `aws:s3:<name>`, `aws:secret:<name>`, `aws:rds:<name>`, `aws:dynamodb:<name>`, `aws:ec2:<id>`, `aws:lambda:<name>`). Constructs `MEMBER_OF`, `HAS_POLICY`, `CAN_ASSUME`, `ATTACHED_TO`, `EXECUTES_WITH`, and `ALLOWS` relationships.
 6. **Attack Path & Blast Radius Engine**: Computes shortest lateral movement paths from entry points (Users, EC2 instances) to critical assets and admin roles using BFS/shortest path. Maps MITRE ATT&CK techniques (T1078, T1548.003, T1530, T1552.004) and calculates blast radius reachability.
-7. **FastAPI & React Dashboard Synchronization**: Delivers live inventory counts, security scores, diagnostic badges, and attack paths to the React frontend.
+7. **CloudTrail Runtime Activity Correlation**: Correlates observed management events against reachable attack paths, recording dynamic `ASSUMED_ROLE` and `MODIFIED_CONFIG` activity edges and flagging `OBSERVED_ATTACK_ACTIVITY` findings.
+8. **FastAPI & React Dashboard Synchronization**: Delivers live inventory counts, security scores, diagnostic badges, and attack paths to the React frontend.
 
 ---
 
@@ -143,4 +152,4 @@ npm run build
 *   **Zero Credential Exposure**: Never logs, exposes, or stores AWS access keys, secret keys, or secret values.
 *   **Secrets Manager**: Collects metadata only (ARN, name, rotation status, tags, dates); never calls `GetSecretValue`.
 *   **Read-Only Operations**: Uses read-only AWS APIs exclusively (`list_*`, `describe_*`, `get_*_policy`, `lookup_events`).
-*   **Near-Real-Time Activity Monitoring**: Correlates recent CloudTrail management events against graph topologies to detect active attack execution without requiring intrusive inline agent installations.
+*   **Continuous and Scheduled Near-Real-Time Security Monitoring**: Correlates recent CloudTrail management events against graph topologies to detect active attack execution without requiring intrusive inline agent installations.
