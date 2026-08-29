@@ -237,6 +237,9 @@ def correlate_activity_with_graph(
             severity = "critical" if target_risk >= 80 else ("high" if target_risk >= 60 else "medium")
 
             finding = {
+                "id": f"corr-{ev['event_id']}",
+                "type": finding_type,
+                "finding_type": finding_type,
                 "event_id": ev["event_id"],
                 "actor": actor,
                 "target": target,
@@ -244,7 +247,6 @@ def correlate_activity_with_graph(
                 "activity_type": act_type,
                 "timestamp": ev["event_time"],
                 "source_ip": ev["source_ip"],
-                "finding_type": finding_type,
                 "severity": severity,
                 "target_risk_score": target_risk,
                 "has_static_permission": has_static_edge,
