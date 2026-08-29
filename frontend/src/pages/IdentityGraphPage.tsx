@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { IdentityGraph } from '../components/IdentityGraph';
-import type { GraphDisplayMode } from '../components/IdentityGraph';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { 
-  Network, Search, LayoutTemplate, Maximize, RefreshCw, 
-  AlertTriangle, Info, ChevronDown, ShieldAlert, Filter, 
-  Target, Focus, Globe, Layers
+  Network, Search, Maximize, RefreshCw, 
+  AlertTriangle, Info, ChevronDown, ChevronRight, ShieldAlert, Filter, 
+  Target, ChevronLeft
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
@@ -21,13 +20,12 @@ export const IdentityGraphPage: React.FC = () => {
 
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<'structured' | 'vertical' | 'dagre' | 'breadthfirst' | 'cose'>('structured');
-  const [displayMode, setDisplayMode] = useState<GraphDisplayMode>(highlightedNodeIds.length > 0 ? 'attack_path' : 'overview');
   const [securityFilter, setSecurityFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showLabels, setShowLabels] = useState(true);
   const [showEdgeLabels, setShowEdgeLabels] = useState(false);
   const [highlightRisky, setHighlightRisky] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Collapsed by default to maximize graph space
   
   const pageRef = useRef<HTMLDivElement>(null);
 
@@ -89,65 +87,34 @@ export const IdentityGraphPage: React.FC = () => {
               <Network className="w-5 h-5 text-blue-500" />
               <span>Identity Graph</span>
             </h1>
-            <p className="text-[11px] text-gray-400">Security Access Map & Attack Path Traversal</p>
+            <p className="text-[11px] text-gray-400">Security Architecture (Users → Groups → Policies → Roles → Resources → Sensitive Assets)</p>
           </div>
           
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-3">
             <ScannedRegionBadge />
 
-            {/* Display Mode Tabs */}
-            <div className="hidden lg:flex items-center bg-gray-900 border border-gray-800 p-0.5 rounded-lg text-xs font-semibold">
-              <button
-                onClick={() => { setDisplayMode('overview'); setSelectedNode(null); }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                  displayMode === 'overview' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
-                }`}
-                title="4-Layer Clean Security Access Map"
-              >
-                <Globe className="w-3.5 h-3.5" />
-                <span>Overview</span>
-              </button>
-              <button
-                onClick={() => setDisplayMode('identity_focus')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                  displayMode === 'identity_focus' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
-                }`}
-                title="Single Identity Chain Traversal"
-              >
-                <Focus className="w-3.5 h-3.5" />
-                <span>Identity Focus</span>
-              </button>
-              <button
-                onClick={() => setDisplayMode('attack_path')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                  displayMode === 'attack_path' ? 'bg-red-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
-                }`}
-                title="Critical Attack Paths Only"
-              >
-                <Target className="w-3.5 h-3.5" />
-                <span>Attack Path</span>
-              </button>
-              <button
-                onClick={() => setDisplayMode('raw_topology')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                  displayMode === 'raw_topology' ? 'bg-gray-800 text-gray-200 shadow' : 'text-gray-500 hover:text-gray-300'
-                }`}
-                title="Full 6-Tier Entity Topology"
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>Full Graph</span>
-              </button>
-            </div>
+            {/* Attack Path Quick Filter Button */}
+            <button
+              onClick={() => setSecurityFilter(prev => prev === 'attack_paths_only' ? 'all' : 'attack_paths_only')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                securityFilter === 'attack_paths_only'
+                  ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-500/20'
+                  : 'bg-gray-900 hover:bg-gray-800 text-gray-300 border-gray-700'
+              }`}
+            >
+              <Target className="w-3.5 h-3.5 text-red-400" />
+              <span>Attack Paths</span>
+            </button>
 
             {/* Search Input */}
             <div className="relative hidden md:flex items-center">
               <Search className="w-4 h-4 absolute left-3 text-gray-500" />
               <input 
                 type="text" 
-                placeholder="Search user, group, role, resource..." 
+                placeholder="Search user, group, role, resource, ARN..." 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-gray-900 border border-gray-700 text-xs rounded-lg pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500 w-56 transition-colors text-white placeholder-gray-500"
+                className="bg-gray-900 border border-gray-700 text-xs rounded-lg pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500 w-64 transition-colors text-white placeholder-gray-500"
               />
             </div>
 
@@ -170,34 +137,11 @@ export const IdentityGraphPage: React.FC = () => {
               </div>
             </div>
             
-            {/* Layout Options */}
-            <div className="relative group">
-              <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors">
-                <LayoutTemplate className="w-3.5 h-3.5 text-blue-400" />
-                <span>
-                  {layoutMode === 'structured' ? 'Security Architecture (Default)' :
-                   layoutMode === 'vertical' ? 'Strict Vertical (Top-To-Bottom)' :
-                   layoutMode === 'dagre' ? 'Dagre Hierarchical' :
-                   layoutMode === 'breadthfirst' ? 'Concentric' : 'Force Directed'}
-                </span>
-                <ChevronDown className="w-3 h-3 text-gray-400" />
-              </button>
-              <div className="absolute right-0 mt-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
-                <div className="p-1">
-                  <button onClick={() => setLayoutMode('structured')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'structured' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Security Architecture (Default)</button>
-                  <button onClick={() => setLayoutMode('vertical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'vertical' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Strict Vertical (Top-To-Bottom)</button>
-                  <button onClick={() => setLayoutMode('dagre')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'dagre' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Dagre Hierarchical</button>
-                  <button onClick={() => setLayoutMode('breadthfirst')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'breadthfirst' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Concentric Radial</button>
-                  <button onClick={() => setLayoutMode('cose')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'cose' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Force Directed (Physics)</button>
-                </div>
-              </div>
-            </div>
-            
             <button onClick={() => window.dispatchEvent(new CustomEvent('graph:reset'))} className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors">
-              <RefreshCw className="w-3.5 h-3.5" /> Reset
+              <RefreshCw className="w-3.5 h-3.5" /> Reset View
             </button>
             
-            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors ml-1" title="Toggle Fullscreen">
+            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors" title="Toggle Fullscreen">
               <Maximize className="w-4 h-4" />
             </button>
           </div>
@@ -206,18 +150,18 @@ export const IdentityGraphPage: React.FC = () => {
 
       {/* Attack Path Prominent Summary Banner */}
       {highlightedNodeIds.length > 0 && (
-        <div className="bg-red-950/80 border-b border-red-800/80 px-6 py-2 flex items-center justify-between z-20 backdrop-blur-md">
+        <div className="bg-red-950/90 border-b border-red-800 px-6 py-2.5 flex items-center justify-between z-20 backdrop-blur-md shadow-lg">
           <div className="flex items-center gap-3">
             <Target className="w-4 h-4 text-red-400 shrink-0" />
             <div className="flex items-center gap-2 text-xs">
-              <span className="font-bold text-red-200 tracking-wide uppercase text-[10px]">Active Attack Path:</span>
-              <span className="font-mono text-white font-semibold">{highlightedNodeIds[0]}</span>
-              <span className="text-red-400">→</span>
-              <span className="font-mono text-red-200">{highlightedNodeIds[highlightedNodeIds.length - 1]}</span>
-              <span className="text-gray-400">({highlightedNodeIds.length} hops)</span>
+              <span className="font-bold text-red-200 tracking-wide uppercase text-[10px]">Identified Lateral Attack Path:</span>
+              <span className="font-mono text-white font-bold">{highlightedNodeIds[0]}</span>
+              <span className="text-red-400 font-bold">→</span>
+              <span className="font-mono text-red-200 font-bold">{highlightedNodeIds[highlightedNodeIds.length - 1]}</span>
+              <span className="text-gray-400 text-[11px]">({highlightedNodeIds.length} hops)</span>
             </div>
           </div>
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white uppercase tracking-wider">High Risk</span>
+          <span className="px-2.5 py-0.5 rounded text-[10px] font-black bg-red-600 text-white uppercase tracking-wider shadow">HIGH RISK</span>
         </div>
       )}
 
@@ -229,8 +173,6 @@ export const IdentityGraphPage: React.FC = () => {
           <IdentityGraph 
             onNodeSelect={setSelectedNode} 
             highlightedNodeIds={highlightedNodeIds}
-            layoutMode={layoutMode}
-            displayMode={displayMode}
             searchQuery={searchQuery}
             showLabels={showLabels}
             showEdgeLabels={showEdgeLabels}
@@ -244,11 +186,22 @@ export const IdentityGraphPage: React.FC = () => {
               <NodeDetailsPanel nodeData={selectedNode} onClose={() => setSelectedNode(null)} />
             </div>
           )}
+
+          {/* Toggle Button for Collapsible Sidebar */}
+          {!isFullscreen && (
+            <button
+              onClick={() => setIsSidebarOpen(prev => !prev)}
+              className="absolute top-4 right-4 z-10 p-2 bg-[#0F172A]/90 hover:bg-gray-800 text-gray-400 hover:text-white border border-gray-700 rounded-lg shadow-xl backdrop-blur-md transition-colors"
+              title={isSidebarOpen ? "Hide Security Sidebar" : "Show Security Sidebar"}
+            >
+              {isSidebarOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+            </button>
+          )}
         </div>
 
-        {/* RIGHT SIDEBAR */}
-        {!isFullscreen && (
-          <aside className="w-80 bg-[#111827] border-l border-gray-800 flex flex-col overflow-y-auto shrink-0 custom-scrollbar z-10">
+        {/* COLLAPSIBLE RIGHT SIDEBAR */}
+        {!isFullscreen && isSidebarOpen && (
+          <aside className="w-80 bg-[#111827] border-l border-gray-800 flex flex-col overflow-y-auto shrink-0 custom-scrollbar z-10 animate-in slide-in-from-right duration-200">
           
           {/* Recommended Fixes */}
           <div className="p-5 border-b border-gray-800">
