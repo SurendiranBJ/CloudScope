@@ -25,7 +25,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   layoutMode = 'dagre',
   searchQuery = '',
   showLabels = true,
-  showEdgeLabels = true,
+  showEdgeLabels = false,
   highlightRisky = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -343,6 +343,16 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'transition-duration': 0.25
           }
         },
+        {
+          selector: 'edge[label = "ASSUMED_ROLE"], edge[label = "MODIFIED_CONFIG"]',
+          style: {
+            'line-color': '#F59E0B',
+            'target-arrow-color': '#F59E0B',
+            'line-style': 'dashed',
+            'width': 2.5,
+            'label': showEdgeLabels ? 'data(label)' : ''
+          }
+        },
         // Highlight & Dim States
         {
           selector: 'node.highlighted',
@@ -583,20 +593,16 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
               
               <div className="pt-2 mt-2 border-t border-gray-800 space-y-1.5">
                 <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t border-gray-500 border-dashed" />
-                   <span className="text-[9px] text-gray-500 font-mono tracking-wider">BELONGS_TO</span>
+                   <div className="w-4 h-0 border-t border-slate-500 border-dashed" />
+                   <span className="text-[9px] text-gray-400 font-mono tracking-wider">Static Relationship</span>
                 </div>
                 <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t border-gray-500 border-dashed" />
-                   <span className="text-[9px] text-gray-500 font-mono tracking-wider">ASSUMES</span>
-                </div>
-                <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t border-gray-500 border-dashed" />
-                   <span className="text-[9px] text-gray-500 font-mono tracking-wider">HAS_POLICY</span>
+                   <div className="w-4 h-0 border-t-2 border-amber-400 border-dashed" />
+                   <span className="text-[9px] text-amber-400 font-mono tracking-wider">Activity (ASSUMED_ROLE)</span>
                 </div>
                 <div className="flex items-center gap-2">
                    <div className="w-4 h-0 border-t-2 border-red-500 border-solid" />
-                   <span className="text-[9px] text-gray-500 font-mono tracking-wider">RISK PATH</span>
+                   <span className="text-[9px] text-red-400 font-mono tracking-wider">Attack Path</span>
                 </div>
               </div>
             </div>

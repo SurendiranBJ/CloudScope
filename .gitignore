@@ -27,6 +27,13 @@ dist-ssr
 __pycache__/
 *.py[cod]
 *.egg-info/
-.env
 venv/
 .pytest_cache/
+
+# Environment files
+.env
+.env.*
+backend/.env
+backend/.env.*
+!.env.example
+!backend/.env.example

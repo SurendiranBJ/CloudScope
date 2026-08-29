@@ -109,6 +109,25 @@ class ScanHistoryItem(BaseModel):
     graph_edges_count: int
     scanned_regions: Optional[List[str]] = None
 
+class CorrelatedRiskFinding(BaseModel):
+    id: str
+    type: str  # 'OBSERVED_ATTACK_ACTIVITY' | 'OBSERVED_CONFIG_DRIFT'
+    title: str
+    actor: str
+    actor_node_id: Optional[str] = None
+    target: str
+    target_node_id: Optional[str] = None
+    target_type: Optional[str] = None
+    event_name: str
+    event_time: str
+    source_ip: str
+    severity: str  # 'critical' | 'high' | 'medium' | 'low'
+    risk_score: int
+    matched_static_relationship: str
+    reason: str
+    recommendation: str
+    is_correlated: bool = True
+
 # Dashboard Compilation
 class DashboardData(BaseModel):
     securityScore: str
@@ -121,6 +140,8 @@ class DashboardData(BaseModel):
     topRiskyIdentities: Optional[List[dict]] = None
     resourceBreakdown: Optional[List[dict]] = None
     scannedRegions: Optional[List[str]] = None
+    correlatedRisks: Optional[List[CorrelatedRiskFinding]] = None
+    serviceStatus: Optional[dict] = None
 
 # Copilot Request/Response
 class CopilotRequest(BaseModel):
@@ -129,5 +150,6 @@ class CopilotRequest(BaseModel):
 class CopilotResponse(BaseModel):
     sender: str
     text: str
+    suggestions: List[str]
     type: Optional[str] = None
     codeBlock: Optional[str] = None

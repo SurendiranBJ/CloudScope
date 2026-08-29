@@ -18,7 +18,7 @@ from app.services.aws import (
 )
 from app.services.aws.session import get_aws_diagnostic_info, get_account_id
 from app.services.aws.region_cache import clear_region_cache, get_all_regions
-from app.services.attack import risk_engine, path_engine
+from app.services.attack import risk_engine, path_engine, cloudtrail_correlator
 from app.services.graph import graph_builder, graph_loader
 from app.database import execute_write
 from app.cache import cache
@@ -455,6 +455,35 @@ class ScanManager:
             attack_paths = path_engine.find_attack_paths(G)
             logger.info(f"[INFO] Attack Path Engine: {len(attack_paths)} paths detected")
 
+            # 6.5 CloudTrail Security Activity Correlation & Dynamic Edges
+            correlation_result = cloudtrail_correlator.correlate_activity_with_graph(
+                self.inventory.alerts,
+                self.inventory,
+                G
+            )
+            activity_edges = correlation_result.get("activity_edges", [])
+            correlated_findings = correlation_result.get("correlated_findings", [])
+
+            if neo4j_success:
+                for edge in activity_edges:
+                    try:
+                        execute_write(
+                            """
+                            MATCH (s {id: $source}), (t {id: $target})
+                            MERGE (s)-[r:ASSUMED_ROLE {eventId: $eventId}]->(t)
+                            SET r.timestamp = $ts, r.sourceIp = $ip, r.is_activity = true
+                            """,
+                            {
+                                "source": edge["source"],
+                                "target": edge["target"],
+                                "eventId": edge.get("eventId", ""),
+                                "ts": edge.get("timestamp", ""),
+                                "ip": edge.get("sourceIp", "")
+                            }
+                        )
+                    except Exception as e:
+                        logger.debug(f"Neo4j activity edge write skipped: {e}")
+
             duration = round(time.time() - start_time, 2)
 
             # 7. Record ScanHistory
@@ -504,9 +533,10 @@ class ScanManager:
                 self.inventory.rds + self.inventory.dynamodb
             ))
             cache.set("v1:alerts", self.inventory.alerts)
+            cache.set("v1:correlated_risks", correlated_findings)
             cache.set("v1:attack-paths", attack_paths)
 
-            # Cytoscape elements
+            # Cytoscape elements (incorporating dynamic activity edges)
             cytoscape_elements = []
             role_map = {r['name']: r for r in self.inventory.roles}
             user_map = {u['name']: u for u in self.inventory.users}
@@ -541,7 +571,10 @@ class ScanManager:
                         "id": f"e-{s}-{t}",
                         "source": s,
                         "target": t,
-                        "label": attr.get('label', 'CONNECTED_TO')
+                        "label": attr.get('label', 'CONNECTED_TO'),
+                        "isActivity": attr.get('is_activity', False),
+                        "timestamp": attr.get('timestamp', ''),
+                        "sourceIp": attr.get('sourceIp', '')
                     }
                 })
             cache.set("v1:graph", cytoscape_elements)
@@ -598,6 +631,7 @@ class ScanManager:
                     {"name": "Low", "value": len(low_items), "color": "#10B981"}
                 ],
                 "recentAlerts": self.inventory.alerts[:5],
+                "correlatedRisks": correlated_findings[:5],
                 "criticalPaths": attack_paths[:3],
                 "recommendations": recommendations[:5],
                 "lastScan": {
