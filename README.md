@@ -1,96 +1,157 @@
-# CloudScope — AWS Cloud Security Posture Management and Identity Attack Path Analysis
+# CloudScope — AWS Cloud Security Posture Management & Identity Attack Path Analysis
 
-CloudScope is an enterprise-grade Cloud Security Posture Management (CSPM) and Cloud Infrastructure Entitlement Management (CIEM) platform built for Amazon Web Services (AWS). It discovers cloud resources and identities, computes actual effective permissions through true IAM policy AST evaluation, builds graph-theoretic identity relationship topologies in **Neo4j** and **NetworkX**, detects lateral-movement attack paths, and displays actionable risk metrics via an interactive **React** dashboard.
+CloudScope is a Cloud Security Posture Management (CSPM) and Cloud Infrastructure Entitlement Management (CIEM) platform built for Amazon Web Services (AWS). It evaluates effective permissions using Abstract Syntax Tree (AST) IAM policy document analysis, models multi-hop identity and resource relationships in **Neo4j** and **NetworkX**, identifies lateral movement and privilege escalation attack vectors, and delivers evidence-based security posture scores via an interactive **React** interface.
 
 ---
 
-## 🏛️ Unified Continuous Scanning Pipeline
+## 🏛️ Unified Architecture & Scanning Pipeline
 
-CloudScope uses **ONE unified continuous security analysis pipeline**:
+CloudScope operates as a single, continuous, unified security analysis pipeline:
 
 ```
-AWS Account
-    ↓
-Boto3 AWS Scanner
-    ↓
-AWS Inventory
-    ↓
-IAM / Security Policy Analysis
-    ↓
-Neo4j Graph Database
-    ↓
-NetworkX Graph Analytics
-    ↓
-Attack Path Analysis
-    ↓
-Blast Radius Analysis
-    ↓
-Risk Assessment
-    ↓
-CloudTrail Activity Analysis
-    ↓
-Correlation
-    ↓
-FastAPI REST API
-    ↓
-React Dashboard
+                      ┌────────────────────────────────────────┐
+                      │              AWS Account               │
+                      └───────────────────┬────────────────────┘
+                                          │ Boto3 Read-Only Collectors
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │             AWS Inventory              │
+                      │  (IAM, S3, EC2, Lambda, Secrets, RDS)  │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │    IAM / Security Policy Evaluator     │
+                      │    (AST Statement Parser & Matcher)    │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │          Neo4j Graph Database          │
+                      │  (Idempotent MERGE on Stable Node IDs) │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │        NetworkX Graph Analytics        │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │          Attack Path Engine            │
+                      │   (Privilege Escalation & Lateral)     │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │          Blast Radius Engine           │
+                      │  (Reachable Cloud Resources Isolation) │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │      Deterministic Risk Engine         │
+                      │   (Factor-Based 0-100 & 5 Categories)  │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │     CloudTrail Activity Analysis       │
+                      │  (AssumeRole, Policy Mod, Idempotency) │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │       Dynamic Graph Correlation        │
+                      │    (Runtime Activity & Graph Edges)    │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │           FastAPI REST API             │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │         React / Cytoscape UI           │
+                      │     (Consolidated DAG Path Cards)      │
+                      └────────────────────────────────────────┘
 ```
 
-CloudTrail is an additional activity and security event data source within the same unified pipeline to correlate runtime telemetry against reachable graph attack paths.
+---
 
-### Pipeline Execution Steps:
-1. **AWS Authentication & Diagnostics**: Authenticates via `boto3.Session` using the read-only AWS CLI profile (`identityscope-scanner`). Validates identity via STS `GetCallerIdentity` without exposing secrets.
-2. **Multi-Service Concurrent Discovery**: Scans IAM (Users, Groups, Roles, Managed Policies, Inline Policies), Compute (EC2, Lambda), Storage & Databases (S3, RDS, DynamoDB), Secrets (Secrets Manager metadata only), IAM Access Analyzer findings, and CloudTrail recent audit events using boto3 paginators across configured regions.
-3. **IAM Policy Document Analysis (No Name Heuristics)**: Inspects the actual JSON policy document statements (`Effect`, `Action`, `Resource`, `Principal`, `Condition`, `NotAction`, `NotResource`). Evaluates wildcard actions/resources and specific ARN patterns.
-4. **AssumeRole Trust Policy Parsing**: Resolves `CAN_ASSUME` relationships between Users/Roles and target Roles based on IAM trust documents (supporting account root, wildcard, and specific principal ARNs).
-5. **Graph Topologies (Neo4j & NetworkX)**: Populates Neo4j and NetworkX with stable unique IDs (`aws:user:<name>`, `aws:role:<name>`, `aws:policy:<name>`, `aws:s3:<name>`, `aws:secret:<name>`, `aws:rds:<name>`, `aws:dynamodb:<name>`, `aws:ec2:<id>`, `aws:lambda:<name>`). Constructs `MEMBER_OF`, `HAS_POLICY`, `CAN_ASSUME`, `ATTACHED_TO`, `EXECUTES_WITH`, and `ALLOWS` relationships.
-6. **Attack Path & Blast Radius Engine**: Computes shortest lateral movement paths from entry points (Users, EC2 instances) to critical assets and admin roles using BFS/shortest path. Maps MITRE ATT&CK techniques (T1078, T1548.003, T1530, T1552.004) and calculates blast radius reachability.
-7. **CloudTrail Runtime Activity Correlation**: Correlates observed management events against reachable attack paths, recording dynamic `ASSUMED_ROLE` and `MODIFIED_CONFIG` activity edges and flagging `OBSERVED_ATTACK_ACTIVITY` findings.
-8. **FastAPI & React Dashboard Synchronization**: Delivers live inventory counts, security scores, diagnostic badges, and attack paths to the React frontend.
+## 🔑 Key Capabilities
+
+1. **True AST IAM Policy Evaluation (Zero Name Heuristics)**:
+   - Full statement evaluation of `Effect`, `Action`, `NotAction`, `Resource`, `NotResource`, `Principal`, and `Condition`.
+   - Explicit `Deny` override logic.
+   - Resource ARN matching for S3 buckets, Secrets Manager secrets (with random suffixes), RDS DB instances, DynamoDB tables, EC2 instances, and Lambda functions.
+   - Never infers permissions or vulnerability from names (e.g. `"admin"` or `"secret"` in a role/policy name is ignored).
+
+2. **AssumeRole Trust Policy Analysis**:
+   - Structured parsing for wildcards (`*`), account root ARNs, specific IAM user/role ARNs, and AWS service principals.
+
+3. **Idempotent Neo4j Topology**:
+   - Uses deterministic conceptual IDs (`aws:user:<name>`, `aws:role:<arn>`, `aws:policy:<arn>`, `aws:s3:<name>`, `aws:secret:<arn>`, `aws:ec2:<id>`, etc.).
+   - Employs `MERGE` queries so configuration sync never destroys CloudTrail activity history.
+
+4. **Multi-Source & Multi-Target Attack Path Consolidation**:
+   - Computes multi-hop paths to high-value cloud targets and administrative roles.
+   - Frontend groups duplicate paths sharing identical security chains into clean, multi-target branching DAG diagrams.
+   - Preserves backend `orderedRelationships` (`CAN_ASSUME`, `HAS_POLICY`, `ALLOWS`, `ASSUMED_ROLE`).
+
+5. **Evidence-Based Risk Scoring**:
+   - Deterministic factor points bounded strictly within `0–100`.
+   - Global Posture weighting: IAM Security (30%), Resource Security (25%), Attack Path Risk (25%), Identity Hygiene (10%), Monitoring / Audit (10%).
+
+6. **CloudTrail Runtime Activity Correlation**:
+   - Normalizes management events (`AssumeRole`, `CreateAccessKey`, `AttachRolePolicy`, `PutBucketPolicy`, etc.) with `eventId` idempotency.
+   - Injects dynamic activity edges into graph analysis and flags `OBSERVED_ATTACK_ACTIVITY`.
 
 ---
 
-## 🛠️ Technical Stack
+## 🛠️ Technology Stack
 
-*   **Backend**: Python 3.11, FastAPI, Uvicorn, Boto3, Pydantic, NetworkX, Neo4j Python Driver, APScheduler
-*   **Database & Cache**: Neo4j Graph Database (Bolt protocol), Redis (with automatic in-memory fallback)
-*   **Frontend**: React 18, Vite, TypeScript, Tailwind CSS, Lucide React, Cytoscape.js (`cytoscape-dagre`), TanStack Query
+- **Backend**: Python 3.11, FastAPI, Uvicorn, Boto3, Pydantic v2, NetworkX, Neo4j Python Driver, APScheduler
+- **Database & Cache**: Neo4j Graph Database (Bolt Protocol), Redis (with automatic in-memory fallback)
+- **Frontend**: React 18, Vite, TypeScript, Tailwind CSS, Lucide React, Cytoscape.js (`cytoscape-dagre`), TanStack Query, Recharts
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Setup & Installation
 
 ### 1. Prerequisites
-*   Python 3.10+
-*   Node.js 18+
-*   AWS CLI configured with a read-only profile named `identityscope-scanner`:
-    ```bash
-    aws configure --profile identityscope-scanner
-    ```
-*   (Optional) Neo4j Desktop or Docker container on `bolt://localhost:7687`
+- Python 3.10+
+- Node.js 18+
+- Docker & Docker Compose (optional for Neo4j/Redis)
+- AWS CLI configured with a read-only profile named `identityscope-scanner`:
+  ```bash
+  aws configure --profile identityscope-scanner
+  ```
 
----
+### 2. Scanner IAM Permissions
+The scanner requires read-only metadata inspection permissions. **Secrets Manager secret values are never retrieved** (only secret metadata via `DescribeSecret` / `ListSecrets`).
 
-### 2. Quickstart (Unified Runner)
-Run both backend and frontend development servers concurrently:
+Minimal required managed policies:
+- `SecurityAudit`
+- `ViewOnlyAccess`
+
+### 3. Running with Docker Compose
+Start Neo4j, Redis, and the Backend with a single command:
 ```bash
-npm run dev
+docker compose up -d
 ```
+Neo4j Console: `http://localhost:7474` (Credentials: `neo4j` / `password`)
 
----
-
-### 3. Step-by-Step Manual Setup
+### 4. Running Locally
 
 #### Backend Setup
 ```bash
 cd backend
-
-# Create & activate virtual environment
 python -m venv venv
 .\venv\Scripts\activate      # Windows
 source venv/bin/activate    # macOS/Linux
 
-# Install dependencies
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
@@ -104,20 +165,88 @@ cd frontend
 npm install
 npm run dev
 ```
+Frontend Web UI: `http://localhost:5173`
 
-Visit `http://localhost:5173` to view the live dashboard.
+---
+
+## 📊 Deterministic Risk Scoring Model
+
+### Entity Risk Score (0–100)
+Scores are computed from discrete, itemized evidence factors:
+
+| Category | Finding Code | Points | Description |
+|---|---|:---:|---|
+| **Identity Hygiene** | `MFA_DISABLED` | +15 | User has no virtual or hardware MFA configured |
+| | `STALE_CREDENTIALS` | +10 | Password / access key inactive > 90 days |
+| **Permissions** | `WILDCARD_ALLOW_ALL` | +30 | Policy statement allows `Action: *` on `Resource: *` |
+| | `WILDCARD_ACTION` | +20 | Policy allows `Action: *` on specific resource |
+| | `WILDCARD_RESOURCE` | +15 | Policy allows specific action on `Resource: *` |
+| | `PRIVILEGE_ESCALATION_PERMS`| +25 | Permissions include dangerous escalation actions (`iam:PassRole`, `iam:AttachRolePolicy`, etc.) |
+| **Trust Boundary** | `WILDCARD_TRUST_PRINCIPAL` | +30 | Role trust policy permits `Principal: *` |
+| | `CROSS_ACCOUNT_TRUST` | +15 | Trust policy allows external AWS account root |
+| **Resource Security** | `S3_PUBLIC_EXPOSURE` | +35 | S3 bucket has Block Public Access disabled or public policy |
+| | `S3_UNENCRYPTED` | +15 | Server-side encryption is disabled |
+| | `SECRET_NO_ROTATION` | +15 | Automatic rotation is disabled |
+| | `EC2_PUBLIC_IP` | +20 | Instance has public IPv4 and overprivileged profile |
+
+### Severity Thresholds
+- **Critical**: `80 – 100`
+- **High**: `60 – 79`
+- **Medium**: `40 – 59`
+- **Low**: `0 – 39`
+
+### Global Security Posture Score (0–100)
+$$\text{Overall Score} = (0.30 \times \text{IAM}) + (0.25 \times \text{Resource}) + (0.25 \times \text{AttackPath}) + (0.10 \times \text{Hygiene}) + (0.10 \times \text{Monitoring})$$
+
+---
+
+## 🌲 Attack Path Consolidation (Branching DAGs)
+
+When multiple attack paths share a common security chain, the frontend consolidates them into a single branching card:
+
+```
+                      Alice ─┐
+                      Bob ───┼→ OverlyTrustingAdminRole → AdministratorAccess
+                      Carol ─┘                                │
+                                             ┌────────────────┼────────────────┐
+                                             ▼                ▼                ▼
+                                         S3-Bucket-A      S3-Bucket-B     DB-Secret-Key
+```
+
+---
+
+## 📡 API Endpoint Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Application status, active scan mode, and selected regions |
+| `GET` | `/ready` | Service readiness probe (Neo4j and Redis connection checks) |
+| `GET` | `/api/v1/health/aws` | AWS STS authentication and scanner identity validation |
+| `POST` | `/api/v1/scan` | Triggers an asynchronous multi-service AWS scan |
+| `GET` | `/api/v1/scan/status` | Real-time scanner execution state, duration, and metrics |
+| `GET` | `/api/v1/dashboard` | Aggregated live security KPI metrics, risk breakdown, and inventory counts |
+| `GET` | `/api/v1/users` | Discovered IAM users with MFA status, policies, and risk scores |
+| `GET` | `/api/v1/roles` | Discovered IAM roles with trust documents and risk scores |
+| `GET` | `/api/v1/resources` | Discovered cloud assets (S3, EC2, Lambda, Secrets, RDS, DynamoDB) |
+| `GET` | `/api/v1/graph` | Filtered Cytoscape elements for progressive disclosure visualization |
+| `GET` | `/api/v1/attack-paths` | Discovered lateral movement paths and MITRE ATT&CK mappings |
+| `GET` | `/api/v1/risk-assessment` | Itemized security risk findings and remediation recommendations |
+| `GET` | `/api/v1/alerts` | CloudTrail audit events and correlated activity alerts |
+| `GET` | `/api/v1/correlated-risks` | Runtime activity events correlated against static attack paths |
+| `GET` | `/api/v1/reports/summary` | Verified Security Control Coverage across the 5 security domains |
+| `POST` | `/api/v1/copilot` | Context-aware cloud security assistant |
 
 ---
 
 ## 🧪 Testing & Verification
 
-Run the automated backend test suite:
+Run the full automated test suite:
 ```bash
 cd backend
 python -m pytest tests/ -v
 ```
 
-Build the frontend bundle:
+Build the frontend production bundle:
 ```bash
 cd frontend
 npm run build
@@ -125,31 +254,10 @@ npm run build
 
 ---
 
-## 📡 API Endpoints
+## 🔒 Security & Limitations
 
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/health` | API service health check |
-| `GET` | `/health/aws` | Safe AWS STS caller identity diagnostics |
-| `GET` | `/ready` | Full readiness check (Backend, AWS, Neo4j, Redis) |
-| `GET` | `/api/v1/dashboard` | Live aggregated dashboard metrics and security score |
-| `POST` | `/api/v1/scan` | Trigger an asynchronous AWS security scan |
-| `GET` | `/api/v1/scan/status` | Current scan progress and per-service health status |
-| `GET` | `/api/v1/users` | Discovered IAM users ledger |
-| `GET` | `/api/v1/roles` | Discovered IAM roles ledger |
-| `GET` | `/api/v1/resources` | Discovered cloud resources (S3, EC2, Lambda, RDS, DynamoDB, Secrets) |
-| `GET` | `/api/v1/graph` | Cytoscape graph elements (nodes & edges) |
-| `GET` | `/api/v1/attack-paths` | Lateral movement attack paths with MITRE ATT&CK techniques |
-| `GET` | `/api/v1/risk-assessment` | Risk assessment findings and remediation recommendations |
-| `GET` | `/api/v1/alerts` | CloudTrail audit events |
-| `GET` | `/api/v1/correlated-risks` | Correlated security findings linking CloudTrail activity to attack paths |
-| `POST` | `/api/v1/settings/scan-region` | Update runtime scan region (`single` or `global`) |
-| `POST` | `/api/v1/settings/scan-interval` | Reschedule automated scan frequency |
-
----
-
-## 🔒 Security & Safe Metadata Collection
-*   **Zero Credential Exposure**: Never logs, exposes, or stores AWS access keys, secret keys, or secret values.
-*   **Secrets Manager**: Collects metadata only (ARN, name, rotation status, tags, dates); never calls `GetSecretValue`.
-*   **Read-Only Operations**: Uses read-only AWS APIs exclusively (`list_*`, `describe_*`, `get_*_policy`, `lookup_events`).
-*   **Continuous and Scheduled Near-Real-Time Security Monitoring**: Correlates recent CloudTrail management events against graph topologies to detect active attack execution without requiring intrusive inline agent installations.
+- **Read-Only Operation**: The scanner never modifies AWS infrastructure or policy configurations during discovery.
+- **No Secret Value Exposure**: Secrets Manager secret payloads are never retrieved.
+- **CloudTrail Latency**: CloudTrail monitoring operates via continuous/scheduled lookup rather than synchronous sub-second kernel streaming.
+- **IAM Condition Scope**: Implements standard Condition keys (`aws:PrincipalArn`, `aws:SourceIp`, MFA checks). Complex custom condition operator chaining outside AWS standard specs is reported as `CONDITIONAL`.
+- **Intended Purpose**: Designed for cloud security posture assessment, CIEM access analysis, and academic demonstration.
