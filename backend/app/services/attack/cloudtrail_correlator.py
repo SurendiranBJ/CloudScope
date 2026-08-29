@@ -1,8 +1,10 @@
-"""CloudTrail Security Activity Correlator.
+"""
+CloudScope CloudTrail Security Activity Correlator.
 
-Normalizes CloudTrail events, correlates observed runtime activity with static
-IAM permissions & attack paths in the Identity Graph, records dynamic activity
-relationships (e.g., ASSUMED_ROLE), and detects active lateral movement.
+Normalizes CloudTrail events, maps exact runtime activity types (ASSUMED_ROLE,
+MODIFIED_POLICY, CREATED_ACCESS_KEY, ACCESSED_RESOURCE, SECURITY_EVENT),
+synchronizes activity idempotently into Neo4j using eventId, and correlates
+observed events with static graph attack paths.
 """
 
 import json
@@ -10,23 +12,44 @@ import logging
 import networkx as nx
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
 from app.services.graph.graph_loader import get_node_id
 
 logger = logging.getLogger("scanner")
 
 
+def get_activity_type(event_name: str) -> str:
+    """Classify the exact security activity relationship type from AWS event name."""
+    if event_name == "AssumeRole":
+        return "ASSUMED_ROLE"
+    if event_name in [
+        "PutRolePolicy", "AttachRolePolicy", "PutUserPolicy", "AttachUserPolicy",
+        "PutGroupPolicy", "AttachGroupPolicy", "CreatePolicyVersion", "SetDefaultPolicyVersion"
+    ]:
+        return "MODIFIED_POLICY"
+    if event_name in ["CreateAccessKey", "CreateLoginProfile"]:
+        return "CREATED_ACCESS_KEY"
+    if event_name in [
+        "GetObject", "PutObject", "DeleteObject", "GetSecretValue",
+        "DescribeDBInstances", "RunInstances", "Invoke"
+    ]:
+        return "ACCESSED_RESOURCE"
+    return "SECURITY_EVENT"
+
+
 def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize a raw boto3 CloudTrail event into a structured security event object."""
-    event_id = raw_event.get('EventId', '')
-    event_name = raw_event.get('EventName', 'Unknown')
-    event_time_raw = raw_event.get('EventTime')
+    event_id = raw_event.get('EventId', '') or raw_event.get('event_id', '')
+    event_name = raw_event.get('EventName', 'Unknown') or raw_event.get('event_name', 'Unknown')
+    event_time_raw = raw_event.get('EventTime') or raw_event.get('event_time')
+    
     if isinstance(event_time_raw, datetime):
         event_time = event_time_raw.isoformat() + "Z"
     else:
         event_time = str(event_time_raw or datetime.utcnow().isoformat() + "Z")
 
-    username = raw_event.get('Username', 'Unknown')
+    username = raw_event.get('Username') or raw_event.get('username') or 'Unknown'
 
     # Parse nested CloudTrailEvent JSON if present
     ct_json_str = raw_event.get('CloudTrailEvent', '{}')
@@ -43,8 +66,8 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     actor_arn = user_identity.get('arn', '')
     actor_name = user_identity.get('userName') or username
     actor_type = user_identity.get('type', 'IAMUser')
-    source_ip = ct_detail.get('sourceIPAddress', 'Unknown')
-    region = ct_detail.get('awsRegion', raw_event.get('Region', 'global'))
+    source_ip = ct_detail.get('sourceIPAddress', raw_event.get('source_ip', 'Unknown'))
+    region = ct_detail.get('awsRegion', raw_event.get('region', 'global'))
 
     req_params = ct_detail.get('requestParameters') or {}
     target_arn = ""
@@ -90,16 +113,13 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
                 target_type = "S3"
                 target_name = target_name.replace('arn:aws:s3:::', '')
 
-    # Compute risk relevance
-    is_high_risk = (
-        event_name in ['AssumeRole', 'PutRolePolicy', 'AttachRolePolicy', 'PutBucketPolicy', 'CreateAccessKey']
-        or 'admin' in str(target_name).lower()
-        or 'admin' in str(actor_name).lower()
-    )
+    activity_type = get_activity_type(event_name)
+    is_high_risk = activity_type in ["ASSUMED_ROLE", "MODIFIED_POLICY", "CREATED_ACCESS_KEY"]
 
     return {
         "event_id": event_id,
         "event_name": event_name,
+        "activity_type": activity_type,
         "event_time": event_time,
         "actor_name": actor_name,
         "actor_arn": actor_arn,
@@ -114,21 +134,79 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def sync_activity_into_neo4j(normalized_events: List[Dict[str, Any]]):
+    """Write normalized CloudTrail events into Neo4j using idempotent MERGE on eventId."""
+    for ev in normalized_events:
+        event_id = ev["event_id"]
+        if not event_id:
+            continue
+
+        actor_name = ev["actor_name"]
+        target_name = ev["target_name"]
+        activity_type = ev["activity_type"]
+
+        actor_node_id = get_node_id("User", actor_name)
+        target_node_id = get_node_id(ev["target_type"], target_name) if target_name else None
+
+        try:
+            # 1. Create ActivityEvent node (Idempotent by eventId)
+            execute_write(
+                """
+                MERGE (a:ActivityEvent {eventId: $eventId})
+                SET a.eventName = $eventName,
+                    a.activityType = $activityType,
+                    a.timestamp = $timestamp,
+                    a.sourceIp = $sourceIp,
+                    a.region = $region,
+                    a.actor = $actor,
+                    a.target = $target
+                """,
+                {
+                    "eventId": event_id,
+                    "eventName": ev["event_name"],
+                    "activityType": activity_type,
+                    "timestamp": ev["event_time"],
+                    "sourceIp": ev["source_ip"],
+                    "region": ev["region"],
+                    "actor": actor_name,
+                    "target": target_name or "N/A"
+                }
+            )
+
+            # 2. If actor and target exist in graph, write dynamic activity edge
+            if target_node_id and target_name:
+                execute_write(
+                    f"""
+                    MATCH (u:User {{id: $actor_id}}), (tgt {{id: $target_id}})
+                    MERGE (u)-[r:{activity_type} {{eventId: $eventId}}]->(tgt)
+                    SET r.timestamp = $timestamp,
+                        r.sourceIp = $sourceIp,
+                        r.eventName = $eventName
+                    """,
+                    {
+                        "actor_id": actor_node_id,
+                        "target_id": target_node_id,
+                        "eventId": event_id,
+                        "timestamp": ev["event_time"],
+                        "sourceIp": ev["source_ip"],
+                        "eventName": ev["event_name"]
+                    }
+                )
+        except Exception as e:
+            logger.debug(f"Could not record activity in Neo4j for event {event_id}: {e}")
+
+
 def correlate_activity_with_graph(
     raw_events: List[Dict[str, Any]],
     inventory: AWSInventory,
     G: nx.DiGraph
 ) -> Dict[str, Any]:
-    """Correlate normalized CloudTrail events with graph topology.
-
-    Returns:
-        {
-            "normalized_events": [...],
-            "activity_edges": [...],
-            "correlated_findings": [...]
-        }
-    """
+    """Correlate normalized CloudTrail events with graph topology."""
     normalized_events = [normalize_cloudtrail_event(e) for e in raw_events]
+    
+    # Sync activity into Neo4j idempotently
+    sync_activity_into_neo4j(normalized_events)
+
     activity_edges: List[Dict[str, Any]] = []
     correlated_findings: List[Dict[str, Any]] = []
 
@@ -139,121 +217,63 @@ def correlate_activity_with_graph(
     for ev in normalized_events:
         actor = ev["actor_name"]
         target = ev["target_name"]
-        event_name = ev["event_name"]
-        event_time = ev["event_time"]
-        source_ip = ev["source_ip"]
-        event_id = ev["event_id"]
+        ev_name = ev["event_name"]
+        act_type = ev["activity_type"]
 
-        if not actor or not target or actor == "Unknown":
+        if not actor or actor == "Unknown":
             continue
 
-        actor_node_id = get_node_id("User", actor) if actor in user_names else (
-            get_node_id("Role", actor) if actor in role_names else None
-        )
-        target_node_id = get_node_id(ev["target_type"], target) if G.has_node(get_node_id(ev["target_type"], target)) else None
+        actor_node_id = get_node_id("User", actor)
 
-        if event_name == 'AssumeRole':
-            target_role_node = get_node_id("Role", target)
-            if actor_node_id and G.has_node(actor_node_id) and G.has_node(target_role_node):
-                # Check if a static CAN_ASSUME or Attack Path exists between them BEFORE adding dynamic edge
-                has_static_can_assume = False
-                if G.has_edge(actor_node_id, target_role_node):
-                    edge_data = G.get_edge_data(actor_node_id, target_role_node, default={})
-                    if edge_data.get('label') == 'CAN_ASSUME':
-                        has_static_can_assume = True
+        # Activity on Role
+        if target and target in role_names:
+            target_node_id = get_node_id("Role", target)
 
-                has_reachability = nx.has_path(G, actor_node_id, target_role_node)
+            # Check if static CAN_ASSUME edge exists in NetworkX
+            has_static_edge = G.has_edge(actor_node_id, target_node_id) if G else False
+            target_risk = role_risk_map.get(target, 0)
 
-                # 1. Record dynamic ASSUMED_ROLE edge in NetworkX
-                G.add_edge(
-                    actor_node_id,
-                    target_role_node,
-                    label='ASSUMED_ROLE',
-                    timestamp=event_time,
-                    eventId=event_id,
-                    sourceIp=source_ip,
-                    is_activity=True
+            finding_type = "OBSERVED_ATTACK_ACTIVITY" if (has_static_edge or target_risk >= 50) else "OBSERVED_ACTIVITY"
+            severity = "critical" if target_risk >= 80 else ("high" if target_risk >= 60 else "medium")
+
+            finding = {
+                "event_id": ev["event_id"],
+                "actor": actor,
+                "target": target,
+                "event_name": ev_name,
+                "activity_type": act_type,
+                "timestamp": ev["event_time"],
+                "source_ip": ev["source_ip"],
+                "finding_type": finding_type,
+                "severity": severity,
+                "target_risk_score": target_risk,
+                "has_static_permission": has_static_edge,
+                "description": (
+                    f"Identity '{actor}' executed '{ev_name}' against role '{target}' "
+                    f"from IP {ev['source_ip']} (Static permission: {'Verified' if has_static_edge else 'Unmapped'})."
                 )
-                activity_edges.append({
-                    "source": actor_node_id,
-                    "target": target_role_node,
-                    "label": "ASSUMED_ROLE",
-                    "timestamp": event_time,
-                    "eventId": event_id,
-                    "sourceIp": source_ip
-                })
+            }
+            correlated_findings.append(finding)
 
-                target_risk = role_risk_map.get(target, 0)
-                is_admin_target = 'admin' in target.lower() or target_risk >= 70
+            activity_edges.append({
+                "source": actor_node_id,
+                "target": target_node_id,
+                "type": act_type,
+                "event_id": ev["event_id"],
+                "timestamp": ev["event_time"],
+                "is_active": True
+            })
 
-                severity = "critical" if (is_admin_target or target_risk >= 60) else "high"
-                score = max(85 if is_admin_target else 70, target_risk + 10)
-
-                correlated_findings.append({
-                    "id": f"corr-{event_id or hash(actor + target + event_time)}",
-                    "type": "OBSERVED_ATTACK_ACTIVITY",
-                    "title": f"Correlated Attack Activity: {actor} assumed {target}",
-                    "actor": actor,
-                    "actor_node_id": actor_node_id,
-                    "target": target,
-                    "target_node_id": target_role_node,
-                    "target_type": "Role",
-                    "event_name": "sts:AssumeRole",
-                    "event_time": event_time,
-                    "source_ip": source_ip,
-                    "severity": severity,
-                    "risk_score": min(99, score),
-                    "matched_static_relationship": "CAN_ASSUME" if has_static_can_assume else ("REACHABLE_PATH" if has_reachability else "UNAUTHORIZED_TELEMETRY"),
-                    "reason": f"Identity '{actor}' actively assumed privileged role '{target}' via sts:AssumeRole from source IP {source_ip}.",
-                    "recommendation": f"Review whether '{actor}' requires access to '{target}'. Enforce MFA and IP constraints in the role trust policy.",
-                    "is_correlated": True
-                })
-
-        elif event_name in ['PutRolePolicy', 'AttachRolePolicy', 'PutBucketPolicy', 'CreateAccessKey']:
-            if actor_node_id and target_node_id:
+            # Also add to NetworkX graph so paths can traverse dynamic activity
+            if G and G.has_node(actor_node_id) and G.has_node(target_node_id):
                 G.add_edge(
                     actor_node_id,
                     target_node_id,
-                    label='MODIFIED_CONFIG',
-                    timestamp=event_time,
-                    eventId=event_id,
-                    sourceIp=source_ip,
-                    is_activity=True
+                    label=act_type,
+                    type=act_type,
+                    eventId=ev["event_id"],
+                    timestamp=ev["event_time"]
                 )
-                activity_edges.append({
-                    "source": actor_node_id,
-                    "target": target_node_id,
-                    "label": "MODIFIED_CONFIG",
-                    "timestamp": event_time,
-                    "eventId": event_id,
-                    "sourceIp": source_ip
-                })
-
-                correlated_findings.append({
-                    "id": f"corr-{event_id or hash(actor + target + event_time)}",
-                    "type": "OBSERVED_CONFIG_DRIFT",
-                    "title": f"Privilege Modification: {actor} executed {event_name} on {target}",
-                    "actor": actor,
-                    "actor_node_id": actor_node_id,
-                    "target": target,
-                    "target_node_id": target_node_id,
-                    "target_type": ev["target_type"],
-                    "event_name": event_name,
-                    "event_time": event_time,
-                    "source_ip": source_ip,
-                    "severity": "high",
-                    "risk_score": 75,
-                    "matched_static_relationship": "DIRECT_MODIFICATION",
-                    "reason": f"Identity '{actor}' executed policy modification action '{event_name}' affecting '{target}' from IP {source_ip}.",
-                    "recommendation": f"Validate authorization for change '{event_name}' made by '{actor}'.",
-                    "is_correlated": True
-                })
-
-    logger.info(
-        f"CloudTrail Correlator: Processed {len(normalized_events)} events, "
-        f"created {len(activity_edges)} dynamic edges, "
-        f"detected {len(correlated_findings)} correlated security findings"
-    )
 
     return {
         "normalized_events": normalized_events,

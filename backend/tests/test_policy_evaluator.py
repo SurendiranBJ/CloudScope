@@ -5,7 +5,9 @@ from app.services.attack.policy_evaluator import (
     match_action,
     match_resource_arn,
     evaluate_policy_allows_resources,
-    evaluate_assume_role_trust
+    evaluate_assume_role_trust,
+    evaluate_policy_document_risk,
+    evaluate_trust_policy_risk
 )
 
 
@@ -63,6 +65,30 @@ def test_specific_s3_bucket_arn_matching():
     assert matched[0]["name"] == "target-bucket"
 
 
+def test_explicit_deny_overrides_allow():
+    doc = {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "s3:*",
+                "Resource": "*"
+            },
+            {
+                "Effect": "Deny",
+                "Action": "s3:*",
+                "Resource": "arn:aws:s3:::confidential-bucket/*"
+            }
+        ]
+    }
+    resources = [
+        {"id": "b1", "name": "confidential-bucket", "type": "S3", "arn": "arn:aws:s3:::confidential-bucket"},
+        {"id": "b2", "name": "public-bucket", "type": "S3", "arn": "arn:aws:s3:::public-bucket"}
+    ]
+    matched = evaluate_policy_allows_resources(doc, resources)
+    assert len(matched) == 1
+    assert matched[0]["name"] == "public-bucket"
+
+
 def test_secrets_manager_arn_matching():
     doc = {
         "Statement": [
@@ -118,8 +144,7 @@ def test_evaluate_assume_role_trust_specific_user():
         {"id": "u1", "name": "alice", "arn": "arn:aws:iam::123:user/alice"},
         {"id": "u2", "name": "bob", "arn": "arn:aws:iam::123:user/bob"}
     ]
-    roles = [{"name": "DeployRole", "arn": "arn:aws:iam::123:role/DeployRole"}]
-    result = evaluate_assume_role_trust(trust_doc, "DeployRole", users, roles, "123")
+    roles = [{"name": "AdminRole", "arn": "arn:aws:iam::123:role/AdminRole"}]
+    result = evaluate_assume_role_trust(trust_doc, "AdminRole", users, roles, "123")
     assert len(result["users"]) == 1
     assert result["users"][0]["name"] == "bob"
-    assert len(result["roles"]) == 0

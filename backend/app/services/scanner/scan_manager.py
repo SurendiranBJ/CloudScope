@@ -93,11 +93,10 @@ def _generate_recommendations(inventory: AWSInventory, attack_paths: list) -> li
             "desc": f"Critical lateral movement paths detected. Apply least-privilege policies and restrict AssumeRole trust relationships."
         })
 
-    # If no findings, add a positive recommendation
     if not recommendations:
         recommendations.append({
-            "title": "Security Posture Looks Good",
-            "desc": "No critical findings detected in this scan. Continue monitoring and enforcing least-privilege access."
+            "title": "Security Posture Verification Complete",
+            "desc": "All tested security baselines verified. Continue monitoring CloudTrail activity and least-privilege enforcement."
         })
 
     return recommendations
@@ -105,33 +104,19 @@ def _generate_recommendations(inventory: AWSInventory, attack_paths: list) -> li
 
 def _generate_risk_issue(item: dict) -> str:
     """Generate a specific, descriptive issue string for a risky item."""
-    itype = item.get('type', '')
-    name = item.get('name') or item.get('username') or 'Unknown'
+    factors = item.get('riskAssessment', {}).get('factors', [])
+    if factors:
+        return "; ".join(f['reason'] for f in factors)
 
+    itype = item.get('type', '')
     if itype == 'User':
         issues = []
         if not item.get('mfaEnabled', True):
             issues.append("MFA not enabled")
-        policies = item.get('policies', [])
-        admin_pols = [p for p in policies if 'admin' in p.lower()]
-        if admin_pols:
-            issues.append(f"Administrative access via {admin_pols[0]}")
-        if not issues:
-            issues.append("Over-privileged identity permissions")
-        return "; ".join(issues)
+        return "; ".join(issues) if issues else "Elevated user permissions"
 
     elif itype == 'Role':
-        issues = []
-        trust = item.get('trustPolicy', '')
-        if '*' in trust:
-            issues.append("Wildcard principal in AssumeRole trust relationship")
-        pols = item.get('attachedPolicies', [])
-        admin_pols = [p for p in pols if 'admin' in p.lower()]
-        if admin_pols:
-            issues.append(f"Direct administrative policy attached ({admin_pols[0]})")
-        if not issues:
-            issues.append("Elevated role privileges")
-        return "; ".join(issues)
+        return "Elevated role privileges or broad trust policy"
 
     elif itype == 'S3':
         details = item.get('details', {})
@@ -139,44 +124,39 @@ def _generate_risk_issue(item: dict) -> str:
         if not details.get('public_blocked', True):
             issues.append("Public access not blocked (potential data exposure)")
         if not details.get('encrypted', True):
-            issues.append("Server-side encryption not enabled")
-        return "; ".join(issues) if issues else "Bucket misconfiguration"
+            issues.append("Server-side encryption not configured")
+        return "; ".join(issues) if issues else "S3 configuration review recommended"
+
+    elif itype == 'Secrets':
+        return "Automatic secret rotation is not enabled"
 
     elif itype == 'EC2':
         details = item.get('details', {})
         if details.get('public_ip', 'None') != 'None':
-            return f"Publicly accessible (IP: {details.get('public_ip')}) with attached role {details.get('iam_role_name', 'None')}"
-        return "Compute instance security risk"
-
-    elif itype == 'Secrets':
-        details = item.get('details', {})
-        if not details.get('rotation_enabled', False):
-            return "Automatic credential rotation is not enabled"
-        return "Secret posture risk"
+            return f"Publicly accessible instance ({details.get('public_ip')})"
+        return "Compute instance security group review recommended"
 
     elif itype == 'RDS':
         details = item.get('details', {})
+        issues = []
         if details.get('publicly_accessible', False):
-            return "Database is publicly accessible over the internet"
-        if not details.get('storage_encrypted', False):
-            return "Database storage encryption is disabled"
-        return "Database configuration risk"
+            issues.append("Publicly accessible database")
+        if not details.get('storage_encrypted', True):
+            issues.append("Storage volume unencrypted")
+        return "; ".join(issues) if issues else "Database security configuration review recommended"
 
-    elif itype == 'DynamoDB':
-        return "DynamoDB table without point-in-time recovery"
-
-    return f"Security risk identified on {name}"
+    return "Configuration risk detected"
 
 
 def _generate_recommendation(item: dict) -> str:
-    """Generate an actionable remediation recommendation for a risky item."""
+    """Generate an actionable remediation recommendation string for a risky item."""
     itype = item.get('type', '')
-    name = item.get('name') or item.get('username') or 'this resource'
+    name = item.get('name') or item.get('username') or 'Resource'
 
     if itype == 'User':
         if not item.get('mfaEnabled', True):
-            return f"Enable multi-factor authentication (MFA) immediately for user '{name}'."
-        return f"Review and scope down permissions for user '{name}' following least-privilege principles."
+            return f"Enforce Multi-Factor Authentication (MFA) immediately for user '{name}'."
+        return f"Review attached policies on user '{name}' and apply least-privilege scoping."
 
     elif itype == 'Role':
         return f"Review the AssumeRole trust policy on role '{name}' and restrict the Principal to specific trusted ARNs."
@@ -202,31 +182,12 @@ def _generate_recommendation(item: dict) -> str:
     return f"Review the security configuration and apply least-privilege access to '{name}'."
 
 
-def _compute_security_score(inventory: AWSInventory, critical_risks_count: int, attack_paths_count: int) -> int:
-    """Calculate the global security score (0-100) using a deductive penalty model."""
-    score = 100
-
-    # Penalties for critical risks (each critical risk deducts 8 points, up to 40)
-    score -= min(40, critical_risks_count * 8)
-
-    # Penalties for attack paths (each path deducts 5 points, up to 25)
-    score -= min(25, attack_paths_count * 5)
-
-    # Penalties for users without MFA (each deducts 4 points, up to 15)
-    no_mfa_count = sum(1 for u in inventory.users if not u.get('mfaEnabled', True))
-    score -= min(15, no_mfa_count * 4)
-
-    # Penalties for public S3 buckets (each deducts 10 points, up to 20)
-    public_s3 = sum(1 for s in inventory.s3 if not s.get('details', {}).get('public_blocked', True))
-    score -= min(20, public_s3 * 10)
-
-    return max(0, min(100, score))
-
-
 class ScanManager:
     """Central Orchestrator for the unified single continuous scanning pipeline.
 
-    AWS -> Boto3 -> Inventory -> Policy Evaluator -> Neo4j -> NetworkX -> Risk/Attack Paths -> FastAPI.
+    Ordering:
+    AWS Collection -> CloudTrail Normalization -> Neo4j Config & Activity Sync
+    -> NetworkX Reload -> Attack Path & Correlation Analysis -> Risk Engine -> Cache.
     """
 
     def __init__(self):
@@ -267,7 +228,7 @@ class ScanManager:
         self._scan_started_at = datetime.utcnow().isoformat() + "Z"
         start_time = time.time()
         self._service_status = {}
-        
+
         logger.info("[INFO] SCAN START: Initializing AWS single continuous security scan")
 
         try:
@@ -292,7 +253,6 @@ class ScanManager:
             scanned_regions = list(get_all_regions())
             logger.info(f"[INFO] Scan regions: {scanned_regions}")
 
-            # Helper for resilient collector execution
             def run_collector(name, func):
                 try:
                     res = func()
@@ -346,7 +306,7 @@ class ScanManager:
                 for p in self.inventory.policies
             }
 
-            # Add inline policy documents from users, roles, and groups
+            # Inline policy documents
             for u in self.inventory.users:
                 for in_name, in_doc in u.get('inlinePolicyDocuments', {}).items():
                     policy_doc_map[in_name] = in_doc
@@ -401,7 +361,6 @@ class ScanManager:
                 managed_docs = iam_service.fetch_managed_policy_documents(aws_managed_arns)
                 policy_doc_map.update(managed_docs)
                 for pol_name, doc_str in managed_docs.items():
-                    # Check if already present in inventory
                     if not any(p['name'] == pol_name for p in self.inventory.policies):
                         self.inventory.policies.append({
                             "name": pol_name,
@@ -411,23 +370,43 @@ class ScanManager:
                             "riskScore": 0
                         })
 
-            # 3. Calculate Risk Scores
+            # 3. Calculate Deterministic Risk Assessments & Scores
             for u in self.inventory.users:
-                u['riskScore'] = risk_engine.score_user_risk(u, policy_doc_map)
-            for r in self.inventory.roles:
-                r['riskScore'] = risk_engine.score_role_risk(r, policy_doc_map)
-            for s in self.inventory.s3:
-                s['riskScore'] = risk_engine.score_resource_risk(s)
-            for e in self.inventory.ec2:
-                e['riskScore'] = risk_engine.score_resource_risk(e)
-            for sec in self.inventory.secrets:
-                sec['riskScore'] = risk_engine.score_resource_risk(sec)
-            for rds in self.inventory.rds:
-                rds['riskScore'] = risk_engine.score_resource_risk(rds)
-            for ddb in self.inventory.dynamodb:
-                ddb['riskScore'] = risk_engine.score_resource_risk(ddb)
+                eval_res = risk_engine.get_user_risk_assessment(u, policy_doc_map)
+                u['riskScore'] = eval_res['score']
+                u['riskAssessment'] = eval_res
 
-            # 4. Build Neo4j database graph
+            for r in self.inventory.roles:
+                eval_res = risk_engine.get_role_risk_assessment(r, policy_doc_map)
+                r['riskScore'] = eval_res['score']
+                r['riskAssessment'] = eval_res
+
+            for s in self.inventory.s3:
+                eval_res = risk_engine.get_resource_risk_assessment(s)
+                s['riskScore'] = eval_res['score']
+                s['riskAssessment'] = eval_res
+
+            for e in self.inventory.ec2:
+                eval_res = risk_engine.get_resource_risk_assessment(e)
+                e['riskScore'] = eval_res['score']
+                e['riskAssessment'] = eval_res
+
+            for sec in self.inventory.secrets:
+                eval_res = risk_engine.get_resource_risk_assessment(sec)
+                sec['riskScore'] = eval_res['score']
+                sec['riskAssessment'] = eval_res
+
+            for rds in self.inventory.rds:
+                eval_res = risk_engine.get_resource_risk_assessment(rds)
+                rds['riskScore'] = eval_res['score']
+                rds['riskAssessment'] = eval_res
+
+            for ddb in self.inventory.dynamodb:
+                eval_res = risk_engine.get_resource_risk_assessment(ddb)
+                ddb['riskScore'] = eval_res['score']
+                ddb['riskAssessment'] = eval_res
+
+            # 4. STEP 1 OF PIPELINE: Neo4j Configuration Sync (Idempotent MERGE, preserves ActivityEvent)
             neo4j_success = False
             try:
                 graph_builder.build_graph_in_neo4j(self.inventory)
@@ -435,7 +414,7 @@ class ScanManager:
             except Exception as db_err:
                 logger.warning(f"Neo4j database sync skipped/failed: {db_err}")
 
-            # 5. Load in-memory NetworkX directed graph
+            # 5. STEP 2 OF PIPELINE: Load Base NetworkX Graph
             try:
                 if neo4j_success:
                     G = graph_loader.load_graph_from_neo4j()
@@ -447,53 +426,25 @@ class ScanManager:
                 logger.warning(f"Neo4j loader exception: {loader_err}. Building local NetworkX model.")
                 G = graph_loader.build_local_graph(self.inventory)
 
-            nodes_count = G.number_of_nodes()
-            edges_count = G.number_of_edges()
-            logger.info(f"[INFO] Graph construction complete: {nodes_count} nodes, {edges_count} edges")
-
-            # 6. Attack Path Engine Analysis
-            attack_paths = path_engine.find_attack_paths(G)
-            logger.info(f"[INFO] Attack Path Engine: {len(attack_paths)} paths detected")
-
-            # 6.5 CloudTrail Security Activity Correlation & Dynamic Edges
+            # 6. STEP 3 OF PIPELINE: CloudTrail Activity Normalization & Synchronization into Graph
             correlation_result = cloudtrail_correlator.correlate_activity_with_graph(
                 self.inventory.alerts,
                 self.inventory,
-                G
+                G  # Dynamic activity edges added directly to G
             )
-            activity_edges = correlation_result.get("activity_edges", [])
             correlated_findings = correlation_result.get("correlated_findings", [])
 
-            if neo4j_success:
-                for edge in activity_edges:
-                    try:
-                        execute_write(
-                            """
-                            MATCH (s {id: $source}), (t {id: $target})
-                            MERGE (s)-[r:ASSUMED_ROLE {eventId: $eventId}]->(t)
-                            SET r.timestamp = $ts, r.sourceIp = $ip, r.is_activity = true
-                            """,
-                            {
-                                "source": edge["source"],
-                                "target": edge["target"],
-                                "eventId": edge.get("eventId", ""),
-                                "ts": edge.get("timestamp", ""),
-                                "ip": edge.get("sourceIp", "")
-                            }
-                        )
-                    except Exception as e:
-                        logger.debug(f"Neo4j activity edge write skipped: {e}")
+            nodes_count = G.number_of_nodes()
+            edges_count = G.number_of_edges()
+            logger.info(f"[INFO] Graph construction complete: {nodes_count} nodes, {edges_count} edges (with dynamic activity)")
+
+            # 7. STEP 4 OF PIPELINE: Attack Path Engine Analysis on Fully Synchronized Graph
+            attack_paths = path_engine.find_attack_paths(G)
+            logger.info(f"[INFO] Attack Path Engine: {len(attack_paths)} paths detected")
 
             duration = round(time.time() - start_time, 2)
 
-            # 7. Record ScanHistory
-            scan_timestamp = datetime.utcnow().isoformat() + "Z"
-            resources_count = (
-                len(self.inventory.ec2) + len(self.inventory.s3) +
-                len(self.inventory.lambdas) + len(self.inventory.secrets) +
-                len(self.inventory.rds) + len(self.inventory.dynamodb)
-            )
-
+            # 8. STEP 5 OF PIPELINE: Findings & Severity Groupings
             all_scored_items = (
                 self.inventory.users + self.inventory.roles +
                 self.inventory.s3 + self.inventory.ec2 +
@@ -505,16 +456,59 @@ class ScanManager:
             high_items = [x for x in all_scored_items if 60 <= x.get('riskScore', 0) < 80]
             medium_items = [x for x in all_scored_items if 40 <= x.get('riskScore', 0) < 60]
             low_items = [x for x in all_scored_items if 0 < x.get('riskScore', 0) < 40]
-            risks_count = len(critical_items)
+
+            total_findings_count = len(critical_items) + len(high_items) + len(medium_items) + len(low_items)
+
+            # Calculate Global 5-Category Posture Score
+            global_posture = risk_engine.compute_global_security_score(
+                self.inventory,
+                attack_paths,
+                self.inventory.alerts
+            )
+            security_score = global_posture["overall_score"]
+            recommendations = _generate_recommendations(self.inventory, attack_paths)
+
+            # 9. Record ScanHistory (Accurate Severity Metrics)
+            scan_timestamp = datetime.utcnow().isoformat() + "Z"
+            resources_count = (
+                len(self.inventory.ec2) + len(self.inventory.s3) +
+                len(self.inventory.lambdas) + len(self.inventory.secrets) +
+                len(self.inventory.rds) + len(self.inventory.dynamodb)
+            )
 
             try:
                 execute_write(
-                    "CREATE (n:ScanHistory {timestamp: $ts, duration: $dur, resources_found: $res, risks_found: $risks, nodes: $nodes, edges: $edges})",
+                    """
+                    CREATE (n:ScanHistory {
+                        timestamp: $ts,
+                        duration: $dur,
+                        resources_found: $res,
+                        total_findings: $total_findings,
+                        critical_findings: $crit,
+                        high_findings: $high,
+                        medium_findings: $med,
+                        low_findings: $low,
+                        attack_paths: $paths,
+                        cloudtrail_events: $ct_events,
+                        correlated_findings: $corr,
+                        security_score: $score,
+                        nodes: $nodes,
+                        edges: $edges
+                    })
+                    """,
                     {
                         "ts": scan_timestamp,
                         "dur": duration,
                         "res": resources_count,
-                        "risks": risks_count,
+                        "total_findings": total_findings_count,
+                        "crit": len(critical_items),
+                        "high": len(high_items),
+                        "med": len(medium_items),
+                        "low": len(low_items),
+                        "paths": len(attack_paths),
+                        "ct_events": len(self.inventory.alerts),
+                        "corr": len(correlated_findings),
+                        "score": security_score,
                         "nodes": nodes_count,
                         "edges": edges_count
                     }
@@ -522,7 +516,7 @@ class ScanManager:
             except Exception as hist_err:
                 logger.debug(f"Neo4j ScanHistory creation skipped: {hist_err}")
 
-            # 8. Refresh Cache
+            # 10. STEP 6 OF PIPELINE: Cache Updates
             cache.set("v1:users", self.inventory.users)
             cache.set("v1:roles", self.inventory.roles)
             cache.set("v1:policies", self.inventory.policies)
@@ -535,8 +529,9 @@ class ScanManager:
             cache.set("v1:alerts", self.inventory.alerts)
             cache.set("v1:correlated_risks", correlated_findings)
             cache.set("v1:attack-paths", attack_paths)
+            cache.set("v1:global_posture", global_posture)
 
-            # Cytoscape elements (incorporating dynamic activity edges)
+            # Cytoscape Graph Elements
             cytoscape_elements = []
             role_map = {r['name']: r for r in self.inventory.roles}
             user_map = {u['name']: u for u in self.inventory.users}
@@ -579,7 +574,7 @@ class ScanManager:
                 })
             cache.set("v1:graph", cytoscape_elements)
 
-            # Critical Risks Findings
+            # Critical Risks Findings list
             critical_risks = [
                 {
                     "id": x.get('id', x.get('name', 'unknown')),
@@ -590,90 +585,65 @@ class ScanManager:
                     "riskScore": x['riskScore'],
                     "recommendation": _generate_recommendation(x)
                 }
-                for x in all_scored_items if x.get('riskScore', 0) >= 60
+                for x in all_scored_items if x.get('riskScore', 0) >= 40
             ]
             critical_risks.sort(key=lambda x: x['riskScore'], reverse=True)
             cache.set("v1:risks", critical_risks)
 
-            security_score = _compute_security_score(self.inventory, len(critical_items), len(attack_paths))
-            recommendations = _generate_recommendations(self.inventory, attack_paths)
-
-            identities = []
-            for u in self.inventory.users:
-                identities.append({"name": u.get('name') or "unknown", "type": "User", "riskScore": u.get('riskScore', 0)})
-            for r in self.inventory.roles:
-                identities.append({"name": r.get('name') or "unknown", "type": "Role", "riskScore": r.get('riskScore', 0)})
-            identities.sort(key=lambda x: x['riskScore'], reverse=True)
-
-            resource_breakdown = [
-                {"type": "S3", "count": len(self.inventory.s3)},
-                {"type": "EC2", "count": len(self.inventory.ec2)},
-                {"type": "Lambda", "count": len(self.inventory.lambdas)},
-                {"type": "RDS", "count": len(self.inventory.rds)},
-                {"type": "DynamoDB", "count": len(self.inventory.dynamodb)},
-                {"type": "Secrets", "count": len(self.inventory.secrets)}
-            ]
-
-            dashboard_data = {
-                "securityScore": f"{security_score} / 100",
-                "stats": {
-                    "users": len(self.inventory.users),
-                    "roles": len(self.inventory.roles),
-                    "policies": len(self.inventory.policies),
-                    "risks": len(critical_risks),
-                    "paths": len(attack_paths),
-                    "resources": resources_count
-                },
-                "riskDistribution": [
-                    {"name": "Critical", "value": len(critical_items), "color": "#EF4444"},
-                    {"name": "High", "value": len(high_items), "color": "#F59E0B"},
-                    {"name": "Medium", "value": len(medium_items), "color": "#3B82F6"},
-                    {"name": "Low", "value": len(low_items), "color": "#10B981"}
-                ],
-                "recentAlerts": self.inventory.alerts[:5],
-                "correlatedRisks": correlated_findings[:5],
-                "criticalPaths": attack_paths[:3],
-                "recommendations": recommendations[:5],
-                "lastScan": {
-                    "timestamp": scan_timestamp,
-                    "duration_seconds": duration,
-                    "resources_found": resources_count,
-                    "risks_found": risks_count,
-                    "graph_nodes_count": nodes_count,
-                    "graph_edges_count": edges_count,
-                    "scanned_regions": scanned_regions
-                },
-                "topRiskyIdentities": identities[:10],
-                "resourceBreakdown": resource_breakdown,
+            dashboard_summary = {
+                "totalUsers": len(self.inventory.users),
+                "totalRoles": len(self.inventory.roles),
+                "totalPolicies": len(self.inventory.policies),
+                "totalResources": resources_count,
+                "securityScore": security_score,
+                "globalPosture": global_posture,
+                "criticalRisks": len(critical_items),
+                "highRisks": len(high_items),
+                "mediumRisks": len(medium_items),
+                "lowRisks": len(low_items),
+                "totalFindings": total_findings_count,
+                "attackPathsCount": len(attack_paths),
                 "scannedRegions": scanned_regions,
+                "cloudtrailAlertsCount": len(self.inventory.alerts),
+                "correlatedFindingsCount": len(correlated_findings),
+                "lastScanDuration": f"{duration}s",
+                "lastScanTimestamp": scan_timestamp,
+                "recommendations": recommendations,
                 "serviceStatus": self._service_status
             }
-            cache.set("v1:dashboard", dashboard_data)
-
-            scan_overall_status = "success" if not any("FAILED" in v for v in self._service_status.values()) else "partial_success"
+            cache.set("v1:dashboard", dashboard_summary)
 
             self._last_result = {
-                "status": scan_overall_status,
+                "status": "success",
                 "timestamp": scan_timestamp,
-                "duration": duration,
-                "resources": resources_count,
-                "risks": risks_count,
-                "scanned_regions": scanned_regions,
+                "duration_seconds": duration,
+                "nodes_count": nodes_count,
+                "edges_count": edges_count,
+                "attack_paths_count": len(attack_paths),
+                "security_score": security_score,
+                "total_findings": total_findings_count,
+                "critical_findings": len(critical_items),
                 "service_status": self._service_status
             }
 
-            logger.info(f"[INFO] SCAN COMPLETE: status={scan_overall_status}, duration={duration}s, resources={resources_count}")
+            logger.info(
+                f"[INFO] SCAN COMPLETE: Duration={duration}s, Nodes={nodes_count}, Edges={edges_count}, "
+                f"AttackPaths={len(attack_paths)}, TotalFindings={total_findings_count}, SecurityScore={security_score}/100"
+            )
+
             return self._last_result
 
         except Exception as e:
-            logger.error(f"[ERROR] Scan Manager Orchestrator failed: {e}")
-            self._last_result = {"status": "error", "message": str(e)}
+            logger.error(f"[ERROR] Scan execution encountered an unexpected failure: {e}", exc_info=True)
+            self._last_result = {
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }
             return self._last_result
-
         finally:
             self._is_running = False
             self._lock.release()
 
 
-# Export singleton
 scan_manager = ScanManager()

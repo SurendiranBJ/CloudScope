@@ -1,15 +1,21 @@
-"""IAM Policy and Trust Policy Evaluator.
+"""
+IAM Policy, Trust Policy, and Resource ARN Evaluator.
 
 Parses actual IAM Policy JSON documents and AssumeRole trust policies to
-determine concrete permissions and access relationships WITHOUT relying on
-heuristic policy/role/resource name matching.
+determine concrete permissions, access relationships, and risk factors
+WITHOUT relying on heuristic policy/role/resource name matching.
 """
 
 import json
 import logging
 import re
 from fnmatch import fnmatchcase
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
+from app.services.risk.risk_constants import (
+    WEIGHTS,
+    DANGEROUS_ESCALATION_ACTIONS,
+    BROAD_ADMIN_ACTIONS
+)
 
 logger = logging.getLogger("scanner")
 
@@ -18,7 +24,7 @@ def parse_policy_document(doc_input: Any) -> List[Dict[str, Any]]:
     """Parse and normalize an IAM policy document into a list of statement dicts."""
     if not doc_input:
         return []
-    
+
     doc = doc_input
     if isinstance(doc_input, str):
         try:
@@ -26,7 +32,7 @@ def parse_policy_document(doc_input: Any) -> List[Dict[str, Any]]:
         except Exception as e:
             logger.debug(f"Failed to parse policy JSON document: {e}")
             return []
-            
+
     if not isinstance(doc, dict):
         return []
 
@@ -41,8 +47,9 @@ def parse_policy_document(doc_input: Any) -> List[Dict[str, Any]]:
         if not isinstance(stmt, dict):
             continue
 
-        effect = stmt.get("Effect", "Deny")
-        
+        raw_effect = str(stmt.get("Effect", "Deny")).strip()
+        effect = "Allow" if raw_effect.lower() == "allow" else "Deny"
+
         # Normalize Action
         actions = stmt.get("Action", [])
         if isinstance(actions, str):
@@ -86,37 +93,51 @@ def parse_policy_document(doc_input: Any) -> List[Dict[str, Any]]:
 
 def match_action(action_pattern: str, target_action: str) -> bool:
     """Check if an IAM action pattern matches a target action."""
-    pattern = action_pattern.lower()
-    target = target_action.lower()
+    pattern = action_pattern.lower().strip()
+    target = target_action.lower().strip()
     if pattern in ("*", "*:*"):
         return True
     return fnmatchcase(target, pattern)
 
 
-def has_service_action(stmt_actions: List[str], service_prefix: str) -> bool:
-    """Check if any action in the list grants access to the specified AWS service."""
+def has_service_action(stmt_actions: List[str], not_actions: List[str], service_prefix: str) -> bool:
+    """Check if actions grant access to the specified AWS service (taking NotAction into account)."""
     service = service_prefix.lower().rstrip(":")
+    
+    # If NotAction is used with an Allow statement
+    if not_actions:
+        # If the target service is NOT excluded by NotAction, it is permitted
+        if not any(a.lower().startswith(f"{service}:") for a in not_actions):
+            return True
+
     for action in stmt_actions:
-        a = action.lower()
+        a = action.lower().strip()
         if a in ("*", "*:*"):
             return True
-        if a.startswith(f"{service}:") or fnmatchcase(f"{service}:sample", a):
+        if a.startswith(f"{service}:") or fnmatchcase(f"{service}:action", a):
             return True
     return False
 
 
-def match_resource_arn(resource_pattern: str, target_res: Dict[str, Any]) -> bool:
+def match_resource_arn(resource_pattern: str, not_resources: List[str], target_res: Dict[str, Any]) -> bool:
     """Match a policy resource ARN pattern against an inventory resource object."""
+    res_arn = target_res.get("arn", "").strip()
+    res_name = target_res.get("name", "").strip()
+    res_type = target_res.get("type", "").strip()
+
+    # Check NotResource exclusions
+    if not_resources:
+        for nr in not_resources:
+            nr_clean = nr.strip()
+            if fnmatchcase(res_arn.lower(), nr_clean.lower()):
+                return False
+
     pattern = resource_pattern.strip()
     if pattern == "*":
         return True
 
-    res_arn = target_res.get("arn", "")
-    res_name = target_res.get("name", "")
-    res_type = target_res.get("type", "")
-
-    # Exact or fnmatch on full ARN
-    if fnmatchcase(res_arn.lower(), pattern.lower()):
+    # Exact or glob pattern match on full ARN
+    if res_arn and fnmatchcase(res_arn.lower(), pattern.lower()):
         return True
 
     # S3 specific matching: arn:aws:s3:::bucket-name or arn:aws:s3:::bucket-name/*
@@ -146,14 +167,24 @@ def match_resource_arn(resource_pattern: str, target_res: Dict[str, Any]) -> boo
         if f":db:{res_name}" in pattern:
             return True
 
+    # EC2 specific matching: arn:aws:ec2:...:instance/i-xxx
+    if res_type == "EC2":
+        if f":instance/{res_name}" in pattern:
+            return True
+
+    # Lambda specific matching: arn:aws:lambda:...:function:FuncName
+    if res_type == "Lambda":
+        if f":function:{res_name}" in pattern:
+            return True
+
     return False
 
 
 def evaluate_policy_allows_resources(policy_doc_input: Any, inventory_resources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Determine which specific inventory resources a policy document grants access to.
 
-    Evaluates Effect: Allow statements against each resource in the inventory.
-    Returns a list of matched resource dictionaries.
+    Evaluates Effect: Allow statements against each resource in the inventory,
+    and ensures explicit DENY statements properly override any ALLOW.
     """
     statements = parse_policy_document(policy_doc_input)
     if not statements:
@@ -169,37 +200,194 @@ def evaluate_policy_allows_resources(policy_doc_input: Any, inventory_resources:
     }
 
     matched_resources: List[Dict[str, Any]] = []
-    matched_ids: Set[str] = set()
 
     for res in inventory_resources:
         res_id = res.get("id") or res.get("name")
         res_type = res.get("type")
-        if not res_id or not res_type or res_id in matched_ids:
+        if not res_id or not res_type:
             continue
 
         service_prefix = service_prefix_map.get(res_type)
         if not service_prefix:
             continue
 
+        is_allowed = False
+        is_denied = False
+
+        for stmt in statements:
+            effect = stmt["Effect"]
+            actions = stmt["Action"]
+            not_actions = stmt.get("NotAction", [])
+            resources = stmt["Resource"]
+            not_resources = stmt.get("NotResource", [])
+
+            # Check if this statement applies to this resource's service
+            service_matches = has_service_action(actions, not_actions, service_prefix)
+            if not service_matches:
+                continue
+
+            # Check if this statement applies to this resource's ARN
+            resource_matches = False
+            for res_pattern in (resources or ["*"]):
+                if match_resource_arn(res_pattern, not_resources, res):
+                    resource_matches = True
+                    break
+
+            if resource_matches:
+                if effect == "Deny":
+                    is_denied = True
+                    break  # Explicit Deny wins immediately
+                elif effect == "Allow":
+                    is_allowed = True
+
+        if is_allowed and not is_denied:
+            matched_resources.append(res)
+
+    return matched_resources
+
+
+def evaluate_policy_document_risk(policy_docs: List[Any]) -> Dict[str, Any]:
+    """Inspect actual parsed IAM policy statements to extract concrete risk factors.
+    Returns:
+        {
+            "has_wildcard_action": bool,
+            "has_wildcard_resource": bool,
+            "has_privilege_escalation": bool,
+            "factors": [{"code": str, "points": int, "reason": str}]
+        }
+    """
+    factors: List[Dict[str, Any]] = []
+    has_wildcard_act = False
+    has_wildcard_res = False
+    has_admin_perm = False
+    has_priv_esc = False
+
+    for doc in policy_docs:
+        statements = parse_policy_document(doc)
         for stmt in statements:
             if stmt["Effect"] != "Allow":
                 continue
 
-            # Check if statement grants any action for this service
-            if not has_service_action(stmt["Action"], service_prefix):
-                continue
+            actions = stmt.get("Action", [])
+            resources = stmt.get("Resource", [])
 
-            # Check if statement Resource pattern covers this resource
-            for res_pattern in stmt["Resource"]:
-                if match_resource_arn(res_pattern, res):
-                    matched_resources.append(res)
-                    matched_ids.add(res_id)
+            # Check wildcard Action
+            if any(a in ("*", "*:*") for a in actions):
+                has_wildcard_act = True
+
+            # Check wildcard Resource
+            if any(r == "*" for r in resources):
+                has_wildcard_res = True
+
+            # Check broad administrative actions
+            if any(a.lower() in BROAD_ADMIN_ACTIONS for a in actions):
+                has_admin_perm = True
+
+            # Check dangerous privilege escalation actions
+            for act in actions:
+                act_clean = act.lower().strip()
+                if act_clean in DANGEROUS_ESCALATION_ACTIONS:
+                    has_priv_esc = True
                     break
 
-            if res_id in matched_ids:
-                break
+    if has_wildcard_act and has_wildcard_res:
+        factors.append({
+            "code": "WILDCARD_ALLOW_ALL",
+            "points": WEIGHTS["WILDCARD_ALLOW_ALL"],
+            "reason": "Policy grants unconditional Administrator access (Action: * on Resource: *)."
+        })
+    else:
+        if has_wildcard_act:
+            factors.append({
+                "code": "WILDCARD_ACTION",
+                "points": WEIGHTS["WILDCARD_ACTION"],
+                "reason": "Policy grants wildcard Action (*) permissions."
+            })
+        if has_wildcard_res:
+            factors.append({
+                "code": "WILDCARD_RESOURCE",
+                "points": WEIGHTS["WILDCARD_RESOURCE"],
+                "reason": "Policy grants broad Resource (*) scope without resource ARN constraints."
+            })
+        if has_admin_perm:
+            factors.append({
+                "code": "FULL_ADMIN_PERMISSION",
+                "points": WEIGHTS["FULL_ADMIN_PERMISSION"],
+                "reason": "Policy includes broad administrative service control (e.g., iam:*, sts:*)."
+            })
 
-    return matched_resources
+    if has_priv_esc:
+        factors.append({
+            "code": "PRIVILEGE_ESCALATION_PERMS",
+            "points": WEIGHTS["PRIVILEGE_ESCALATION_PERMS"],
+            "reason": "Policy grants dangerous IAM privilege escalation capabilities (e.g., iam:PassRole, iam:AttachRolePolicy)."
+        })
+
+    return {
+        "has_wildcard_action": has_wildcard_act,
+        "has_wildcard_resource": has_wildcard_res,
+        "has_privilege_escalation": has_priv_esc,
+        "factors": factors
+    }
+
+
+def evaluate_trust_policy_risk(trust_policy_input: Any) -> Dict[str, Any]:
+    """Inspect an AssumeRole trust policy to extract structured trust risk factors."""
+    factors: List[Dict[str, Any]] = []
+    statements = parse_policy_document(trust_policy_input)
+
+    for stmt in statements:
+        if stmt["Effect"] != "Allow":
+            continue
+
+        actions = [a.lower() for a in stmt.get("Action", [])]
+        if not any(match_action(a, "sts:assumerole") for a in actions):
+            continue
+
+        principal = stmt.get("Principal", {})
+        
+        # Check wildcard Principal: "*" or {"AWS": "*"}
+        if principal == "*" or (isinstance(principal, dict) and principal.get("AWS") == "*"):
+            factors.append({
+                "code": "WILDCARD_TRUST_PRINCIPAL",
+                "points": WEIGHTS["WILDCARD_TRUST_PRINCIPAL"],
+                "reason": "AssumeRole trust policy contains a wildcard Principal (*), allowing any AWS entity to assume this role."
+            })
+            continue
+
+        if isinstance(principal, dict):
+            aws_p = principal.get("AWS", [])
+            if isinstance(aws_p, str):
+                aws_p = [aws_p]
+            elif not isinstance(aws_p, list):
+                aws_p = []
+
+            for p in aws_p:
+                if str(p).strip() == "*":
+                    factors.append({
+                        "code": "WILDCARD_TRUST_PRINCIPAL",
+                        "points": WEIGHTS["WILDCARD_TRUST_PRINCIPAL"],
+                        "reason": "AssumeRole trust policy specifies AWS: '*' principal."
+                    })
+                    break
+
+            # Service Principal check (e.g. ec2.amazonaws.com, lambda.amazonaws.com)
+            service_p = principal.get("Service", [])
+            if isinstance(service_p, str):
+                service_p = [service_p]
+            elif not isinstance(service_p, list):
+                service_p = []
+
+            if any(s == "*" for s in service_p):
+                factors.append({
+                    "code": "UNRESTRICTED_SERVICE_TRUST",
+                    "points": WEIGHTS["UNRESTRICTED_SERVICE_TRUST"],
+                    "reason": "AssumeRole trust policy allows unrestricted Service principal."
+                })
+
+    return {
+        "factors": factors
+    }
 
 
 def evaluate_assume_role_trust(
@@ -209,14 +397,7 @@ def evaluate_assume_role_trust(
     all_roles: List[Dict[str, Any]],
     account_id: str
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Parse an AssumeRole trust policy to identify which Users and Roles can assume this Role.
-
-    Returns:
-        {
-            "users": [user_dict, ...],
-            "roles": [role_dict, ...]
-        }
-    """
+    """Parse an AssumeRole trust policy to identify which Users and Roles can assume this Role."""
     result: Dict[str, List[Dict[str, Any]]] = {"users": [], "roles": []}
     statements = parse_policy_document(trust_policy_input)
     if not statements:
@@ -234,7 +415,6 @@ def evaluate_assume_role_trust(
         if stmt["Effect"] != "Allow":
             continue
 
-        # Check action includes sts:AssumeRole
         actions = [a.lower() for a in stmt["Action"]]
         if not any(match_action(a, "sts:assumerole") for a in actions):
             continue
@@ -243,19 +423,19 @@ def evaluate_assume_role_trust(
         if not principal:
             continue
 
-        # Check wildcard Principal: "*" or {"AWS": "*"}
-        if principal == "*" or principal.get("AWS") == "*":
+        if principal == "*" or (isinstance(principal, dict) and principal.get("AWS") == "*"):
             for u in all_users:
-                if u["id"] not in matched_user_ids:
+                u_id = u.get("id") or u.get("name")
+                if u_id not in matched_user_ids:
                     result["users"].append(u)
-                    matched_user_ids.add(u["id"])
+                    matched_user_ids.add(u_id)
             for r in all_roles:
                 if r["name"] != role_name and r["name"] not in matched_role_names:
                     result["roles"].append(r)
                     matched_role_names.add(r["name"])
             continue
 
-        aws_principals = principal.get("AWS", [])
+        aws_principals = principal.get("AWS", []) if isinstance(principal, dict) else []
         if isinstance(aws_principals, str):
             aws_principals = [aws_principals]
         elif not isinstance(aws_principals, list):
@@ -266,22 +446,23 @@ def evaluate_assume_role_trust(
 
             if p_str == "*":
                 for u in all_users:
-                    if u["id"] not in matched_user_ids:
+                    u_id = u.get("id") or u.get("name")
+                    if u_id not in matched_user_ids:
                         result["users"].append(u)
-                        matched_user_ids.add(u["id"])
+                        matched_user_ids.add(u_id)
                 for r in all_roles:
                     if r["name"] != role_name and r["name"] not in matched_role_names:
                         result["roles"].append(r)
                         matched_role_names.add(r["name"])
                 continue
 
-            # Account root ARN: arn:aws:iam::<account_id>:root or pure account ID
+            # Account root ARN or Account ID
             if p_str.endswith(":root") or (account_id and p_str == account_id):
-                # Account root delegates to all active IAM users/roles in account
                 for u in all_users:
-                    if u["id"] not in matched_user_ids:
+                    u_id = u.get("id") or u.get("name")
+                    if u_id not in matched_user_ids:
                         result["users"].append(u)
-                        matched_user_ids.add(u["id"])
+                        matched_user_ids.add(u_id)
                 for r in all_roles:
                     if r["name"] != role_name and r["name"] not in matched_role_names:
                         result["roles"].append(r)
@@ -302,13 +483,17 @@ def evaluate_assume_role_trust(
             # Specific User ARN
             elif ":user/" in p_str:
                 u_name = p_str.split("/")[-1]
-                if u_name in user_name_map and user_name_map[u_name]["id"] not in matched_user_ids:
+                if u_name in user_name_map:
                     u_obj = user_name_map[u_name]
-                    result["users"].append(u_obj)
-                    matched_user_ids.add(u_obj["id"])
-                elif p_str in user_arn_map and user_arn_map[p_str]["id"] not in matched_user_ids:
+                    u_id = u_obj.get("id") or u_obj.get("name")
+                    if u_id not in matched_user_ids:
+                        result["users"].append(u_obj)
+                        matched_user_ids.add(u_id)
+                elif p_str in user_arn_map:
                     u_obj = user_arn_map[p_str]
-                    result["users"].append(u_obj)
-                    matched_user_ids.add(u_obj["id"])
+                    u_id = u_obj.get("id") or u_obj.get("name")
+                    if u_id not in matched_user_ids:
+                        result["users"].append(u_obj)
+                        matched_user_ids.add(u_id)
 
     return result

@@ -1,81 +1,136 @@
+"""
+CloudScope Blast Radius & Lateral Impact Engine.
+
+Calculates deterministic blast radius metrics by distinguishing between
+privilege/identity abstractions (Users, Roles, Groups, Policies) and actual
+cloud resources (S3, EC2, Lambda, Secrets, RDS, DynamoDB). Only actual cloud
+assets strongly contribute to blast radius severity.
+"""
+
 import logging
 import networkx as nx
 from typing import Dict, Any, List
+from app.services.risk.risk_constants import get_severity_label
 
 logger = logging.getLogger("scanner")
+
+CLOUD_RESOURCE_TYPES = {"S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB"}
+PRIVILEGE_TYPES = {"Role", "Group", "Policy"}
+IDENTITY_TYPES = {"User"}
 
 
 def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
     """Calculate the blast radius and reachability of a compromised node in the graph."""
-    reachable_nodes: List[str] = []
-    stats = {
-        "User": 0,
-        "Role": 0,
-        "Group": 0,
-        "S3": 0,
-        "EC2": 0,
-        "Lambda": 0,
-        "Secrets": 0,
-        "RDS": 0,
-        "DynamoDB": 0,
-        "Policy": 0
-    }
-    critical_assets: List[Dict[str, Any]] = []
-    max_depth = 0
+    if not G or not G.has_node(node_id):
+        return {
+            "node_id": node_id,
+            "blast_score": 0,
+            "severity": "low",
+            "reachable_resource_count": 0,
+            "reachable_identities_count": 0,
+            "reachable_privilege_count": 0,
+            "critical_asset_count": 0,
+            "max_depth": 0,
+            "critical_assets": [],
+            "reachable_nodes": [],
+            "resource_types": {},
+            "evidence": []
+        }
 
     try:
-        if G.has_node(node_id):
-            descendants = nx.descendants(G, node_id)
-            reachable_nodes = list(descendants)
+        descendants = list(nx.descendants(G, node_id))
+        
+        identities: List[str] = []
+        privileges: List[str] = []
+        resources: List[str] = []
+        critical_assets: List[Dict[str, Any]] = []
+        resource_types: Dict[str, int] = {}
+        max_depth = 0
+        evidence: List[str] = []
 
-            for nid in reachable_nodes:
-                node_data = G.nodes[nid]
-                ntype = node_data.get('type', 'Resource')
-                if ntype in stats:
-                    stats[ntype] += 1
-                else:
-                    stats[ntype] = 1
+        for nid in descendants:
+            node_data = G.nodes[nid]
+            ntype = node_data.get('type', 'Resource')
+            nlabel = node_data.get('label', nid)
+            nrisk = node_data.get('riskScore', 0)
 
-                # Calculate depth from source to this reachable node
-                try:
-                    depth = nx.shortest_path_length(G, node_id, nid)
-                    if depth > max_depth:
-                        max_depth = depth
-                except Exception:
-                    pass
+            # Measure shortest path depth
+            try:
+                d = nx.shortest_path_length(G, node_id, nid)
+                if d > max_depth:
+                    max_depth = d
+            except Exception:
+                pass
 
-                # Flag critical data stores & roles
-                if ntype in ['Secrets', 'RDS', 'S3'] or (ntype == 'Role' and node_data.get('riskScore', 0) >= 50):
-                    critical_assets.append({
-                        "id": nid,
-                        "name": node_data.get('label', nid),
-                        "type": ntype,
-                        "riskScore": node_data.get('riskScore', 0)
-                    })
+            if ntype in IDENTITY_TYPES:
+                identities.append(nid)
+            elif ntype in PRIVILEGE_TYPES:
+                privileges.append(nid)
+            else:
+                resources.append(nid)
+                resource_types[ntype] = resource_types.get(ntype, 0) + 1
 
-        total_reachable = len(reachable_nodes)
-        critical_count = len(critical_assets)
-        score = min(100, (total_reachable * 10) + (critical_count * 15))
+            # Critical asset identification (Secrets, RDS, S3, or role with riskScore >= 60)
+            if ntype in ['Secrets', 'Secret', 'RDS', 'S3'] or (ntype == 'Role' and nrisk >= 60):
+                critical_assets.append({
+                    "id": nid,
+                    "name": nlabel,
+                    "type": ntype,
+                    "riskScore": nrisk
+                })
+
+        # Calculate blast score: based on reachable actual cloud resources and critical assets
+        res_count = len(resources)
+        crit_count = len(critical_assets)
+        priv_count = len(privileges)
+
+        # Evidence-based formula:
+        # Base points for resources + high weighting for critical assets + minor hop complexity
+        raw_score = (res_count * 12) + (crit_count * 20) + (priv_count * 5) + (max_depth * 3)
+        blast_score = min(100, max(0, raw_score))
+        severity = get_severity_label(blast_score)
+
+        if crit_count > 0:
+            evidence.append(f"{crit_count} critical cloud data store(s) / high-privilege role(s) directly reachable.")
+        if res_count > 0:
+            evidence.append(f"{res_count} total cloud infrastructure resources accessible within {max_depth} hop(s).")
+        if priv_count > 0:
+            evidence.append(f"{priv_count} intermediate IAM roles/groups traversed in lateral attack graph.")
 
         return {
             "node_id": node_id,
-            "blast_score": score,
-            "reachable_count": total_reachable,
+            "blast_score": blast_score,
+            "severity": severity,
+            "reachable_resource_count": res_count,
+            "reachable_identities_count": len(identities),
+            "reachable_privilege_count": priv_count,
+            "critical_asset_count": crit_count,
             "max_depth": max_depth,
-            "critical_assets_count": critical_count,
             "critical_assets": critical_assets,
-            "reachable_nodes": reachable_nodes,
-            "breakdown": stats
+            "reachable_nodes": descendants,
+            "resource_types": resource_types,
+            "evidence": evidence,
+            "breakdown": {
+                **resource_types,
+                "User": len(identities),
+                "Role": sum(1 for p in privileges if G.nodes[p].get('type') == 'Role'),
+                "Group": sum(1 for p in privileges if G.nodes[p].get('type') == 'Group'),
+                "Policy": sum(1 for p in privileges if G.nodes[p].get('type') == 'Policy')
+            }
         }
     except Exception as e:
         logger.error(f"Failed to calculate blast radius for {node_id}: {e}")
         return {
             "node_id": node_id,
             "blast_score": 0,
-            "reachable_count": 0,
+            "severity": "low",
+            "reachable_resource_count": 0,
+            "reachable_identities_count": 0,
+            "reachable_privilege_count": 0,
+            "critical_asset_count": 0,
             "max_depth": 0,
-            "critical_assets_count": 0,
             "critical_assets": [],
             "reachable_nodes": [],
-            "breakdown": stats
+            "resource_types": {},
+            "evidence": []
         }
