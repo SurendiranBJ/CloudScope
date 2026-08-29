@@ -23,7 +23,8 @@ import {
   Radio,
   SlidersHorizontal,
   FolderGit2,
-  Share2
+  Share2,
+  Users
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getAttackPaths } from '../api/attack';
@@ -38,8 +39,8 @@ cytoscape.use(dagre);
 export interface ConsolidatedAttackPathGroup {
   groupId: string;
   name: string;
-  sourceNode: AttackPathNode;
-  sharedNodes: AttackPathNode[];
+  sources: AttackPathNode[];
+  sharedChain: AttackPathNode[];
   targets: AttackPathNode[];
   originalPaths: AttackPath[];
   severity: 'critical' | 'high' | 'medium' | 'low';
@@ -53,6 +54,7 @@ export interface ConsolidatedAttackPathGroup {
 export const AttackPaths: FC = () => {
   const navigate = useNavigate();
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all');
   const [resourceTypeFilter, setResourceTypeFilter] = useState<string>('all');
@@ -70,7 +72,7 @@ export const AttackPaths: FC = () => {
 
   const rawAttackPaths = data || [];
 
-  // Natural relationship labels lookup
+  // Helper for natural relationship labels
   function getHopRelationshipLabel(srcType: string, tgtType: string): string {
     const s = (srcType || '').toLowerCase();
     const t = (tgtType || '').toLowerCase();
@@ -85,31 +87,41 @@ export const AttackPaths: FC = () => {
     return 'CAN_ACCESS';
   }
 
-  // 1. PATH GROUPING ALGORITHM: Consolidate duplicate linear paths sharing common prefix
+  // 1. ADVANCED DEDUPLICATION & GROUPING ALGORITHM (Cases A, B, C)
+  // Groups paths sharing the identical intermediate privilege chain (Roles, Policies)
   const consolidatedGroups = useMemo<ConsolidatedAttackPathGroup[]>(() => {
     const groupMap: Record<string, ConsolidatedAttackPathGroup> = {};
 
     rawAttackPaths.forEach((path) => {
       if (!path.nodes || path.nodes.length === 0) return;
 
-      // The shared prefix consists of all hops except the final target
-      const sharedPrefixNodes = path.nodes.slice(0, -1);
-      const targetNode = path.nodes[path.nodes.length - 1];
+      const sourceNode = path.nodes[0];
+      const targetNode = path.nodes.length > 1 ? path.nodes[path.nodes.length - 1] : null;
+      
+      // Intermediate chain: all nodes between source and final target
+      const intermediateNodes = path.nodes.length > 2 
+        ? path.nodes.slice(1, -1) 
+        : (path.nodes.length === 2 ? [path.nodes[1]] : []);
 
-      // Build deterministic prefix key: source + ordered intermediate nodes
-      const prefixKey = sharedPrefixNodes.length > 0 
-        ? sharedPrefixNodes.map(n => n.id || n.name).join('->')
-        : (path.nodes[0]?.id || path.nodes[0]?.name || 'unknown');
+      // If path has length 2 and the 2nd node is a Role (e.g. carol -> OverlyTrustingAdminRole), treat 2nd node as shared role
+      const isDirectRoleTarget = path.nodes.length === 2 && path.nodes[1].type === 'Role';
+      const effectiveSharedChain = isDirectRoleTarget ? [path.nodes[1]] : intermediateNodes;
+      const effectiveTargetNode = isDirectRoleTarget ? null : targetNode;
+
+      // Grouping key: string of ordered shared privilege nodes
+      const chainKey = effectiveSharedChain.length > 0
+        ? effectiveSharedChain.map(n => `${n.type}:${n.id || n.name}`).join('->')
+        : (effectiveTargetNode ? `target:${effectiveTargetNode.type}:${effectiveTargetNode.id || effectiveTargetNode.name}` : `source:${sourceNode.name}`);
 
       const sev = (path.severity || 'high').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
 
-      if (!groupMap[prefixKey]) {
-        groupMap[prefixKey] = {
-          groupId: `group:${prefixKey}`,
+      if (!groupMap[chainKey]) {
+        groupMap[chainKey] = {
+          groupId: `group:${chainKey}`,
           name: path.name,
-          sourceNode: path.nodes[0],
-          sharedNodes: sharedPrefixNodes,
-          targets: targetNode ? [targetNode] : [],
+          sources: [sourceNode],
+          sharedChain: effectiveSharedChain,
+          targets: effectiveTargetNode ? [effectiveTargetNode] : [],
           originalPaths: [path],
           severity: sev,
           maxLikelihood: path.likelihood || 80,
@@ -119,17 +131,17 @@ export const AttackPaths: FC = () => {
           description: path.description || ''
         };
       } else {
-        const group = groupMap[prefixKey];
+        const group = groupMap[chainKey];
         group.originalPaths.push(path);
-        
-        // Add target if not already present
-        if (targetNode && !group.targets.some(t => (t.id || t.name) === (targetNode.id || targetNode.name))) {
-          group.targets.push(targetNode);
+
+        // Deduplicate and append source identity
+        if (!group.sources.some(s => (s.id || s.name) === (sourceNode.id || sourceNode.name))) {
+          group.sources.push(sourceNode);
         }
 
-        // Track max likelihood
-        if (path.likelihood && path.likelihood > group.maxLikelihood) {
-          group.maxLikelihood = path.likelihood;
+        // Deduplicate and append target resource
+        if (effectiveTargetNode && !group.targets.some(t => (t.id || t.name) === (effectiveTargetNode.id || effectiveTargetNode.name))) {
+          group.targets.push(effectiveTargetNode);
         }
 
         // Elevate severity if higher
@@ -139,6 +151,11 @@ export const AttackPaths: FC = () => {
         const newRank = severityValues[incomingSev] || 1;
         if (newRank > currentRank) {
           group.severity = incomingSev as 'critical' | 'high' | 'medium' | 'low';
+        }
+
+        // Track max likelihood
+        if (path.likelihood && path.likelihood > group.maxLikelihood) {
+          group.maxLikelihood = path.likelihood;
         }
 
         // Union MITRE techniques
@@ -160,8 +177,8 @@ export const AttackPaths: FC = () => {
       const matchesSearch = q === '' || 
         g.name.toLowerCase().includes(q) || 
         g.description.toLowerCase().includes(q) ||
-        g.sourceNode.name.toLowerCase().includes(q) ||
-        g.sharedNodes.some(n => n.name.toLowerCase().includes(q) || n.type.toLowerCase().includes(q)) ||
+        g.sources.some(s => s.name.toLowerCase().includes(q) || s.type.toLowerCase().includes(q)) ||
+        g.sharedChain.some(n => n.name.toLowerCase().includes(q) || n.type.toLowerCase().includes(q)) ||
         g.targets.some(t => t.name.toLowerCase().includes(q) || t.type.toLowerCase().includes(q));
 
       const matchesSeverity = severityFilter === 'all' || g.severity === severityFilter;
@@ -178,7 +195,7 @@ export const AttackPaths: FC = () => {
     return consolidatedGroups.find(g => g.groupId === selectedGroupId) || filteredGroups[0] || null;
   }, [consolidatedGroups, filteredGroups, selectedGroupId]);
 
-  // 2. Build Merged Branching Attack DAG Elements for Cytoscape Top Visualizer
+  // 2. Build Merged Multi-Source & Multi-Target Branching DAG for Cytoscape
   const treeElements = useMemo(() => {
     const nodesMap: Record<string, any> = {};
     const edgesMap: Record<string, any> = {};
@@ -186,8 +203,24 @@ export const AttackPaths: FC = () => {
     const groupsToRender = filteredGroups.length > 0 ? filteredGroups : consolidatedGroups;
 
     groupsToRender.forEach((group) => {
-      // 1. Add shared prefix chain nodes exactly once
-      group.sharedNodes.forEach((node, idx) => {
+      // 1. Add all source nodes
+      group.sources.forEach((sourceNode) => {
+        const sId = sourceNode.id || `node:${sourceNode.name}`;
+        if (!nodesMap[sId]) {
+          nodesMap[sId] = {
+            data: {
+              id: sId,
+              label: sourceNode.name,
+              type: sourceNode.type,
+              isSource: true,
+              riskScore: group.maxLikelihood
+            }
+          };
+        }
+      });
+
+      // 2. Add shared intermediate privilege chain nodes
+      group.sharedChain.forEach((node) => {
         const nodeId = node.id || `node:${node.name}`;
         if (!nodesMap[nodeId]) {
           nodesMap[nodeId] = {
@@ -195,7 +228,6 @@ export const AttackPaths: FC = () => {
               id: nodeId,
               label: node.name,
               type: node.type,
-              isRoot: idx === 0,
               isShared: true,
               riskScore: group.maxLikelihood
             }
@@ -203,13 +235,37 @@ export const AttackPaths: FC = () => {
         }
       });
 
-      // 2. Connect consecutive hops in the shared chain
-      for (let i = 0; i < group.sharedNodes.length - 1; i++) {
-        const sNode = group.sharedNodes[i];
-        const tNode = group.sharedNodes[i + 1];
+      // 3. Connect sources -> First shared chain node
+      const firstSharedNode = group.sharedChain[0];
+      if (firstSharedNode) {
+        const firstSharedId = firstSharedNode.id || `node:${firstSharedNode.name}`;
+        group.sources.forEach((sourceNode) => {
+          const sId = sourceNode.id || `node:${sourceNode.name}`;
+          const edgeId = `src_edge:${sId}->${firstSharedId}`;
+          if (!edgesMap[edgeId]) {
+            edgesMap[edgeId] = {
+              data: {
+                id: edgeId,
+                source: sId,
+                target: firstSharedId,
+                label: getHopRelationshipLabel(sourceNode.type, firstSharedNode.type),
+                groupIds: [group.groupId],
+                severity: group.severity
+              }
+            };
+          } else if (!edgesMap[edgeId].data.groupIds.includes(group.groupId)) {
+            edgesMap[edgeId].data.groupIds.push(group.groupId);
+          }
+        });
+      }
+
+      // 4. Connect consecutive hops in the shared chain
+      for (let i = 0; i < group.sharedChain.length - 1; i++) {
+        const sNode = group.sharedChain[i];
+        const tNode = group.sharedChain[i + 1];
         const sId = sNode.id || `node:${sNode.name}`;
         const tId = tNode.id || `node:${tNode.name}`;
-        const edgeId = `edge:${sId}->${tId}`;
+        const edgeId = `chain_edge:${sId}->${tId}`;
 
         if (!edgesMap[edgeId]) {
           edgesMap[edgeId] = {
@@ -227,40 +283,44 @@ export const AttackPaths: FC = () => {
         }
       }
 
-      // 3. Connect the last shared node to all branching divergent targets
-      const lastSharedNode = group.sharedNodes[group.sharedNodes.length - 1] || group.sourceNode;
-      const lastSharedId = lastSharedNode.id || `node:${lastSharedNode.name}`;
+      // 5. Connect last shared chain node -> all target resources
+      const lastSharedNode = group.sharedChain.length > 0 
+        ? group.sharedChain[group.sharedChain.length - 1] 
+        : group.sources[0];
+      const lastSharedId = lastSharedNode ? (lastSharedNode.id || `node:${lastSharedNode.name}`) : null;
 
-      group.targets.forEach((targetNode) => {
-        const targetId = targetNode.id || `node:${targetNode.name}`;
-        if (!nodesMap[targetId]) {
-          nodesMap[targetId] = {
-            data: {
-              id: targetId,
-              label: targetNode.name,
-              type: targetNode.type,
-              isTarget: true,
-              riskScore: group.maxLikelihood
-            }
-          };
-        }
+      if (lastSharedId) {
+        group.targets.forEach((targetNode) => {
+          const targetId = targetNode.id || `node:${targetNode.name}`;
+          if (!nodesMap[targetId]) {
+            nodesMap[targetId] = {
+              data: {
+                id: targetId,
+                label: targetNode.name,
+                type: targetNode.type,
+                isTarget: true,
+                riskScore: group.maxLikelihood
+              }
+            };
+          }
 
-        const branchEdgeId = `branch:${lastSharedId}->${targetId}`;
-        if (!edgesMap[branchEdgeId]) {
-          edgesMap[branchEdgeId] = {
-            data: {
-              id: branchEdgeId,
-              source: lastSharedId,
-              target: targetId,
-              label: getHopRelationshipLabel(lastSharedNode.type, targetNode.type),
-              groupIds: [group.groupId],
-              severity: group.severity
-            }
-          };
-        } else if (!edgesMap[branchEdgeId].data.groupIds.includes(group.groupId)) {
-          edgesMap[branchEdgeId].data.groupIds.push(group.groupId);
-        }
-      });
+          const branchEdgeId = `tgt_edge:${lastSharedId}->${targetId}`;
+          if (!edgesMap[branchEdgeId]) {
+            edgesMap[branchEdgeId] = {
+              data: {
+                id: branchEdgeId,
+                source: lastSharedId,
+                target: targetId,
+                label: getHopRelationshipLabel(lastSharedNode.type, targetNode.type),
+                groupIds: [group.groupId],
+                severity: group.severity
+              }
+            };
+          } else if (!edgesMap[branchEdgeId].data.groupIds.includes(group.groupId)) {
+            edgesMap[branchEdgeId].data.groupIds.push(group.groupId);
+          }
+        });
+      }
     });
 
     return [...Object.values(nodesMap), ...Object.values(edgesMap)];
@@ -499,12 +559,19 @@ export const AttackPaths: FC = () => {
       const nodeId = node.id();
       
       const matchingGroup = consolidatedGroups.find(g => 
-        g.sharedNodes.some(n => (n.id || `node:${n.name}`) === nodeId) ||
+        g.sources.some(s => (s.id || `node:${s.name}`) === nodeId) ||
+        g.sharedChain.some(n => (n.id || `node:${n.name}`) === nodeId) ||
         g.targets.some(t => (t.id || `node:${t.name}`) === nodeId)
       );
 
       if (matchingGroup) {
         setSelectedGroupId(matchingGroup.groupId);
+        // If clicking a source, set focused source
+        if (matchingGroup.sources.some(s => (s.id || `node:${s.name}`) === nodeId)) {
+          setFocusedSourceId(nodeId);
+        } else {
+          setFocusedSourceId(null);
+        }
       }
     });
 
@@ -518,7 +585,7 @@ export const AttackPaths: FC = () => {
     };
   }, [treeElements, consolidatedGroups]);
 
-  // Apply Branch Highlighting on selectedGroup change
+  // Apply Branch Highlighting on selectedGroup or focusedSource change
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy) return;
@@ -527,8 +594,13 @@ export const AttackPaths: FC = () => {
       if (selectedGroup) {
         cy.elements().addClass('dimmed').removeClass('highlighted');
 
+        const activeSources = focusedSourceId 
+          ? selectedGroup.sources.filter(s => (s.id || `node:${s.name}`) === focusedSourceId)
+          : selectedGroup.sources;
+
         const activeNodeIds = [
-          ...selectedGroup.sharedNodes.map(n => n.id || `node:${n.name}`),
+          ...activeSources.map(s => s.id || `node:${s.name}`),
+          ...selectedGroup.sharedChain.map(n => n.id || `node:${n.name}`),
           ...selectedGroup.targets.map(t => t.id || `node:${t.name}`)
         ];
 
@@ -540,18 +612,27 @@ export const AttackPaths: FC = () => {
           }
         });
 
-        // Highlight shared chain edges + branching target edges
+        // Highlight group edges
         cy.edges().forEach(edge => {
           const groupIds: string[] = edge.data('groupIds') || [];
           if (groupIds.includes(selectedGroup.groupId)) {
-            edge.removeClass('dimmed').addClass('highlighted');
+            // If focusing on single source, only highlight edges from that source
+            if (focusedSourceId) {
+              const srcId = edge.source().id();
+              const isOtherSource = selectedGroup.sources.some(s => (s.id || `node:${s.name}`) === srcId && srcId !== focusedSourceId);
+              if (!isOtherSource) {
+                edge.removeClass('dimmed').addClass('highlighted');
+              }
+            } else {
+              edge.removeClass('dimmed').addClass('highlighted');
+            }
           }
         });
       } else {
         cy.elements().removeClass('dimmed').removeClass('highlighted');
       }
     });
-  }, [selectedGroup]);
+  }, [selectedGroup, focusedSourceId]);
 
   // AI Copilot Explainer on Consolidated Group
   const handleExplainAI = async (group: ConsolidatedAttackPathGroup) => {
@@ -564,12 +645,17 @@ export const AttackPaths: FC = () => {
     setAiExpanded(prev => ({ ...prev, [group.groupId]: { loading: true, text: '' } }));
 
     try {
-      const prompt = `Analyze the consolidated attack path for identity "${group.sourceNode.name}". 
+      const sourceNames = group.sources.map(s => s.name).join(', ');
+      const chainNames = group.sharedChain.map(n => `${n.name} (${n.type})`).join(' → ');
+      const targetNames = group.targets.length > 0 
+        ? group.targets.map(t => `${t.name} (${t.type})`).join(', ')
+        : 'the granting privileged role';
+
+      const prompt = `Analyze the consolidated lateral attack path where ${group.sources.length} identities (${sourceNames}) share the common privilege path: ${chainNames}. 
+Reachable Assets (${group.targets.length}): ${targetNames}. 
 Severity: ${group.severity}. 
-Shared Privilege Path: ${group.sharedNodes.map(n => `${n.name} (${n.type})`).join(' → ')}. 
-Reachable Branching Targets (${group.targets.length}): ${group.targets.map(t => `${t.name} (${t.type})`).join(', ')}. 
-MITRE techniques: ${group.mitreTechniques.join(', ')}. 
-Explain why this identity's privilege chain allows it to reach multiple cloud assets and suggest an IAM remediation.`;
+MITRE Techniques: ${group.mitreTechniques.join(', ')}. 
+Explain why this shared privilege path introduces high blast radius across multiple identities and suggest an IAM remediation.`;
       
       const response = await postCopilotMessage(prompt);
       setAiExpanded(prev => ({
@@ -581,7 +667,7 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
         ...prev,
         [group.groupId]: {
           loading: false,
-          text: `This consolidated attack path reveals that the identity "${group.sourceNode.name}" traverses a single shared privilege chain (${group.sharedNodes.map(n => n.name).join(' → ')}) to access ${group.targets.length} distinct cloud targets (${group.targets.map(t => t.name).join(', ')}). Recommendation: ${group.recommendation || 'Apply least-privilege scoping to the attached IAM policy.'}`
+          text: `Multiple identities (${group.sources.map(s => s.name).join(', ')}) share a common privilege path (${group.sharedChain.map(n => n.name).join(' → ')}) allowing lateral escalation to reach ${group.targets.length} cloud assets. Recommendation: ${group.recommendation || 'Enforce MFA and restrict trust relationships on the target role.'}`
         }
       }));
     }
@@ -618,9 +704,14 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
     a.click();
   };
 
-  const handleHighlightInFullGraph = (group: ConsolidatedAttackPathGroup) => {
+  const handleHighlightInFullGraph = (group: ConsolidatedAttackPathGroup, specificSourceId?: string) => {
+    const activeSources = specificSourceId 
+      ? group.sources.filter(s => (s.id || s.name) === specificSourceId)
+      : group.sources;
+
     const allNodeIds = [
-      ...group.sharedNodes.map(n => n.id || n.name),
+      ...activeSources.map(s => s.id || s.name),
+      ...group.sharedChain.map(n => n.id || n.name),
       ...group.targets.map(t => t.id || t.name)
     ];
     navigate(`/graph?highlight=${allNodeIds.join(',')}`);
@@ -637,7 +728,7 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
             <span>Attack Paths & Lateral Movement DAG</span>
           </h1>
           <p className="text-xs text-enterprise-subtext mt-1">
-            Consolidated branching attack trees merging duplicate common prefixes into single multi-target lateral vectors.
+            Consolidated branching attack trees merging duplicate common prefixes and shared downstream chains.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -653,7 +744,7 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
             <FolderGit2 className="w-4 h-4" />
           </div>
           <div>
-            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Consolidated Trees</p>
+            <p className="text-[10px] text-enterprise-subtext font-bold uppercase tracking-wider">Consolidated Groups</p>
             <div className="flex items-baseline gap-1.5">
               <span className="text-lg font-black text-white">{blastRadiusStats.consolidatedGroupCount}</span>
               <span className="text-[10px] text-gray-400 font-mono">({blastRadiusStats.totalRawPaths} raw)</span>
@@ -832,7 +923,7 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
             return (
               <div
                 key={group.groupId}
-                onClick={() => setSelectedGroupId(group.groupId)}
+                onClick={() => { setSelectedGroupId(group.groupId); setFocusedSourceId(null); }}
                 className={`bg-enterprise-card border rounded-2xl p-6 transition-all shadow-xl flex flex-col gap-5 cursor-pointer ${
                   isSelected
                     ? 'border-red-500/80 bg-[#141B2D] ring-1 ring-red-500/50 shadow-red-500/10'
@@ -855,10 +946,16 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
                       <span className="text-[10px] text-enterprise-accent bg-enterprise-accent/10 border border-enterprise-accent/30 px-2.5 py-0.5 rounded font-bold">
                         {group.maxLikelihood}% LIKELIHOOD
                       </span>
-                      <span className="text-[10px] text-purple-300 bg-purple-950/50 border border-purple-500/40 px-2.5 py-0.5 rounded font-mono font-bold flex items-center gap-1">
-                        <Share2 className="w-3 h-3 text-purple-400" />
-                        <span>{group.targets.length} Reachable Target{group.targets.length > 1 ? 's' : ''}</span>
+                      <span className="text-[10px] text-blue-400 bg-blue-950/50 border border-blue-500/40 px-2.5 py-0.5 rounded font-mono font-bold flex items-center gap-1">
+                        <Users className="w-3 h-3 text-blue-400" />
+                        <span>{group.sources.length} Compromised Source{group.sources.length > 1 ? 's' : ''}</span>
                       </span>
+                      {group.targets.length > 0 && (
+                        <span className="text-[10px] text-purple-300 bg-purple-950/50 border border-purple-500/40 px-2.5 py-0.5 rounded font-mono font-bold flex items-center gap-1">
+                          <Share2 className="w-3 h-3 text-purple-400" />
+                          <span>{group.targets.length} Reachable Target{group.targets.length > 1 ? 's' : ''}</span>
+                        </span>
+                      )}
                       <h3 className="text-base font-bold text-white ml-1">{group.name}</h3>
                     </div>
                     <p className="text-xs text-enterprise-subtext leading-relaxed">{group.description}</p>
@@ -867,7 +964,7 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
                   {/* Action Buttons */}
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={(e) => { e.stopPropagation(); handleHighlightInFullGraph(group); }}
+                      onClick={(e) => { e.stopPropagation(); handleHighlightInFullGraph(group, focusedSourceId || undefined); }}
                       className="flex items-center gap-1.5 px-3.5 py-1.5 bg-enterprise-accent hover:bg-blue-600 text-white font-semibold rounded-lg text-xs transition-colors shadow"
                     >
                       <GitMerge className="w-3.5 h-3.5" />
@@ -892,123 +989,177 @@ Explain why this identity's privilege chain allows it to reach multiple cloud as
                 {/* EXACT REFERENCE DESIGN: VERTICAL HIERARCHICAL BRANCHING DIAGRAM */}
                 <div className="bg-[#0B1120]/80 rounded-xl p-5 border border-enterprise-border/80 flex flex-col items-center select-none shadow-inner">
                   
-                  {/* Shared Linear Privilege Chain: User -> Roles -> Policies */}
-                  <div className="flex flex-col items-center w-full max-w-xl">
-                    {group.sharedNodes.map((node, index) => {
-                      const nextNode = group.sharedNodes[index + 1];
-                      const relLabel = nextNode ? getHopRelationshipLabel(node.type, nextNode.type) : 'ALLOWS';
+                  {/* LAYER 1: MULTIPLE SOURCE IDENTITIES (CONVERGING AT TOP) */}
+                  <div className="w-full flex flex-col items-center">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Users className="w-3.5 h-3.5 text-blue-400" />
+                      <span className="text-[10px] font-mono font-bold text-blue-400 uppercase tracking-wider">
+                        Source Identities ({group.sources.length})
+                      </span>
+                    </div>
 
-                      return (
-                        <div key={node.id || node.name} className="flex flex-col items-center w-full">
-                          {/* Node Box */}
-                          <div className={`px-4 py-2 rounded-xl border flex items-center gap-3 shadow-md min-w-[240px] justify-center ${
-                            (node.type as string) === 'User'
-                              ? 'bg-blue-950/40 border-blue-500/50 text-blue-100'
-                              : (node.type as string) === 'Group'
-                              ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-100'
-                              : (node.type as string) === 'Policy'
-                              ? 'bg-teal-950/40 border-teal-500/50 text-teal-100'
-                              : (node.type as string) === 'Role'
-                              ? 'bg-purple-950/40 border-purple-500/50 text-purple-100'
-                              : 'bg-slate-900 border-gray-700 text-gray-200'
-                          }`}>
-                            <span
-                              className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
-                                (node.type as string) === 'User'
-                                  ? 'bg-blue-400'
-                                  : (node.type as string) === 'Group'
-                                  ? 'bg-indigo-400'
-                                  : (node.type as string) === 'Policy'
-                                  ? 'bg-teal-400'
-                                  : (node.type as string) === 'Role'
-                                  ? 'bg-purple-400'
-                                  : 'bg-amber-400'
-                              }`}
-                            />
-                            <div className="text-center">
-                              <p className="font-bold text-xs text-white leading-tight font-mono">{node.name}</p>
-                              <p className="text-[9px] text-gray-400 uppercase tracking-wider font-semibold mt-0.5">{node.type}</p>
-                            </div>
-                          </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2 max-w-2xl">
+                      {group.sources.map((src) => {
+                        const isSourceFocused = focusedSourceId === (src.id || `node:${src.name}`);
+                        return (
+                          <button
+                            key={src.id || src.name}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedGroupId(group.groupId);
+                              setFocusedSourceId(prev => prev === (src.id || `node:${src.name}`) ? null : (src.id || `node:${src.name}`));
+                            }}
+                            className={`px-3 py-1.5 rounded-lg border flex items-center gap-2 shadow-md transition-all ${
+                              isSourceFocused
+                                ? 'bg-blue-600 border-blue-400 text-white ring-2 ring-blue-400 shadow-blue-500/20 scale-105'
+                                : 'bg-blue-950/40 hover:bg-blue-900/50 border-blue-500/50 text-blue-100'
+                            }`}
+                            title="Click to focus on this individual identity trace"
+                          >
+                            <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+                            <span className="font-bold text-xs font-mono">{src.name}</span>
+                            <span className="text-[8px] opacity-75 uppercase font-semibold">User</span>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                          {/* Vertical Connector Down */}
-                          <div className="flex flex-col items-center py-1">
-                            <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
-                              {relLabel}
-                            </span>
-                            <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
-                            <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {/* Convergence Line down to shared chain */}
+                    <div className="flex flex-col items-center py-2">
+                      {group.sources.length > 1 && (
+                        <div className="w-48 h-[2px] bg-gradient-to-r from-blue-500/20 via-blue-500 to-blue-500/20 my-0.5" />
+                      )}
+                      <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
+                        {group.sharedChain.length > 0 
+                          ? getHopRelationshipLabel('User', group.sharedChain[0].type)
+                          : 'CAN_ACCESS'}
+                      </span>
+                      <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
+                      <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
+                    </div>
                   </div>
 
-                  {/* BRANCHING FORK CONNECTOR TO MULTIPLE TARGET ASSETS */}
-                  <div className="w-full flex flex-col items-center mt-1">
-                    
-                    {/* Multi-Target Horizontal Distribution Line */}
-                    {group.targets.length > 1 ? (
-                      <div className="w-full flex flex-col items-center">
-                        <div className="w-3/4 max-w-2xl h-[2px] bg-gradient-to-r from-red-500/20 via-red-500 to-red-500/20 my-1 relative">
-                          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-[#0B1120] px-2 text-[8px] font-mono font-bold text-red-400 uppercase tracking-widest border border-red-500/40 rounded">
-                            {group.targets.length} Target Branches
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {/* Target Resources Grid */}
-                    <div className="flex flex-wrap items-center justify-center gap-3 mt-3 w-full">
-                      {group.targets.map((target) => {
-                        const t = target.type as string;
-                        const isCritical = t === 'Secrets' || t === 'Secret' || t === 'RDS';
+                  {/* LAYER 2: SHARED INTERMEDIATE PRIVILEGE CHAIN (Rendered ONCE) */}
+                  {group.sharedChain.length > 0 ? (
+                    <div className="flex flex-col items-center w-full max-w-xl">
+                      {group.sharedChain.map((node, index) => {
+                        const nextNode = group.sharedChain[index + 1];
+                        const relLabel = nextNode ? getHopRelationshipLabel(node.type, nextNode.type) : 'ALLOWS';
 
                         return (
-                          <div
-                            key={target.id || target.name}
-                            className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-transform hover:scale-105 ${
-                              isCritical
-                                ? 'bg-red-950/50 border-red-500/70 text-red-100 ring-1 ring-red-500/30'
-                                : 'bg-amber-950/30 border-amber-500/50 text-amber-100'
-                            }`}
-                          >
-                            <span
-                              className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
-                                isCritical ? 'bg-red-400 animate-pulse' : 'bg-amber-400'
-                              }`}
-                            />
-                            <div>
-                              <p className="font-bold text-xs text-white leading-tight font-mono">{target.name}</p>
-                              <div className="flex items-center gap-1 mt-0.5">
-                                <span className="text-[8px] text-gray-400 uppercase font-semibold">{target.type}</span>
-                                {isCritical && (
-                                  <span className="text-[8px] text-red-400 font-bold bg-red-950 px-1 rounded uppercase">CRITICAL</span>
-                                )}
+                          <div key={node.id || node.name} className="flex flex-col items-center w-full">
+                            {/* Node Box */}
+                            <div className={`px-4 py-2 rounded-xl border flex items-center gap-3 shadow-md min-w-[240px] justify-center ${
+                              (node.type as string) === 'User'
+                                ? 'bg-blue-950/40 border-blue-500/50 text-blue-100'
+                                : (node.type as string) === 'Group'
+                                ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-100'
+                                : (node.type as string) === 'Policy'
+                                ? 'bg-teal-950/40 border-teal-500/50 text-teal-100'
+                                : (node.type as string) === 'Role'
+                                ? 'bg-purple-950/40 border-purple-500/50 text-purple-100'
+                                : 'bg-slate-900 border-gray-700 text-gray-200'
+                            }`}>
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
+                                  (node.type as string) === 'User'
+                                    ? 'bg-blue-400'
+                                    : (node.type as string) === 'Group'
+                                    ? 'bg-indigo-400'
+                                    : (node.type as string) === 'Policy'
+                                    ? 'bg-teal-400'
+                                    : (node.type as string) === 'Role'
+                                    ? 'bg-purple-400'
+                                    : 'bg-amber-400'
+                                }`}
+                              />
+                              <div className="text-center">
+                                <p className="font-bold text-xs text-white leading-tight font-mono">{node.name}</p>
+                                <p className="text-[9px] text-gray-400 uppercase tracking-wider font-semibold mt-0.5">{node.type}</p>
                               </div>
+                            </div>
+
+                            {/* Vertical Connector Down */}
+                            <div className="flex flex-col items-center py-1">
+                              <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
+                                {relLabel}
+                              </span>
+                              <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
+                              <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
                             </div>
                           </div>
                         );
                       })}
                     </div>
+                  ) : null}
 
-                    {/* Bottom Impact Summary Bar */}
-                    <div className="mt-4 pt-3 border-t border-gray-800/80 w-full flex items-center justify-between text-xs text-gray-400 flex-wrap gap-2">
-                      <div className="flex items-center gap-2">
-                        <Flame className="w-3.5 h-3.5 text-red-400" />
-                        <span className="font-mono text-[11px]">
-                          <strong className="text-white">Blast Radius:</strong> {group.blastRadiusSummary}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">MITRE ATT&CK:</span>
-                        <div className="flex flex-wrap gap-1">
-                          {group.mitreTechniques.map(tech => (
-                            <span key={tech} className="px-1.5 py-0.5 bg-gray-900 text-[9px] font-mono text-gray-300 rounded border border-gray-700">
-                              {tech}
-                            </span>
-                          ))}
+                  {/* LAYER 3: BRANCHING FORK CONNECTOR TO MULTIPLE TARGET ASSETS */}
+                  {group.targets.length > 0 && (
+                    <div className="w-full flex flex-col items-center mt-1">
+                      
+                      {/* Multi-Target Horizontal Distribution Line */}
+                      {group.targets.length > 1 ? (
+                        <div className="w-full flex flex-col items-center">
+                          <div className="w-3/4 max-w-2xl h-[2px] bg-gradient-to-r from-red-500/20 via-red-500 to-red-500/20 my-1 relative">
+                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-[#0B1120] px-2 text-[8px] font-mono font-bold text-red-400 uppercase tracking-widest border border-red-500/40 rounded">
+                              {group.targets.length} Target Branches
+                            </div>
+                          </div>
                         </div>
+                      ) : null}
+
+                      {/* Target Resources Grid */}
+                      <div className="flex flex-wrap items-center justify-center gap-3 mt-3 w-full">
+                        {group.targets.map((target) => {
+                          const t = target.type as string;
+                          const isCritical = t === 'Secrets' || t === 'Secret' || t === 'RDS';
+
+                          return (
+                            <div
+                              key={target.id || target.name}
+                              className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-transform hover:scale-105 ${
+                                isCritical
+                                  ? 'bg-red-950/50 border-red-500/70 text-red-100 ring-1 ring-red-500/30'
+                                  : 'bg-amber-950/30 border-amber-500/50 text-amber-100'
+                              }`}
+                            >
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
+                                  isCritical ? 'bg-red-400 animate-pulse' : 'bg-amber-400'
+                                }`}
+                              />
+                              <div>
+                                <p className="font-bold text-xs text-white leading-tight font-mono">{target.name}</p>
+                                <div className="flex items-center gap-1 mt-0.5">
+                                  <span className="text-[8px] text-gray-400 uppercase font-semibold">{target.type}</span>
+                                  {isCritical && (
+                                    <span className="text-[8px] text-red-400 font-bold bg-red-950 px-1 rounded uppercase">CRITICAL</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Bottom Impact Summary Bar */}
+                  <div className="mt-5 pt-3 border-t border-gray-800/80 w-full flex items-center justify-between text-xs text-gray-400 flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <Flame className="w-3.5 h-3.5 text-red-400" />
+                      <span className="font-mono text-[11px]">
+                        <strong className="text-white">Blast Radius:</strong> {group.blastRadiusSummary}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">MITRE ATT&CK:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {group.mitreTechniques.map(tech => (
+                          <span key={tech} className="px-1.5 py-0.5 bg-gray-900 text-[9px] font-mono text-gray-300 rounded border border-gray-700">
+                            {tech}
+                          </span>
+                        ))}
                       </div>
                     </div>
                   </div>
