@@ -1,8 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { IdentityGraph } from '../components/IdentityGraph';
+import type { GraphDisplayMode } from '../components/IdentityGraph';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
-import { Network, Search, LayoutTemplate, Maximize, RefreshCw, AlertTriangle, Info, ChevronDown, ShieldAlert, Filter } from 'lucide-react';
+import { 
+  Network, Search, LayoutTemplate, Maximize, RefreshCw, 
+  AlertTriangle, Info, ChevronDown, ShieldAlert, Filter, 
+  Target, Focus, Globe
+} from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
 import { getRiskAssessmentFindings } from '../api/risks';
@@ -16,7 +21,8 @@ export const IdentityGraphPage: React.FC = () => {
 
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<'clustered' | 'vertical' | 'dagre' | 'breadthfirst' | 'cose'>('clustered');
+  const [layoutMode, setLayoutMode] = useState<'structured' | 'vertical' | 'dagre' | 'breadthfirst' | 'cose'>('structured');
+  const [displayMode, setDisplayMode] = useState<GraphDisplayMode>(highlightedNodeIds.length > 0 ? 'attack_path' : 'overview');
   const [securityFilter, setSecurityFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showLabels, setShowLabels] = useState(true);
@@ -77,42 +83,73 @@ export const IdentityGraphPage: React.FC = () => {
       
       {/* HEADER BAR */}
       {!isFullscreen && (
-        <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800 bg-[#0F172A] shrink-0">
+        <header className="flex items-center justify-between px-6 py-3.5 border-b border-gray-800 bg-[#0F172A] shrink-0">
           <div>
-            <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+            <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
               <Network className="w-5 h-5 text-blue-500" />
               <span>Identity Graph</span>
             </h1>
-            <p className="text-xs text-gray-400 mt-1">Strict Top-To-Bottom AWS Identity & Access Topology</p>
+            <p className="text-[11px] text-gray-400">Layered Security Architecture (Top → Bottom)</p>
           </div>
           
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             <ScannedRegionBadge />
 
-            {/* Search */}
+            {/* Display Mode Tabs */}
+            <div className="hidden lg:flex items-center bg-gray-900 border border-gray-800 p-0.5 rounded-lg text-xs font-semibold">
+              <button
+                onClick={() => setDisplayMode('overview')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
+                  displayMode === 'overview' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Overview</span>
+              </button>
+              <button
+                onClick={() => setDisplayMode('identity_focus')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
+                  displayMode === 'identity_focus' ? 'bg-indigo-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <Focus className="w-3.5 h-3.5" />
+                <span>Identity Focus</span>
+              </button>
+              <button
+                onClick={() => setDisplayMode('attack_path')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
+                  displayMode === 'attack_path' ? 'bg-red-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <Target className="w-3.5 h-3.5" />
+                <span>Attack Path</span>
+              </button>
+            </div>
+
+            {/* Search Input */}
             <div className="relative hidden md:flex items-center">
               <Search className="w-4 h-4 absolute left-3 text-gray-500" />
               <input 
                 type="text" 
-                placeholder="Search name, ARN, type..." 
+                placeholder="Search user, group, policy, ARN..." 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-gray-900 border border-gray-700 text-sm rounded-lg pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500 w-64 transition-colors text-white placeholder-gray-500"
+                className="bg-gray-900 border border-gray-700 text-xs rounded-lg pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500 w-56 transition-colors text-white placeholder-gray-500"
               />
             </div>
 
-            {/* Security Filter Dropdown */}
+            {/* Security Severity Filter */}
             <div className="relative group">
-              <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors">
-                <ShieldAlert className="w-4 h-4 text-amber-400" />
+              <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors">
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
                 <span className="capitalize">{securityFilter.replace('_', ' ')}</span>
                 <ChevronDown className="w-3 h-3 text-gray-400" />
               </button>
               <div className="absolute right-0 mt-2 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
                 <div className="p-1">
                   <button onClick={() => setSecurityFilter('all')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'all' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>All Severities</button>
-                  <button onClick={() => setSecurityFilter('critical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'critical' ? 'text-red-400 font-semibold' : 'text-gray-300'}`}>Critical Only (≥80)</button>
-                  <button onClick={() => setSecurityFilter('high')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'high' ? 'text-amber-400 font-semibold' : 'text-gray-300'}`}>High Only (≥60)</button>
+                  <button onClick={() => setSecurityFilter('critical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'critical' ? 'text-red-400 font-semibold' : 'text-gray-300'}`}>Critical (≥80)</button>
+                  <button onClick={() => setSecurityFilter('high')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'high' ? 'text-amber-400 font-semibold' : 'text-gray-300'}`}>High (≥60)</button>
                   <button onClick={() => setSecurityFilter('medium')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'medium' ? 'text-yellow-400 font-semibold' : 'text-gray-300'}`}>Medium (40-59)</button>
                   <button onClick={() => setSecurityFilter('low')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'low' ? 'text-green-400 font-semibold' : 'text-gray-300'}`}>Low (&lt;40)</button>
                   <button onClick={() => setSecurityFilter('attack_paths_only')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'attack_paths_only' ? 'text-red-500 font-bold' : 'text-gray-300'}`}>Attack Paths Only</button>
@@ -120,12 +157,12 @@ export const IdentityGraphPage: React.FC = () => {
               </div>
             </div>
             
-            {/* Layout dropdown */}
+            {/* Layout Options */}
             <div className="relative group">
-              <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors">
-                <LayoutTemplate className="w-4 h-4 text-blue-400" />
+              <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors">
+                <LayoutTemplate className="w-3.5 h-3.5 text-blue-400" />
                 <span>
-                  {layoutMode === 'clustered' ? 'User-Group Clustered (Default)' :
+                  {layoutMode === 'structured' ? 'Layered Security Architecture' :
                    layoutMode === 'vertical' ? 'Strict Vertical (6 Layers)' :
                    layoutMode === 'dagre' ? 'Dagre Top-To-Bottom' :
                    layoutMode === 'breadthfirst' ? 'Concentric' : 'Force Directed'}
@@ -134,7 +171,7 @@ export const IdentityGraphPage: React.FC = () => {
               </button>
               <div className="absolute right-0 mt-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
                 <div className="p-1">
-                  <button onClick={() => setLayoutMode('clustered')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'clustered' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>User-Group Clustered (Default)</button>
+                  <button onClick={() => setLayoutMode('structured')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'structured' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Layered Security Architecture (Default)</button>
                   <button onClick={() => setLayoutMode('vertical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'vertical' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Strict Vertical (6 Layers)</button>
                   <button onClick={() => setLayoutMode('dagre')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'dagre' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Dagre Top-To-Bottom</button>
                   <button onClick={() => setLayoutMode('breadthfirst')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'breadthfirst' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Concentric Radial</button>
@@ -143,26 +180,44 @@ export const IdentityGraphPage: React.FC = () => {
               </div>
             </div>
             
-            <button onClick={() => window.dispatchEvent(new CustomEvent('graph:reset'))} className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors">
-              <RefreshCw className="w-4 h-4" /> Reset View
+            <button onClick={() => window.dispatchEvent(new CustomEvent('graph:reset'))} className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors">
+              <RefreshCw className="w-3.5 h-3.5" /> Reset
             </button>
             
-            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors ml-2" title="Toggle Fullscreen">
+            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors ml-1" title="Toggle Fullscreen">
               <Maximize className="w-4 h-4" />
             </button>
           </div>
         </header>
       )}
 
+      {/* Attack Path Prominent Summary Banner */}
+      {highlightedNodeIds.length > 0 && (
+        <div className="bg-red-950/80 border-b border-red-800/80 px-6 py-2 flex items-center justify-between z-20 backdrop-blur-md">
+          <div className="flex items-center gap-3">
+            <Target className="w-4 h-4 text-red-400 shrink-0" />
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-bold text-red-200 tracking-wide uppercase text-[10px]">Active Attack Path:</span>
+              <span className="font-mono text-white font-semibold">{highlightedNodeIds[0]}</span>
+              <span className="text-red-400">→</span>
+              <span className="font-mono text-red-200">{highlightedNodeIds[highlightedNodeIds.length - 1]}</span>
+              <span className="text-gray-400">({highlightedNodeIds.length} hops)</span>
+            </div>
+          </div>
+          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white uppercase tracking-wider">High Risk</span>
+        </div>
+      )}
+
       {/* MAIN CONTENT */}
       <main className="flex-1 flex overflow-hidden min-h-0 relative">
         
-        {/* GRAPH AREA */}
+        {/* GRAPH CANVAS AREA */}
         <div className="flex-1 relative flex flex-col min-w-0">
           <IdentityGraph 
             onNodeSelect={setSelectedNode} 
             highlightedNodeIds={highlightedNodeIds}
             layoutMode={layoutMode}
+            displayMode={displayMode}
             searchQuery={searchQuery}
             showLabels={showLabels}
             showEdgeLabels={showEdgeLabels}
