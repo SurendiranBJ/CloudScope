@@ -44,7 +44,7 @@ export interface ConsolidatedAttackPathGroup {
   targets: AttackPathNode[];
   originalPaths: AttackPath[];
   severity: 'critical' | 'high' | 'medium' | 'low';
-  maxLikelihood: number;
+  maxRiskScore: number;
   blastRadiusSummary: string;
   mitreTechniques: string[];
   recommendation: string;
@@ -72,19 +72,21 @@ export const AttackPaths: FC = () => {
 
   const rawAttackPaths = data || [];
 
-  // Helper for natural relationship labels
-  function getHopRelationshipLabel(srcType: string, tgtType: string): string {
-    const s = (srcType || '').toLowerCase();
-    const t = (tgtType || '').toLowerCase();
-    if (s === 'user' && t === 'group') return 'MEMBER_OF';
-    if (s === 'group' && t === 'policy') return 'HAS_POLICY';
-    if (s === 'user' && t === 'policy') return 'ATTACHED_POLICY';
-    if (s === 'policy' && t === 'role') return 'CAN_ASSUME';
-    if (s === 'user' && t === 'role') return 'CAN_ASSUME';
-    if (s === 'role' && t === 'policy') return 'HAS_POLICY';
-    if (s === 'policy') return 'ALLOWS';
-    if (s === 'role') return 'ALLOWS_ACCESS';
-    return 'CAN_ACCESS';
+  // Extract exact relationship label from backend orderedRelationships (single source of truth)
+  function findExactEdgeLabel(group: ConsolidatedAttackPathGroup, srcNodeIdOrName: string, tgtNodeIdOrName: string): string {
+    for (const path of group.originalPaths) {
+      if (!path.nodes || !path.orderedRelationships) continue;
+      for (let i = 0; i < path.nodes.length - 1; i++) {
+        const u = path.nodes[i];
+        const v = path.nodes[i + 1];
+        const uMatch = (u.id === srcNodeIdOrName || u.name === srcNodeIdOrName);
+        const vMatch = (v.id === tgtNodeIdOrName || v.name === tgtNodeIdOrName);
+        if (uMatch && vMatch && path.orderedRelationships[i]) {
+          return path.orderedRelationships[i];
+        }
+      }
+    }
+    return 'ALLOWS';
   }
 
   // 1. ADVANCED DEDUPLICATION & GROUPING ALGORITHM (Cases A, B, C)
@@ -114,6 +116,7 @@ export const AttackPaths: FC = () => {
         : (effectiveTargetNode ? `target:${effectiveTargetNode.type}:${effectiveTargetNode.id || effectiveTargetNode.name}` : `source:${sourceNode.name}`);
 
       const sev = (path.severity || 'high').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
+      const score = path.riskScore ?? path.likelihood ?? 75;
 
       if (!groupMap[chainKey]) {
         groupMap[chainKey] = {
@@ -124,7 +127,7 @@ export const AttackPaths: FC = () => {
           targets: effectiveTargetNode ? [effectiveTargetNode] : [],
           originalPaths: [path],
           severity: sev,
-          maxLikelihood: path.likelihood || 80,
+          maxRiskScore: score,
           blastRadiusSummary: path.blastRadius || 'Multiple connected resources',
           mitreTechniques: [...(path.mitreTechniques || [])],
           recommendation: path.recommendation || '',
@@ -153,9 +156,9 @@ export const AttackPaths: FC = () => {
           group.severity = incomingSev as 'critical' | 'high' | 'medium' | 'low';
         }
 
-        // Track max likelihood
-        if (path.likelihood && path.likelihood > group.maxLikelihood) {
-          group.maxLikelihood = path.likelihood;
+        // Track max risk score
+        if (score > group.maxRiskScore) {
+          group.maxRiskScore = score;
         }
 
         // Union MITRE techniques
@@ -213,7 +216,7 @@ export const AttackPaths: FC = () => {
               label: sourceNode.name,
               type: sourceNode.type,
               isSource: true,
-              riskScore: group.maxLikelihood
+              riskScore: group.maxRiskScore
             }
           };
         }
@@ -229,7 +232,7 @@ export const AttackPaths: FC = () => {
               label: node.name,
               type: node.type,
               isShared: true,
-              riskScore: group.maxLikelihood
+              riskScore: group.maxRiskScore
             }
           };
         }
@@ -248,7 +251,7 @@ export const AttackPaths: FC = () => {
                 id: edgeId,
                 source: sId,
                 target: firstSharedId,
-                label: getHopRelationshipLabel(sourceNode.type, firstSharedNode.type),
+                label: findExactEdgeLabel(group, sourceNode.id || sourceNode.name, firstSharedNode.id || firstSharedNode.name),
                 groupIds: [group.groupId],
                 severity: group.severity
               }
@@ -273,7 +276,7 @@ export const AttackPaths: FC = () => {
               id: edgeId,
               source: sId,
               target: tId,
-              label: getHopRelationshipLabel(sNode.type, tNode.type),
+              label: findExactEdgeLabel(group, sNode.id || sNode.name, tNode.id || tNode.name),
               groupIds: [group.groupId],
               severity: group.severity
             }
@@ -289,7 +292,7 @@ export const AttackPaths: FC = () => {
         : group.sources[0];
       const lastSharedId = lastSharedNode ? (lastSharedNode.id || `node:${lastSharedNode.name}`) : null;
 
-      if (lastSharedId) {
+      if (lastSharedId && lastSharedNode) {
         group.targets.forEach((targetNode) => {
           const targetId = targetNode.id || `node:${targetNode.name}`;
           if (!nodesMap[targetId]) {
@@ -299,7 +302,7 @@ export const AttackPaths: FC = () => {
                 label: targetNode.name,
                 type: targetNode.type,
                 isTarget: true,
-                riskScore: group.maxLikelihood
+                riskScore: group.maxRiskScore
               }
             };
           }
@@ -311,7 +314,7 @@ export const AttackPaths: FC = () => {
                 id: branchEdgeId,
                 source: lastSharedId,
                 target: targetId,
-                label: getHopRelationshipLabel(lastSharedNode.type, targetNode.type),
+                label: findExactEdgeLabel(group, lastSharedNode.id || lastSharedNode.name, targetNode.id || targetNode.name),
                 groupIds: [group.groupId],
                 severity: group.severity
               }
@@ -944,7 +947,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                         {group.severity} RISK
                       </span>
                       <span className="text-[10px] text-enterprise-accent bg-enterprise-accent/10 border border-enterprise-accent/30 px-2.5 py-0.5 rounded font-bold">
-                        {group.maxLikelihood}% LIKELIHOOD
+                        RISK SCORE: {group.maxRiskScore} / 100
                       </span>
                       <span className="text-[10px] text-blue-400 bg-blue-950/50 border border-blue-500/40 px-2.5 py-0.5 rounded font-mono font-bold flex items-center gap-1">
                         <Users className="w-3 h-3 text-blue-400" />
@@ -1030,8 +1033,8 @@ Explain why this shared privilege path introduces high blast radius across multi
                         <div className="w-48 h-[2px] bg-gradient-to-r from-blue-500/20 via-blue-500 to-blue-500/20 my-0.5" />
                       )}
                       <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
-                        {group.sharedChain.length > 0 
-                          ? getHopRelationshipLabel('User', group.sharedChain[0].type)
+                        {group.sharedChain.length > 0 && group.sources.length > 0
+                          ? findExactEdgeLabel(group, group.sources[0].id || group.sources[0].name, group.sharedChain[0].id || group.sharedChain[0].name)
                           : 'CAN_ACCESS'}
                       </span>
                       <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
@@ -1044,7 +1047,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                     <div className="flex flex-col items-center w-full max-w-xl">
                       {group.sharedChain.map((node, index) => {
                         const nextNode = group.sharedChain[index + 1];
-                        const relLabel = nextNode ? getHopRelationshipLabel(node.type, nextNode.type) : 'ALLOWS';
+                        const relLabel = nextNode ? findExactEdgeLabel(group, node.id || node.name, nextNode.id || nextNode.name) : 'ALLOWS';
 
                         return (
                           <div key={node.id || node.name} className="flex flex-col items-center w-full">

@@ -58,7 +58,11 @@ export interface AttackPath {
   name: string;
   nodes: AttackPathNode[];
   severity: 'critical' | 'high' | 'medium' | 'low';
-  likelihood: number; // percentage
+  riskScore?: number;
+  likelihood?: number;
+  confidence?: number;
+  pathType?: string;
+  orderedRelationships?: string[];
   blastRadius: string;
   mitreTechniques: string[];
   recommendation: string;

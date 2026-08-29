@@ -119,3 +119,25 @@ def test_case_5_multi_source_multi_target_dag():
     assert len(groups[0]["sources"]) == 4
     assert len(groups[0]["sharedChain"]) == 2
     assert len(groups[0]["targets"]) == 4
+
+
+def test_case_6_preserves_backend_ordered_relationships():
+    """Verify backend orderedRelationships are preserved on every original path in the group."""
+    paths = [
+        {
+            "id": "p1",
+            "nodes": [
+                {"name": "Alice", "type": "User"},
+                {"name": "Developers", "type": "Group"},
+                {"name": "PowerUserAccess", "type": "Policy"},
+                {"name": "EC2AppRole", "type": "Role"},
+                {"name": "S3-A", "type": "S3"}
+            ],
+            "orderedRelationships": ["MEMBER_OF", "HAS_POLICY", "CAN_ASSUME", "ALLOWS"]
+        }
+    ]
+    groups = group_attack_paths(paths)
+    assert len(groups) == 1
+    orig_path = groups[0]["originalPaths"][0]
+    assert orig_path["orderedRelationships"] == ["MEMBER_OF", "HAS_POLICY", "CAN_ASSUME", "ALLOWS"]
+
