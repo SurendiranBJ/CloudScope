@@ -258,6 +258,7 @@ def correlate_activity_with_graph(
             activity_edges.append({
                 "source": actor_node_id,
                 "target": target_node_id,
+                "label": act_type,
                 "type": act_type,
                 "event_id": ev["event_id"],
                 "timestamp": ev["event_time"],
