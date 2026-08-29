@@ -20,8 +20,8 @@ def test_ready_endpoint():
     assert response.status_code == 200
     res_json = response.json()
     assert "data" in res_json
-    assert "backend" in res_json["data"]
-    assert "status" in res_json["data"]
+    assert res_json["data"]["backend"] == "ok"
+    assert "ready" in res_json["data"]
 
 
 def test_health_aws_endpoint():
