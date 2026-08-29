@@ -16,7 +16,7 @@ export const IdentityGraphPage: React.FC = () => {
 
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<'vertical' | 'dagre' | 'breadthfirst' | 'cose'>('vertical');
+  const [layoutMode, setLayoutMode] = useState<'clustered' | 'vertical' | 'dagre' | 'breadthfirst' | 'cose'>('clustered');
   const [securityFilter, setSecurityFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showLabels, setShowLabels] = useState(true);
@@ -125,15 +125,17 @@ export const IdentityGraphPage: React.FC = () => {
               <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors">
                 <LayoutTemplate className="w-4 h-4 text-blue-400" />
                 <span>
-                  {layoutMode === 'vertical' ? 'Strict Vertical (6 Layers)' :
+                  {layoutMode === 'clustered' ? 'User-Group Clustered (Default)' :
+                   layoutMode === 'vertical' ? 'Strict Vertical (6 Layers)' :
                    layoutMode === 'dagre' ? 'Dagre Top-To-Bottom' :
                    layoutMode === 'breadthfirst' ? 'Concentric' : 'Force Directed'}
                 </span>
                 <ChevronDown className="w-3 h-3 text-gray-400" />
               </button>
-              <div className="absolute right-0 mt-2 w-56 bg-gray-900 border border-gray-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+              <div className="absolute right-0 mt-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
                 <div className="p-1">
-                  <button onClick={() => setLayoutMode('vertical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'vertical' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Strict Vertical (6 Layers - Default)</button>
+                  <button onClick={() => setLayoutMode('clustered')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'clustered' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>User-Group Clustered (Default)</button>
+                  <button onClick={() => setLayoutMode('vertical')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'vertical' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Strict Vertical (6 Layers)</button>
                   <button onClick={() => setLayoutMode('dagre')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'dagre' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Dagre Top-To-Bottom</button>
                   <button onClick={() => setLayoutMode('breadthfirst')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'breadthfirst' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Concentric Radial</button>
                   <button onClick={() => setLayoutMode('cose')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${layoutMode === 'cose' ? 'text-blue-400 font-semibold' : 'text-gray-300'}`}>Force Directed (Physics)</button>
