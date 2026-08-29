@@ -5,7 +5,7 @@ import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { 
   Network, Search, Maximize, RefreshCw, 
   AlertTriangle, Info, ChevronDown, ChevronRight, ShieldAlert, Filter, 
-  Target, ChevronLeft
+  Target, ChevronLeft, Key
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
@@ -25,7 +25,8 @@ export const IdentityGraphPage: React.FC = () => {
   const [showLabels, setShowLabels] = useState(true);
   const [showEdgeLabels, setShowEdgeLabels] = useState(false);
   const [highlightRisky, setHighlightRisky] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Collapsed by default to maximize graph space
+  const [showAllPolicies, setShowAllPolicies] = useState(false); // Default: Relevant policies only
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
   const pageRef = useRef<HTMLDivElement>(null);
 
@@ -87,11 +88,25 @@ export const IdentityGraphPage: React.FC = () => {
               <Network className="w-5 h-5 text-blue-500" />
               <span>Identity Graph</span>
             </h1>
-            <p className="text-[11px] text-gray-400">Security Architecture (Users → Groups → Policies → Roles → Resources → Sensitive Assets)</p>
+            <p className="text-[11px] text-gray-400">Contextual Security Architecture (Users → Groups → Policies → Roles → Resources → Sensitive Assets)</p>
           </div>
           
           <div className="flex items-center gap-3">
             <ScannedRegionBadge />
+
+            {/* Policy Scope Toggle Button (Relevant Policies vs All Policies) */}
+            <button
+              onClick={() => setShowAllPolicies(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                showAllPolicies
+                  ? 'bg-teal-600 text-white border-teal-500 shadow-md shadow-teal-500/20'
+                  : 'bg-gray-900 hover:bg-gray-800 text-teal-400 border-gray-700'
+              }`}
+              title={showAllPolicies ? "Showing all AWS IAM policies" : "Showing only policies relevant to visible identities"}
+            >
+              <Key className="w-3.5 h-3.5 text-teal-400" />
+              <span>{showAllPolicies ? 'Policies: All AWS Policies' : 'Policies: Relevant Only'}</span>
+            </button>
 
             {/* Attack Path Quick Filter Button */}
             <button
@@ -141,7 +156,7 @@ export const IdentityGraphPage: React.FC = () => {
               <RefreshCw className="w-3.5 h-3.5" /> Reset View
             </button>
             
-            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors" title="Toggle Fullscreen">
+            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors ml-1" title="Toggle Fullscreen">
               <Maximize className="w-4 h-4" />
             </button>
           </div>
@@ -178,6 +193,7 @@ export const IdentityGraphPage: React.FC = () => {
             showEdgeLabels={showEdgeLabels}
             highlightRisky={highlightRisky}
             securityFilter={securityFilter}
+            showAllPolicies={showAllPolicies}
           />
 
           {/* Node Details Overlay */}

@@ -20,6 +20,7 @@ export interface IdentityGraphProps {
   showEdgeLabels?: boolean;
   highlightRisky?: boolean;
   securityFilter?: 'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only';
+  showAllPolicies?: boolean;
 }
 
 export const formatShortLabel = (label?: string, id?: string): string => {
@@ -43,7 +44,7 @@ export const formatShortLabel = (label?: string, id?: string): string => {
 const SIX_LAYER_DEFINITIONS = [
   { rank: 0, title: '1. USERS', color: '#3B82F6', description: 'IAM Identities' },
   { rank: 1, title: '2. GROUPS', color: '#6366F1', description: 'IAM Group Clusters' },
-  { rank: 2, title: '3. POLICIES', color: '#14B8A6', description: 'Permissions & AST Rules' },
+  { rank: 2, title: '3. POLICIES', color: '#14B8A6', description: 'Contextual Policies & AST Rules' },
   { rank: 3, title: '4. ROLES', color: '#8B5CF6', description: 'Privileged Roles' },
   { rank: 4, title: '5. RESOURCES', color: '#10B981', description: 'S3, EC2, Lambda, RDS, DynamoDB' },
   { rank: 5, title: '6. SENSITIVE ASSETS', color: '#EF4444', description: 'Secrets Manager' }
@@ -56,7 +57,8 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   showLabels = true,
   showEdgeLabels = false,
   highlightRisky = false,
-  securityFilter = 'all'
+  securityFilter = 'all',
+  showAllPolicies = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -118,6 +120,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     const policyToResources: Record<string, string[]> = {};
     const userToRoles: Record<string, string[]> = {};
     const roleToResources: Record<string, string[]> = {};
+    const allAttachedPolicies = new Set<string>();
 
     rawElements.forEach((el: any) => {
       if (el.data.source && el.data.target) {
@@ -132,6 +135,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           if (!userToGroups[src]) userToGroups[src] = [];
           if (!userToGroups[src].includes(tgt)) userToGroups[src].push(tgt);
         } else if (lbl === 'HAS_POLICY' || lbl === 'ATTACHED_TO') {
+          allAttachedPolicies.add(tgt);
           if (src.includes(':group:')) {
             if (!groupToPolicies[src]) groupToPolicies[src] = [];
             if (!groupToPolicies[src].includes(tgt)) groupToPolicies[src].push(tgt);
@@ -155,9 +159,67 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     return { 
       groupToUsers, userToGroups, groupToPolicies, 
       userToPolicies, roleToPolicies, policyToResources, 
-      userToRoles, roleToResources 
+      userToRoles, roleToResources, allAttachedPolicies 
     };
   }, [rawElements]);
+
+  // Contextual Policy Relevance Calculator (Zero Heuristics: based purely on graph relationships)
+  const getRelevantPolicyIds = useCallback((selectedId: string | null, pathNodeIds: string[]): Set<string> => {
+    // 1. Attack path mode: only policies participating in the attack path
+    if (pathNodeIds && pathNodeIds.length > 0) {
+      const pathSet = new Set<string>();
+      pathNodeIds.forEach(id => {
+        if (id.includes(':policy:') || id.includes('policy')) {
+          pathSet.add(id);
+        }
+      });
+      return pathSet;
+    }
+
+    // 2. Focused on specific node
+    if (selectedId) {
+      const relevant = new Set<string>();
+      const type = (selectedId.split(':')[1] || '').toLowerCase();
+
+      if (type === 'user' || selectedId.includes(':user:')) {
+        // Direct user policies
+        (graphTopology.userToPolicies[selectedId] || []).forEach(p => relevant.add(p));
+        
+        // Inherited group policies
+        const groups = graphTopology.userToGroups[selectedId] || [];
+        groups.forEach(gId => {
+          (graphTopology.groupToPolicies[gId] || []).forEach(p => relevant.add(p));
+        });
+
+        // Reachable role policies
+        const roles = graphTopology.userToRoles[selectedId] || [];
+        roles.forEach(rId => {
+          (graphTopology.roleToPolicies[rId] || []).forEach(p => relevant.add(p));
+        });
+
+        return relevant;
+      }
+
+      if (type === 'group' || selectedId.includes(':group:')) {
+        // Group policies only
+        (graphTopology.groupToPolicies[selectedId] || []).forEach(p => relevant.add(p));
+        return relevant;
+      }
+
+      if (type === 'role' || selectedId.includes(':role:')) {
+        // Role policies only
+        (graphTopology.roleToPolicies[selectedId] || []).forEach(p => relevant.add(p));
+        return relevant;
+      }
+
+      if (type === 'policy' || selectedId.includes(':policy:')) {
+        return new Set([selectedId]);
+      }
+    }
+
+    // 3. Default Overview: Show policies attached to active identities (hide unattached/orphan policies)
+    return graphTopology.allAttachedPolicies;
+  }, [graphTopology]);
 
   const counts = useMemo(() => {
     const tally: Record<string, number> = {
@@ -189,18 +251,19 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   const handleFilterToggle = (type: string) => {
     setActiveFilters((prev) => {
       const next = { ...prev, [type]: !prev[type] };
-      applyFiltersAndPathways(next, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId);
+      applyFiltersAndPathways(next, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies);
       return next;
     });
   };
 
-  // Helper function to update node visibility, filtering, and contextual isolation
+  // Helper function to update node visibility, policy relevance, and contextual isolation
   const applyFiltersAndPathways = useCallback((
     filters: typeof activeFilters,
     pathNodeIds: string[],
     search: string,
     secFilter: typeof securityFilter,
-    selectedId: string | null
+    selectedId: string | null,
+    displayAllPolicies: boolean
   ) => {
     const cy = cyRef.current;
     if (!cy) return;
@@ -208,6 +271,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     cy.batch(() => {
       const q = search.trim().toLowerCase();
       let hasSearchMatch = false;
+
+      // Calculate contextual relevant policies
+      const relevantPolicies = getRelevantPolicyIds(selectedId, pathNodeIds);
 
       cy.nodes().forEach((node) => {
         const type = node.data('type') || 'Resource';
@@ -233,7 +299,13 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           passesSecurity = pathNodeIds.includes(node.id());
         }
 
-        if (passesCategory && passesSearch && passesSecurity) {
+        // 4. Policy Relevance Filter: Hide unattached or contextually irrelevant policies unless displayAllPolicies is enabled
+        let passesPolicyRelevance = true;
+        if (type === 'Policy' && !displayAllPolicies) {
+          passesPolicyRelevance = relevantPolicies.has(node.id());
+        }
+
+        if (passesCategory && passesSearch && passesSecurity && passesPolicyRelevance) {
           node.style('display', 'element');
           if (q !== '' && passesSearch) {
             hasSearchMatch = true;
@@ -247,7 +319,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
         }
       });
 
-      // 4. INTERACTIVE TRACE & HIGHLIGHT MODES
+      // 5. INTERACTIVE TRACE & HIGHLIGHT MODES
       if (pathNodeIds && pathNodeIds.length > 0) {
         // ATTACK PATH ISOLATION
         cy.elements().addClass('dimmed').removeClass('highlighted');
@@ -327,7 +399,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
         }
       }
     });
-  }, [graphTopology]);
+  }, [graphTopology, getRelevantPolicyIds]);
 
   // Compute Clean 6-Layer Security Architecture Layout Coordinates
   const getLayoutOptions = useCallback((cyInstance?: cytoscape.Core) => {
@@ -489,8 +561,8 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
 
   // Update visibility & pathway highlights on state changes
   useEffect(() => {
-    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId);
-  }, [highlightedNodeIds, searchQuery, activeFilters, securityFilter, activeSelectedNodeId, applyFiltersAndPathways]);
+    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies);
+  }, [highlightedNodeIds, searchQuery, activeFilters, securityFilter, activeSelectedNodeId, showAllPolicies, applyFiltersAndPathways]);
 
   // Initializing Cytoscape Graph
   useEffect(() => {
@@ -837,7 +909,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     };
     window.addEventListener('resize', handleResize);
 
-    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId);
+    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies);
 
     cy.ready(() => {
       cy.fit(undefined, 60);
@@ -849,7 +921,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [rawElements, showLabels, showEdgeLabels, highlightRisky, onNodeSelect, getLayoutOptions, applyFiltersAndPathways, activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, graphTopology]);
+  }, [rawElements, showLabels, showEdgeLabels, highlightRisky, onNodeSelect, getLayoutOptions, applyFiltersAndPathways, activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies, graphTopology]);
 
   // Controls API
   const handleZoomIn = () => {
