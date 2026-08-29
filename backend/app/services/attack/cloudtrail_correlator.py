@@ -236,24 +236,39 @@ def correlate_activity_with_graph(
             finding_type = "OBSERVED_ATTACK_ACTIVITY" if (has_static_edge or target_risk >= 50) else "OBSERVED_ACTIVITY"
             severity = "critical" if target_risk >= 80 else ("high" if target_risk >= 60 else "medium")
 
+            matched_static_rel = "CAN_ASSUME" if has_static_edge else "NONE"
             finding = {
                 "id": f"corr-{ev['event_id']}",
                 "type": finding_type,
                 "finding_type": finding_type,
-                "event_id": ev["event_id"],
+                "title": f"Observed {ev_name} Activity by {actor}",
                 "actor": actor,
+                "actor_node_id": actor_node_id,
                 "target": target,
+                "target_node_id": target_node_id,
+                "target_type": "Role" if act_type == "ASSUMED_ROLE" else "Resource",
+                "event_id": ev["event_id"],
                 "event_name": ev_name,
+                "event_time": ev["event_time"],
                 "activity_type": act_type,
                 "timestamp": ev["event_time"],
                 "source_ip": ev["source_ip"],
                 "severity": severity,
+                "risk_score": target_risk,
                 "target_risk_score": target_risk,
                 "has_static_permission": has_static_edge,
+                "matched_static_relationship": matched_static_rel,
+                "reason": (
+                    f"Identity '{actor}' actively assumed privileged role '{target}' observed from IP {ev['source_ip']}."
+                    if act_type == "ASSUMED_ROLE"
+                    else f"Activity '{ev_name}' observed against '{target}' from IP {ev['source_ip']}."
+                ),
+                "recommendation": "Review session activity and verify identity authorization.",
                 "description": (
                     f"Identity '{actor}' executed '{ev_name}' against role '{target}' "
                     f"from IP {ev['source_ip']} (Static permission: {'Verified' if has_static_edge else 'Unmapped'})."
-                )
+                ),
+                "is_correlated": True
             }
             correlated_findings.append(finding)
 
