@@ -262,6 +262,8 @@ def correlate_activity_with_graph(
                 "type": act_type,
                 "event_id": ev["event_id"],
                 "timestamp": ev["event_time"],
+                "sourceIp": ev["source_ip"],
+                "source_ip": ev["source_ip"],
                 "is_active": True
             })
 
