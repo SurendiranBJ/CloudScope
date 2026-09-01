@@ -10,7 +10,7 @@ router = APIRouter(tags=["Dashboard"])
 @router.get("/dashboard", response_model=APIResponse[DashboardData])
 def get_dashboard_summary():
     cached_dashboard = cache.get("v1:dashboard")
-    if cached_dashboard and isinstance(cached_dashboard, dict) and "securityScore" in cached_dashboard:
+    if cached_dashboard and isinstance(cached_dashboard, dict) and "stats" in cached_dashboard and "riskDistribution" in cached_dashboard:
         return APIResponse(
             success=True,
             message="Dashboard summary retrieved successfully",

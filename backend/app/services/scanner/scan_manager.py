@@ -590,26 +590,42 @@ class ScanManager:
             critical_risks.sort(key=lambda x: x['riskScore'], reverse=True)
             cache.set("v1:risks", critical_risks)
 
+            critical_paths_list = [p for p in attack_paths if p.get('severity') in ['critical', 'high']][:5]
             dashboard_summary = {
-                "totalUsers": len(self.inventory.users),
-                "totalRoles": len(self.inventory.roles),
-                "totalPolicies": len(self.inventory.policies),
-                "totalResources": resources_count,
-                "securityScore": security_score,
-                "globalPosture": global_posture,
-                "criticalRisks": len(critical_items),
-                "highRisks": len(high_items),
-                "mediumRisks": len(medium_items),
-                "lowRisks": len(low_items),
-                "totalFindings": total_findings_count,
-                "attackPathsCount": len(attack_paths),
-                "scannedRegions": scanned_regions,
-                "cloudtrailAlertsCount": len(self.inventory.alerts),
-                "correlatedFindingsCount": len(correlated_findings),
-                "lastScanDuration": f"{duration}s",
-                "lastScanTimestamp": scan_timestamp,
-                "recommendations": recommendations,
-                "serviceStatus": self._service_status
+                "securityScore": f"{security_score} / 100",
+                "stats": {
+                    "users": len(self.inventory.users),
+                    "roles": len(self.inventory.roles),
+                    "policies": len(self.inventory.policies),
+                    "risks": len(critical_items) + len(high_items) + len(medium_items),
+                    "paths": len(attack_paths),
+                    "resources": resources_count
+                },
+                "riskDistribution": [
+                    {"name": "Critical", "value": len(critical_items), "color": "#EF4444"},
+                    {"name": "High", "value": len(high_items), "color": "#F59E0B"},
+                    {"name": "Medium", "value": len(medium_items), "color": "#3B82F6"},
+                    {"name": "Low", "value": len(low_items), "color": "#10B981"}
+                ],
+                "recentAlerts": self.inventory.alerts[:5],
+                "criticalPaths": critical_paths_list,
+                "recommendations": [
+                    {"title": r.get('title', 'Remediation'), "desc": r.get('description', '')}
+                    for r in recommendations[:3]
+                ] if recommendations else [
+                    {"title": "Enforce Least Privilege", "desc": "Restrict wildcard IAM policies and apply resource-specific ARN constraints."},
+                    {"title": "Enable MFA for All Users", "desc": "Enforce hardware or virtual MFA across all administrative and developer user accounts."},
+                    {"title": "Block Public S3 Access", "desc": "Enable S3 Block Public Access to prevent accidental internet-wide data exposure."}
+                ],
+                "lastScan": {
+                    "timestamp": scan_timestamp,
+                    "duration_seconds": duration,
+                    "resources_found": resources_count,
+                    "risks_found": total_findings_count,
+                    "graph_nodes_count": nodes_count,
+                    "graph_edges_count": edges_count,
+                    "scanned_regions": scanned_regions
+                }
             }
             cache.set("v1:dashboard", dashboard_summary)
 
