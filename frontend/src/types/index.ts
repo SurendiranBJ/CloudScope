@@ -106,3 +106,161 @@ export interface DashboardData {
   resourceBreakdown?: { type: string; count: number }[];
   scannedRegions?: string[];
 }
+
+// ─── Policy Catalog ──────────────────────────────────────────────────────────
+
+export interface PolicyFinding {
+  code: string;
+  points: number;
+  reason: string;
+}
+
+export interface PolicyCatalogEntry {
+  name: string;
+  arn: string;
+  policyId?: string;
+  type: 'customer-managed' | 'aws-managed' | 'inline';
+  defaultVersionId?: string;
+  attachmentCount: number;
+  isAttachable: boolean;
+  description?: string;
+  createDate?: string;
+  updateDate?: string;
+  document?: string | null;
+  documentParsed?: object | null;
+  documentUnavailable?: boolean;
+  riskScore: number;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'unknown';
+  findings: PolicyFinding[];
+  attachedTo?: { type: string; name: string; arn: string }[];
+}
+
+// ─── Simulation ───────────────────────────────────────────────────────────────
+
+export interface SimulationChange {
+  change_id: string;
+  action: 'ATTACH_POLICY' | 'DETACH_POLICY';
+  principal_type: 'USER' | 'GROUP' | 'ROLE';
+  principal_id: string;
+  policy_arn: string;
+  policy_name?: string;
+  timestamp?: string;
+}
+
+export interface SimulationState {
+  simulation_active: boolean;
+  pending_changes: number;
+  changes: SimulationChange[];
+}
+
+// ─── Graph Diff ───────────────────────────────────────────────────────────────
+
+export interface GraphNodeDiff {
+  id: string;
+  label: string;
+  type: string;
+}
+
+export interface GraphEdgeDiff {
+  source: string;
+  target: string;
+  label: string;
+}
+
+export interface GraphDiff {
+  added_nodes: GraphNodeDiff[];
+  removed_nodes: GraphNodeDiff[];
+  added_edges: GraphEdgeDiff[];
+  removed_edges: GraphEdgeDiff[];
+  unchanged_node_count: number;
+  unchanged_edge_count: number;
+}
+
+// ─── Risk Comparison ──────────────────────────────────────────────────────────
+
+export interface RiskComparison {
+  current_score: number;
+  desired_score: number;
+  delta: number;
+  current_severity: string;
+  desired_severity: string;
+  top_reasons: string[];
+  simulation_active: boolean;
+}
+
+// ─── Attack Path Comparison ───────────────────────────────────────────────────
+
+export interface AttackPathComparison {
+  new_paths: AttackPath[];
+  removed_paths: AttackPath[];
+  unchanged_paths: AttackPath[];
+  changed_paths: { current: AttackPath; desired: AttackPath; risk_delta: number }[];
+}
+
+// ─── Blast Radius Comparison ──────────────────────────────────────────────────
+
+export interface BlastRadiusComparison {
+  current_blast_score: number;
+  desired_blast_score: number;
+  delta: number;
+  current_resource_count: number;
+  desired_resource_count: number;
+  new_reachable_resources: { identity: string; identity_type: string; resource_id: string }[];
+  removed_reachable_resources: { identity: string; identity_type: string; resource_id: string }[];
+}
+
+// ─── Simulation Analysis ──────────────────────────────────────────────────────
+
+export interface SimulationAnalysis {
+  simulation_active: boolean;
+  pending_changes?: number;
+  graph_diff?: GraphDiff;
+  risk_comparison?: RiskComparison;
+  attack_path_comparison?: AttackPathComparison;
+  blast_radius_comparison?: BlastRadiusComparison;
+  new_reachable_resources?: { identity: string; identity_type: string; resource_id: string }[];
+  removed_reachable_resources?: { identity: string; identity_type: string; resource_id: string }[];
+  summary?: string;
+  simulation_note?: string;
+}
+
+// ─── Relationships ────────────────────────────────────────────────────────────
+
+export interface RelationshipEntry {
+  source_id: string;
+  source_label: string;
+  source_type: string;
+  relationship: string;
+  target_id: string;
+  target_label: string;
+  target_type: string;
+  provenance?: string[];
+}
+
+export interface RelationshipsResponse {
+  total: number;
+  relationships: RelationshipEntry[];
+  entity_counts: {
+    users: number;
+    roles: number;
+    policies: number;
+    groups: number;
+    resources: number;
+  };
+}
+
+// ─── Effective Access ─────────────────────────────────────────────────────────
+
+export interface EffectiveAccess {
+  identity_id: string;
+  identity_name: string;
+  identity_type: string;
+  target_resource_id: string;
+  target_resource_name: string;
+  target_resource_type: string;
+  access_path: string[];
+  through_relationship: string[];
+  policy_names: string[];
+  policy_arns: string[];
+}
+

@@ -272,6 +272,8 @@ def collect_roles() -> list:
 
 
 def collect_policies() -> list:
+    """Collect customer-managed (Local scope) policies with full documents.
+    Preserved for backward compatibility with scan_manager pipeline."""
     policies_data = []
     try:
         session = get_aws_session()
@@ -303,6 +305,111 @@ def collect_policies() -> list:
     except Exception as e:
         logger.error(f"IAM Collector failed to list policies: {str(e)}")
     return policies_data
+
+
+def fetch_policy_catalog(max_aws_managed: int = 200) -> list:
+    """Fetch a browsable policy catalog at the METADATA level (Level 1).
+
+    Two-level design:
+        Level 1 (this function): Fetch policy metadata — name, ARN, type,
+            attachment count, description, dates. No documents yet.
+        Level 2 (fetch_policy_document_by_arn): Fetch the policy document
+            on demand (when a user opens the policy detail view or selects
+            a policy for simulation preview).
+
+    Returns a list of catalog entries suitable for the /api/v1/policies
+    endpoint. Documents are NOT fetched here for performance.
+
+    Args:
+        max_aws_managed: Limit how many AWS-managed policies appear in the
+            catalog. AWS has 1000+ managed policies. We fetch metadata for
+            the first N ordered by attachment count (most used first).
+    """
+    catalog = []
+    try:
+        session = get_aws_session()
+        client = session.client('iam')
+
+        # --- Customer-managed policies (always fetch all) ---
+        try:
+            paginator = client.get_paginator('list_policies')
+            for page in paginator.paginate(Scope='Local'):
+                for p in page['Policies']:
+                    catalog.append(_build_catalog_entry(p, policy_type="customer-managed"))
+            logger.info(f"Policy catalog: {len(catalog)} customer-managed policies")
+        except Exception as e:
+            logger.warning(f"Could not list customer-managed policies for catalog: {e}")
+
+        # --- AWS-managed policies (metadata only, capped) ---
+        aws_managed_entries = []
+        try:
+            paginator = client.get_paginator('list_policies')
+            for page in paginator.paginate(Scope='AWS', OnlyAttached=False):
+                for p in page['Policies']:
+                    aws_managed_entries.append(_build_catalog_entry(p, policy_type="aws-managed"))
+        except Exception as e:
+            logger.warning(f"Could not list AWS-managed policies for catalog: {e}")
+
+        # Sort by attachment count descending (most commonly used first)
+        aws_managed_entries.sort(key=lambda x: x.get("attachmentCount", 0), reverse=True)
+        catalog.extend(aws_managed_entries[:max_aws_managed])
+        logger.info(
+            f"Policy catalog: added {min(len(aws_managed_entries), max_aws_managed)} "
+            f"AWS-managed policies (of {len(aws_managed_entries)} total)"
+        )
+
+    except Exception as e:
+        logger.error(f"fetch_policy_catalog failed: {e}")
+
+    return catalog
+
+
+def _build_catalog_entry(policy_obj: dict, policy_type: str) -> dict:
+    """Build a catalog metadata entry from an AWS list_policies item."""
+    return {
+        "name": policy_obj.get("PolicyName", ""),
+        "arn": policy_obj.get("Arn", ""),
+        "policyId": policy_obj.get("PolicyId", ""),
+        "type": policy_type,
+        "defaultVersionId": policy_obj.get("DefaultVersionId", ""),
+        "attachmentCount": policy_obj.get("AttachmentCount", 0),
+        "permissionsBoundaryUsageCount": policy_obj.get("PermissionsBoundaryUsageCount", 0),
+        "isAttachable": policy_obj.get("IsAttachable", False),
+        "description": policy_obj.get("Description", ""),
+        "createDate": policy_obj.get("CreateDate", "").isoformat() if hasattr(policy_obj.get("CreateDate", ""), "isoformat") else str(policy_obj.get("CreateDate", "")),
+        "updateDate": policy_obj.get("UpdateDate", "").isoformat() if hasattr(policy_obj.get("UpdateDate", ""), "isoformat") else str(policy_obj.get("UpdateDate", "")),
+        # Document is NOT fetched at catalog level (Level 2 on demand)
+        "document": None,
+        "riskScore": 0,
+        "severity": "low",
+        "findings": [],
+    }
+
+
+def fetch_policy_document_by_arn(policy_arn: str) -> dict | None:
+    """Fetch the policy document for a single policy ARN (Level 2 — on demand).
+
+    Returns a dict with keys: name, arn, document (JSON string), type.
+    Returns None if unavailable.
+    """
+    if not policy_arn:
+        return None
+    try:
+        session = get_aws_session()
+        client = session.client('iam')
+        pol = client.get_policy(PolicyArn=policy_arn)
+        default_ver = pol['Policy']['DefaultVersionId']
+        pol_ver = client.get_policy_version(PolicyArn=policy_arn, VersionId=default_ver)
+        doc = pol_ver.get('PolicyVersion', {}).get('Document', {})
+        return {
+            "name": pol['Policy']['PolicyName'],
+            "arn": policy_arn,
+            "document": json.dumps(doc),
+            "type": "aws-managed" if "::aws:policy/" in policy_arn else "customer-managed",
+        }
+    except Exception as e:
+        logger.warning(f"fetch_policy_document_by_arn({policy_arn}) failed: {e}")
+        return None
 
 
 def fetch_managed_policy_documents(policy_arns: set) -> dict:

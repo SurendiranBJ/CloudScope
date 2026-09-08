@@ -153,3 +153,149 @@ class CopilotResponse(BaseModel):
     suggestions: List[str]
     type: Optional[str] = None
     codeBlock: Optional[str] = None
+
+
+# ─── Policy Catalog ─────────────────────────────────────────────────────────
+
+class PolicyFinding(BaseModel):
+    code: str
+    points: int
+    reason: str
+
+class PolicyCatalogEntry(BaseModel):
+    name: str
+    arn: str
+    policyId: Optional[str] = None
+    type: str                         # "customer-managed" | "aws-managed" | "inline"
+    defaultVersionId: Optional[str] = None
+    attachmentCount: int = 0
+    isAttachable: bool = True
+    description: Optional[str] = None
+    createDate: Optional[str] = None
+    updateDate: Optional[str] = None
+    document: Optional[str] = None   # None until Level-2 fetch
+    riskScore: int = 0
+    severity: str = "low"
+    findings: List[PolicyFinding] = []
+
+
+# ─── Simulation ──────────────────────────────────────────────────────────────
+
+class SimulationChange(BaseModel):
+    change_id: str
+    action: str                       # "ATTACH_POLICY" | "DETACH_POLICY"
+    principal_type: str               # "USER" | "GROUP" | "ROLE"
+    principal_id: str                 # username / group name / role name
+    policy_arn: str
+    policy_name: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
+class SimulationChangeRequest(BaseModel):
+    """Request body for POST /simulation/changes."""
+    action: str
+    principal_type: str
+    principal_id: str
+    policy_arn: str
+
+
+class SimulationPreviewRequest(BaseModel):
+    """Request body for POST /simulation/preview — does NOT persist the change."""
+    action: str
+    principal_type: str
+    principal_id: str
+    policy_arn: str
+
+
+# ─── Graph Diff ──────────────────────────────────────────────────────────────
+
+class GraphNodeDiff(BaseModel):
+    id: str
+    label: str
+    type: str
+
+class GraphEdgeDiff(BaseModel):
+    source: str
+    target: str
+    label: str
+
+class GraphDiff(BaseModel):
+    added_nodes: List[GraphNodeDiff] = []
+    removed_nodes: List[GraphNodeDiff] = []
+    added_edges: List[GraphEdgeDiff] = []
+    removed_edges: List[GraphEdgeDiff] = []
+    unchanged_node_count: int = 0
+    unchanged_edge_count: int = 0
+
+
+# ─── Risk Comparison ─────────────────────────────────────────────────────────
+
+class RiskComparison(BaseModel):
+    current_score: int
+    desired_score: int
+    delta: int
+    current_severity: str
+    desired_severity: str
+    top_reasons: List[str] = []
+    simulation_active: bool = True
+
+
+# ─── Attack Path Comparison ──────────────────────────────────────────────────
+
+class AttackPathComparison(BaseModel):
+    new_paths: List[dict] = []
+    removed_paths: List[dict] = []
+    unchanged_paths: List[dict] = []
+    changed_paths: List[dict] = []
+
+
+# ─── Blast Radius Comparison ─────────────────────────────────────────────────
+
+class BlastRadiusComparison(BaseModel):
+    current_blast_score: int
+    desired_blast_score: int
+    delta: int
+    current_resource_count: int
+    desired_resource_count: int
+    new_reachable_resources: List[dict] = []
+    removed_reachable_resources: List[dict] = []
+
+
+# ─── Simulation Analysis ─────────────────────────────────────────────────────
+
+class SimulationAnalysis(BaseModel):
+    simulation_active: bool = True
+    pending_changes: int = 0
+    graph_diff: Optional[GraphDiff] = None
+    risk_comparison: Optional[RiskComparison] = None
+    attack_path_comparison: Optional[AttackPathComparison] = None
+    blast_radius_comparison: Optional[BlastRadiusComparison] = None
+    new_reachable_resources: List[dict] = []
+    removed_reachable_resources: List[dict] = []
+    summary: str = ""
+
+
+# ─── Relationships ───────────────────────────────────────────────────────────
+
+class RelationshipEntry(BaseModel):
+    source_id: str
+    source_label: str
+    source_type: str
+    relationship: str                 # Exact backend label e.g. MEMBER_OF
+    target_id: str
+    target_label: str
+    target_type: str
+    provenance: Optional[List[str]] = None   # full path chain as labels
+
+
+class EffectiveAccess(BaseModel):
+    identity_id: str
+    identity_name: str
+    identity_type: str
+    target_resource_id: str
+    target_resource_name: str
+    target_resource_type: str
+    access_path: List[str]           # e.g. ["Alice", "Developers", "S3ReadOnly", "S3-A"]
+    through_relationship: List[str]  # e.g. ["MEMBER_OF", "HAS_POLICY", "ALLOWS"]
+    policy_names: List[str] = []
+    policy_arns: List[str] = []

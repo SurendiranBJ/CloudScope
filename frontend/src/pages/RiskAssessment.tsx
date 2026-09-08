@@ -1,11 +1,72 @@
 import { useState, useMemo } from 'react';
-import { ShieldAlert, Search, ArrowUpDown, ShieldCheck } from 'lucide-react';
+import { ShieldAlert, Search, ArrowUpDown, ShieldCheck, TrendingUp, TrendingDown, Activity } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { getRiskAssessmentFindings } from '../api/risks';
 import { getReportsSummary } from '../api/reports';
+import { getSimulationState, getSimulationRisk } from '../api/simulation';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import type { RiskFinding } from '../types';
+
+function SimulationRiskOverlay() {
+  const { data: simState } = useQuery({
+    queryKey: ['simulation-state'],
+    queryFn: getSimulationState,
+    refetchInterval: 5000,
+  });
+
+  const { data: riskData } = useQuery({
+    queryKey: ['simulation-risk'],
+    queryFn: getSimulationRisk,
+    enabled: !!(simState?.simulation_active),
+    staleTime: 15_000,
+  });
+
+  if (!simState?.simulation_active || simState.pending_changes === 0) return null;
+
+  const delta = riskData?.delta ?? 0;
+  return (
+    <div className="p-4 rounded-xl border border-amber-500/25 bg-amber-500/5 flex items-center gap-6 flex-wrap">
+      <div className="flex items-center gap-2 shrink-0">
+        <Activity className="w-4 h-4 text-amber-400" />
+        <span className="text-sm font-semibold text-amber-400">Simulation Active</span>
+        <span className="text-xs text-amber-500/80">— {simState.pending_changes} pending change{simState.pending_changes !== 1 ? 's' : ''}</span>
+      </div>
+      {riskData && (
+        <div className="flex items-center gap-3 text-sm">
+          <div className="text-center">
+            <p className="text-[10px] text-enterprise-subtext uppercase">Current</p>
+            <p className="font-bold text-white font-mono">{riskData.current_score}<span className="text-xs text-enterprise-subtext">/100</span></p>
+          </div>
+          <div className={`flex items-center gap-1 font-bold ${delta > 0 ? 'text-red-400' : delta < 0 ? 'text-green-400' : 'text-gray-400'}`}>
+            {delta > 0 ? <TrendingUp className="w-4 h-4" /> : delta < 0 ? <TrendingDown className="w-4 h-4" /> : null}
+            {delta > 0 ? '+' : ''}{delta}
+          </div>
+          <div className="text-center">
+            <p className="text-[10px] text-enterprise-subtext uppercase">Projected</p>
+            <p className={`font-bold font-mono ${delta > 10 ? 'text-red-400' : delta < -5 ? 'text-green-400' : 'text-white'}`}>
+              {riskData.desired_score}<span className="text-xs text-enterprise-subtext">/100</span>
+            </p>
+          </div>
+          {riskData.top_reasons && riskData.top_reasons.length > 0 && (
+            <div className="hidden lg:flex flex-col gap-0.5 max-w-sm">
+              {riskData.top_reasons.slice(0, 2).map((r: string, i: number) => (
+                <p key={i} className="text-[10px] text-enterprise-subtext">• {r}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <Link
+        to="/changes"
+        className="ml-auto shrink-0 text-xs text-amber-400 hover:text-amber-300 font-semibold hover:underline"
+      >
+        Manage Changes →
+      </Link>
+    </div>
+  );
+}
 
 interface RiskAssessmentProps {
   search?: string;
@@ -92,6 +153,9 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
           <ScanTrigger />
         </div>
       </div>
+
+      {/* Simulation Risk Comparison (only when simulation is active) */}
+      <SimulationRiskOverlay />
 
       {/* Verified Security Control Coverage Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

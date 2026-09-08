@@ -84,7 +84,10 @@ from app.routers import (
     scan,
     copilot,
     risks,
-    settings
+    settings,
+    policies,
+    simulation,
+    relationships
 )
 
 # Mount Routers
@@ -100,6 +103,10 @@ api_v1_router.include_router(scan.router)
 api_v1_router.include_router(copilot.router)
 api_v1_router.include_router(risks.router)
 api_v1_router.include_router(settings.router)
+# New routers: policy catalog, simulation, relationships
+api_v1_router.include_router(policies.router)
+api_v1_router.include_router(simulation.router)
+api_v1_router.include_router(relationships.router)
 
 app.include_router(api_v1_router)
 

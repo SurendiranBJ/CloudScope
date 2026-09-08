@@ -590,6 +590,32 @@ class ScanManager:
             critical_risks.sort(key=lambda x: x['riskScore'], reverse=True)
             cache.set("v1:risks", critical_risks)
 
+            res_breakdown = [
+                {"type": "IAM Users", "count": len(self.inventory.users)},
+                {"type": "IAM Roles", "count": len(self.inventory.roles)},
+                {"type": "IAM Policies", "count": len(self.inventory.policies)},
+                {"type": "S3 Buckets", "count": len(self.inventory.s3)},
+                {"type": "EC2 Instances", "count": len(self.inventory.ec2)},
+                {"type": "Lambda Functions", "count": len(self.inventory.lambdas)},
+                {"type": "Secrets", "count": len(self.inventory.secrets)},
+                {"type": "RDS Databases", "count": len(self.inventory.rds)},
+                {"type": "DynamoDB Tables", "count": len(self.inventory.dynamodb)}
+            ]
+            res_breakdown = [r for r in res_breakdown if r["count"] > 0]
+
+            all_identities = self.inventory.users + self.inventory.roles
+            sorted_identities = sorted(all_identities, key=lambda x: x.get('riskScore', 0), reverse=True)
+            top_identities = [
+                {
+                    "name": x.get('name') or x.get('username', 'Unknown'),
+                    "type": "User" if "mfaEnabled" in x else "Role",
+                    "riskScore": x.get('riskScore', 0),
+                    "arn": x.get('arn', '')
+                }
+                for x in sorted_identities[:5]
+                if x.get('riskScore', 0) > 0
+            ]
+
             critical_paths_list = [p for p in attack_paths if p.get('severity') in ['critical', 'high']][:5]
             dashboard_summary = {
                 "securityScore": f"{security_score} / 100",
@@ -610,7 +636,7 @@ class ScanManager:
                 "recentAlerts": self.inventory.alerts[:5],
                 "criticalPaths": critical_paths_list,
                 "recommendations": [
-                    {"title": r.get('title', 'Remediation'), "desc": r.get('description', '')}
+                    {"title": r.get('title', 'Remediation'), "desc": r.get('desc', r.get('description', ''))}
                     for r in recommendations[:3]
                 ] if recommendations else [
                     {"title": "Enforce Least Privilege", "desc": "Restrict wildcard IAM policies and apply resource-specific ARN constraints."},
@@ -625,9 +651,21 @@ class ScanManager:
                     "graph_nodes_count": nodes_count,
                     "graph_edges_count": edges_count,
                     "scanned_regions": scanned_regions
-                }
+                },
+                "topRiskyIdentities": top_identities,
+                "resourceBreakdown": res_breakdown
             }
             cache.set("v1:dashboard", dashboard_summary)
+
+            # Policy catalog cache — build from discovered policies (metadata level)
+            # This enables /api/v1/policies to serve results without a separate AWS call
+            try:
+                from app.services.aws.iam_service import fetch_policy_catalog
+                policy_catalog = fetch_policy_catalog(max_aws_managed=200)
+                cache.set("v1:policy_catalog", policy_catalog)
+                logger.info(f"[INFO] Policy catalog cached: {len(policy_catalog)} entries")
+            except Exception as cat_err:
+                logger.warning(f"Policy catalog fetch failed (non-fatal): {cat_err}")
 
             self._last_result = {
                 "status": "success",
