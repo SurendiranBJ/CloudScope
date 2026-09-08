@@ -2,13 +2,16 @@ import { useState, useMemo } from 'react';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Search, Shield, ShieldAlert, ChevronRight, RefreshCw,
-  AlertTriangle, CheckCircle, Info, ExternalLink, ChevronDown, ChevronUp,
-  Lock, Unlock, Tag, Calendar, Users, Activity, Plus, Minus, Eye, X
+  Search, Shield, RefreshCw,
+  AlertTriangle, CheckCircle, Info, ChevronDown, ChevronUp,
+  Lock, Tag, Users, Activity, Plus, Minus, X
 } from 'lucide-react';
 import { getPolicyCatalog, getPolicyById } from '../api/policies';
-import { getSimulationState, addSimulationChange } from '../api/simulation';
-import type { PolicyCatalogEntry, SimulationChange } from '../types';
+import { getSimulationState, addSimulationChange, type SimulationChangePayload } from '../api/simulation';
+import { getIAMUsers } from '../api/users';
+import { getIAMRoles } from '../api/roles';
+import { SimulationPreviewModal } from '../components/SimulationPreviewModal';
+import type { PolicyCatalogEntry } from '../types';
 
 type FilterType = 'all' | 'aws-managed' | 'customer-managed' | 'inline';
 type SortField = 'name' | 'riskScore' | 'attachmentCount';
@@ -52,7 +55,19 @@ export const Policies: React.FC = () => {
   const [attachPrincipalType, setAttachPrincipalType] = useState<'USER' | 'GROUP' | 'ROLE'>('USER');
   const [attachPrincipalId, setAttachPrincipalId] = useState('');
   const [attachMsg, setAttachMsg] = useState('');
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [pendingChange, setPendingChange] = useState<SimulationChangePayload | null>(null);
   const qc = useQueryClient();
+
+  const { data: discoveredUsers = [] } = useQuery({
+    queryKey: ['iam-users'],
+    queryFn: getIAMUsers,
+  });
+
+  const { data: discoveredRoles = [] } = useQuery({
+    queryKey: ['iam-roles'],
+    queryFn: getIAMRoles,
+  });
 
   const { data: policies = [], isLoading, refetch } = useQuery({
     queryKey: ['policies', filter, search],
@@ -110,14 +125,29 @@ export const Policies: React.FC = () => {
     else { setSortField(field); setSortDir('desc'); }
   };
 
-  const handleAttach = (action: 'ATTACH_POLICY' | 'DETACH_POLICY') => {
-    if (!selected || !attachPrincipalId.trim()) { setAttachMsg('Enter a principal ID first.'); return; }
-    addChangeMutation.mutate({
+  const handleOpenPreview = (action: 'ATTACH_POLICY' | 'DETACH_POLICY') => {
+    if (!selected || !attachPrincipalId.trim()) {
+      setAttachMsg('Enter or select a principal ID first.');
+      return;
+    }
+    setPendingChange({
       action,
       principal_type: attachPrincipalType,
       principal_id: attachPrincipalId.trim(),
       policy_arn: selected.arn,
     });
+    setPreviewModalOpen(true);
+  };
+
+  const handleConfirmSimulation = async () => {
+    if (!pendingChange) return;
+    try {
+      await addChangeMutation.mutateAsync(pendingChange);
+      setPreviewModalOpen(false);
+      setPendingChange(null);
+    } catch {
+      // Error handled in addChangeMutation.onError
+    }
   };
 
   const filterTabs: { label: string; value: FilterType }[] = [
@@ -374,15 +404,25 @@ export const Policies: React.FC = () => {
                     </div>
                     <input
                       id={`sim-principal-${selected.name}`}
+                      list="discovered-principals"
                       value={attachPrincipalId}
                       onChange={e => setAttachPrincipalId(e.target.value)}
-                      placeholder={`Enter ${attachPrincipalType.toLowerCase()} name...`}
-                      className="w-full px-3 py-2 bg-enterprise-bg border border-enterprise-border rounded-lg text-xs text-gray-200 placeholder-enterprise-subtext focus:outline-none focus:border-enterprise-accent"
+                      placeholder={`Select or enter ${attachPrincipalType.toLowerCase()} name...`}
+                      className="w-full px-3 py-2 bg-enterprise-bg border border-enterprise-border rounded-lg text-xs text-gray-200 placeholder-enterprise-subtext focus:outline-none focus:border-enterprise-accent font-mono"
                     />
+                    <datalist id="discovered-principals">
+                      {attachPrincipalType === 'USER' && discoveredUsers.map(u => (
+                        <option key={u.name} value={u.name} />
+                      ))}
+                      {attachPrincipalType === 'ROLE' && discoveredRoles.map(r => (
+                        <option key={r.name} value={r.name} />
+                      ))}
+                    </datalist>
+
                     <div className="flex gap-2">
                       <button
                         id={`attach-btn-${selected.name}`}
-                        onClick={() => handleAttach('ATTACH_POLICY')}
+                        onClick={() => handleOpenPreview('ATTACH_POLICY')}
                         disabled={addChangeMutation.isPending}
                         className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-green-600/80 hover:bg-green-600 text-white text-xs font-semibold transition-colors disabled:opacity-50"
                       >
@@ -390,7 +430,7 @@ export const Policies: React.FC = () => {
                       </button>
                       <button
                         id={`detach-btn-${selected.name}`}
-                        onClick={() => handleAttach('DETACH_POLICY')}
+                        onClick={() => handleOpenPreview('DETACH_POLICY')}
                         disabled={addChangeMutation.isPending}
                         className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-semibold transition-colors disabled:opacity-50"
                       >
@@ -409,6 +449,19 @@ export const Policies: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* SIMULATION PREVIEW MODAL */}
+      <SimulationPreviewModal
+        isOpen={previewModalOpen}
+        onClose={() => {
+          setPreviewModalOpen(false);
+          setPendingChange(null);
+        }}
+        onConfirm={handleConfirmSimulation}
+        payload={pendingChange}
+        policyName={selected?.name}
+        isConfirming={addChangeMutation.isPending}
+      />
     </div>
   );
 };

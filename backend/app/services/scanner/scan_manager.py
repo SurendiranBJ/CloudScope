@@ -661,7 +661,7 @@ class ScanManager:
             # This enables /api/v1/policies to serve results without a separate AWS call
             try:
                 from app.services.aws.iam_service import fetch_policy_catalog
-                policy_catalog = fetch_policy_catalog(max_aws_managed=200)
+                policy_catalog = fetch_policy_catalog()
                 cache.set("v1:policy_catalog", policy_catalog)
                 logger.info(f"[INFO] Policy catalog cached: {len(policy_catalog)} entries")
             except Exception as cat_err:

@@ -21,6 +21,8 @@ export interface IdentityGraphProps {
   highlightRisky?: boolean;
   securityFilter?: 'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only';
   showAllPolicies?: boolean;
+  customElements?: any[];
+  graphMode?: 'current' | 'desired' | 'diff';
 }
 
 export const formatShortLabel = (label?: string, id?: string): string => {
@@ -58,7 +60,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   showEdgeLabels = false,
   highlightRisky = false,
   securityFilter = 'all',
-  showAllPolicies = false
+  showAllPolicies = false,
+  customElements,
+  graphMode = 'current'
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -66,14 +70,16 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   const [isLayerGuideOpen, setIsLayerGuideOpen] = useState(true);
   const [selectedEdgeData, setSelectedEdgeData] = useState<any>(null);
   const [activeSelectedNodeId, setActiveSelectedNodeId] = useState<string | null>(null);
+  void graphMode;
 
   const { data } = useQuery({
     queryKey: ['graphElements'],
     queryFn: getGraphElements,
-    refetchInterval: 10000
+    refetchInterval: 10000,
+    enabled: !customElements
   });
 
-  const rawElements = data || [];
+  const rawElements = customElements || data || [];
 
   // Filter state for categories
   const [activeFilters, setActiveFilters] = useState<Record<string, boolean>>({
@@ -755,6 +761,48 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'line-style': 'dashed',
             'width': 2.5,
             'opacity': 0.9
+          }
+        },
+        // Diff Overlay Styling
+        {
+          selector: 'edge.diff-added, edge[diffStatus = "added"]',
+          style: {
+            'line-color': '#10B981',
+            'target-arrow-color': '#10B981',
+            'line-style': 'dashed',
+            'width': 3.5,
+            'opacity': 1,
+            'color': '#34D399',
+            'z-index': 997,
+          }
+        },
+        {
+          selector: 'edge.diff-removed, edge[diffStatus = "removed"]',
+          style: {
+            'line-color': '#EF4444',
+            'target-arrow-color': '#EF4444',
+            'line-style': 'dashed',
+            'width': 3.5,
+            'opacity': 0.7,
+            'color': '#F87171',
+            'z-index': 997,
+          }
+        },
+        {
+          selector: 'node.diff-added, node[diffStatus = "added"]',
+          style: {
+            'border-color': '#10B981',
+            'border-width': '4px',
+            'border-style': 'solid',
+          }
+        },
+        {
+          selector: 'node.diff-removed, node[diffStatus = "removed"]',
+          style: {
+            'border-color': '#EF4444',
+            'border-width': '4px',
+            'border-style': 'dashed',
+            'opacity': 0.6,
           }
         },
         // Focused / Selected States

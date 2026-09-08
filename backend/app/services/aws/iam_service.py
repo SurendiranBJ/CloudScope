@@ -307,30 +307,28 @@ def collect_policies() -> list:
     return policies_data
 
 
-def fetch_policy_catalog(max_aws_managed: int = 200) -> list:
+def fetch_policy_catalog() -> list:
     """Fetch a browsable policy catalog at the METADATA level (Level 1).
 
     Two-level design:
         Level 1 (this function): Fetch policy metadata — name, ARN, type,
-            attachment count, description, dates. No documents yet.
-        Level 2 (fetch_policy_document_by_arn): Fetch the policy document
-            on demand (when a user opens the policy detail view or selects
-            a policy for simulation preview).
+            attachment count, description, dates for ALL discoverable
+            policies (both customer-managed and AWS-managed).
+            No documents are loaded here for performance.
+        Level 2 (fetch_policy_document_by_arn): Fetch an individual policy
+            document on demand (when a user opens the policy detail view,
+            selects a policy for simulation, previews a simulation, or
+            when required for deep security analysis).
 
     Returns a list of catalog entries suitable for the /api/v1/policies
     endpoint. Documents are NOT fetched here for performance.
-
-    Args:
-        max_aws_managed: Limit how many AWS-managed policies appear in the
-            catalog. AWS has 1000+ managed policies. We fetch metadata for
-            the first N ordered by attachment count (most used first).
     """
     catalog = []
     try:
         session = get_aws_session()
         client = session.client('iam')
 
-        # --- Customer-managed policies (always fetch all) ---
+        # --- Customer-managed policies (fetch all) ---
         try:
             paginator = client.get_paginator('list_policies')
             for page in paginator.paginate(Scope='Local'):
@@ -340,7 +338,7 @@ def fetch_policy_catalog(max_aws_managed: int = 200) -> list:
         except Exception as e:
             logger.warning(f"Could not list customer-managed policies for catalog: {e}")
 
-        # --- AWS-managed policies (metadata only, capped) ---
+        # --- AWS-managed policies (metadata only, full discoverable catalog without cap) ---
         aws_managed_entries = []
         try:
             paginator = client.get_paginator('list_policies')
@@ -352,10 +350,10 @@ def fetch_policy_catalog(max_aws_managed: int = 200) -> list:
 
         # Sort by attachment count descending (most commonly used first)
         aws_managed_entries.sort(key=lambda x: x.get("attachmentCount", 0), reverse=True)
-        catalog.extend(aws_managed_entries[:max_aws_managed])
+        catalog.extend(aws_managed_entries)
         logger.info(
-            f"Policy catalog: added {min(len(aws_managed_entries), max_aws_managed)} "
-            f"AWS-managed policies (of {len(aws_managed_entries)} total)"
+            f"Policy catalog: added all {len(aws_managed_entries)} "
+            "discoverable AWS-managed policies"
         )
 
     except Exception as e:

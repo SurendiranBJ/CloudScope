@@ -9,7 +9,8 @@ Uses existing engines — no duplicated logic, no contradictory definitions.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+import networkx as nx
+from typing import Any, Dict, List, Optional, Set
 
 from app.services.graph.graph_loader import build_local_graph
 from app.services.attack.path_engine import find_attack_paths
@@ -125,7 +126,31 @@ def build_desired_analysis(
     )
     resource_diff = compare_reachable_resources(current_reach, desired_reach)
 
-    # ── 8. Blast radius (aggregate for highest-risk identity) ─────────────────
+    # ── 8. Desired Cytoscape elements for frontend visualization ─────────────
+    desired_elements = []
+    if G_desired:
+        for nid, attr in G_desired.nodes(data=True):
+            desired_elements.append({
+                "data": {
+                    "id": nid,
+                    "label": attr.get("label", nid),
+                    "type": attr.get("type", "Resource"),
+                    "riskScore": attr.get("riskScore", 0),
+                    "arn": attr.get("arn", ""),
+                    "description": attr.get("description", ""),
+                }
+            })
+        for s, t, attr in G_desired.edges(data=True):
+            desired_elements.append({
+                "data": {
+                    "id": f"e-{s}-{t}",
+                    "source": s,
+                    "target": t,
+                    "label": attr.get("label", "CONNECTED_TO"),
+                }
+            })
+
+    # ── 9. Blast radius (accurate unique identities and reachable resources) ──
     blast_comparison = _compute_blast_comparison(
         G_current, G_desired, current_inventory, desired_inventory
     )
@@ -135,6 +160,7 @@ def build_desired_analysis(
     return {
         "simulation_active": True,
         "graph_diff": graph_diff,
+        "desired_elements": desired_elements,
         "risk_comparison": risk_comparison,
         "attack_path_comparison": attack_path_comparison,
         "blast_radius_comparison": blast_comparison,
@@ -272,41 +298,153 @@ def _build_risk_reasons(
     return reasons[:8]  # Cap at 8 reasons for display
 
 
+def _compute_blast_metrics(G: Any, inventory: Any) -> Dict[str, Any]:
+    """Calculate blast radius metrics representing actual reachable impact across all identities.
+
+    Identifies:
+      - unique affected identities (users, roles that have reachability to cloud resources)
+      - unique reachable resources (deduplicated across all paths/identities)
+      - unique sensitive resources (Secrets, RDS, S3 containing sensitive/PII data or risk >= 60)
+      - unique critical resources (critical severity or high risk or secrets/RDS)
+      - resource types breakdown
+    """
+    cloud_resource_types = {"S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB"}
+    sensitive_types = {"Secrets", "Secret", "RDS"}
+
+    all_identities = []
+    if G:
+        for nid, data in G.nodes(data=True):
+            if data.get("type") in {"User", "Role"}:
+                all_identities.append(nid)
+
+    affected_identities: Set[str] = set()
+    reachable_resources: Set[str] = set()
+    sensitive_resources: Set[str] = set()
+    critical_resources: Set[str] = set()
+    resource_types: Dict[str, int] = {}
+
+    if G:
+        for ident in all_identities:
+            try:
+                descendants = nx.descendants(G, ident)
+            except Exception:
+                descendants = set()
+
+            ident_has_resource = False
+            for d in descendants:
+                if not G.has_node(d):
+                    continue
+                d_data = G.nodes[d]
+                d_type = d_data.get("type", "Resource")
+                if d_type in cloud_resource_types:
+                    ident_has_resource = True
+                    if d not in reachable_resources:
+                        reachable_resources.add(d)
+                        resource_types[d_type] = resource_types.get(d_type, 0) + 1
+
+                    # Check sensitive
+                    d_label = str(d_data.get("label", "")).lower()
+                    d_risk = d_data.get("riskScore", 0)
+                    is_sensitive = (
+                        d_type in sensitive_types
+                        or "pii" in d_label
+                        or "secret" in d_label
+                        or "credential" in d_label
+                        or d_risk >= 60
+                    )
+                    if is_sensitive:
+                        sensitive_resources.add(d)
+
+                    # Check critical
+                    if d_type in sensitive_types or d_risk >= 70 or d_data.get("severity") == "critical":
+                        critical_resources.add(d)
+
+            if ident_has_resource:
+                affected_identities.add(ident)
+
+    # Blast score based on unique reachable assets, sensitive/critical weighting, and affected identities
+    raw_score = (
+        len(reachable_resources) * 8
+        + len(sensitive_resources) * 15
+        + len(critical_resources) * 10
+        + len(affected_identities) * 4
+    )
+    blast_score = min(100, max(0, raw_score))
+
+    return {
+        "blast_score": blast_score,
+        "affected_identities_count": len(affected_identities),
+        "affected_identity_ids": affected_identities,
+        "reachable_resource_count": len(reachable_resources),
+        "reachable_resource_ids": reachable_resources,
+        "sensitive_resource_count": len(sensitive_resources),
+        "sensitive_resource_ids": sensitive_resources,
+        "critical_resource_count": len(critical_resources),
+        "critical_resource_ids": critical_resources,
+        "resource_types": resource_types,
+    }
+
+
 def _compute_blast_comparison(
     G_current: Any,
     G_desired: Any,
     current_inventory: Any,
     desired_inventory: Any,
 ) -> Dict[str, Any]:
-    """Calculate blast radius for highest-risk user in current vs desired."""
-    # Use top-risk user as representative
-    all_current = getattr(current_inventory, "users", []) + getattr(current_inventory, "roles", [])
-    all_desired = getattr(desired_inventory, "users", []) + getattr(desired_inventory, "roles", [])
+    """Calculate blast radius comparison between current and desired state.
 
-    def top_node_id(entities, G):
-        best_id = None
-        best_score = -1
-        for e in entities:
-            nid = f"aws:user:{e['name']}" if "mfaEnabled" in e else f"aws:role:{e['name']}"
-            if G.has_node(nid) and e.get("riskScore", 0) > best_score:
-                best_score = e.get("riskScore", 0)
-                best_id = nid
-        return best_id
+    Uses unique affected identities and unique reachable resources across all
+    paths to accurately measure simulation impact without selecting a single user
+    or double-counting duplicate paths.
+    """
+    c_metrics = _compute_blast_metrics(G_current, current_inventory)
+    d_metrics = _compute_blast_metrics(G_desired, desired_inventory)
 
-    c_nid = top_node_id(all_current, G_current)
-    d_nid = top_node_id(all_desired, G_desired)
+    new_res_ids = d_metrics["reachable_resource_ids"] - c_metrics["reachable_resource_ids"]
+    rem_res_ids = c_metrics["reachable_resource_ids"] - d_metrics["reachable_resource_ids"]
 
-    c_blast = calculate_blast_radius(G_current, c_nid) if c_nid else {"blast_score": 0, "reachable_resource_count": 0}
-    d_blast = calculate_blast_radius(G_desired, d_nid) if d_nid else {"blast_score": 0, "reachable_resource_count": 0}
+    new_reachable = []
+    if G_desired:
+        for rid in new_res_ids:
+            if G_desired.has_node(rid):
+                new_reachable.append({
+                    "id": rid,
+                    "name": G_desired.nodes[rid].get("label", rid),
+                    "type": G_desired.nodes[rid].get("type", "Resource"),
+                    "riskScore": G_desired.nodes[rid].get("riskScore", 0),
+                })
+
+    rem_reachable = []
+    if G_current:
+        for rid in rem_res_ids:
+            if G_current.has_node(rid):
+                rem_reachable.append({
+                    "id": rid,
+                    "name": G_current.nodes[rid].get("label", rid),
+                    "type": G_current.nodes[rid].get("type", "Resource"),
+                    "riskScore": G_current.nodes[rid].get("riskScore", 0),
+                })
 
     return {
-        "current_blast_score": c_blast.get("blast_score", 0),
-        "desired_blast_score": d_blast.get("blast_score", 0),
-        "delta": d_blast.get("blast_score", 0) - c_blast.get("blast_score", 0),
-        "current_resource_count": c_blast.get("reachable_resource_count", 0),
-        "desired_resource_count": d_blast.get("reachable_resource_count", 0),
-        "new_reachable_resources": [],
-        "removed_reachable_resources": [],
+        "current_blast_score": c_metrics["blast_score"],
+        "desired_blast_score": d_metrics["blast_score"],
+        "delta": d_metrics["blast_score"] - c_metrics["blast_score"],
+        "current_resource_count": c_metrics["reachable_resource_count"],
+        "desired_resource_count": d_metrics["reachable_resource_count"],
+        "resources_delta": d_metrics["reachable_resource_count"] - c_metrics["reachable_resource_count"],
+        "current_identities_count": c_metrics["affected_identities_count"],
+        "desired_identities_count": d_metrics["affected_identities_count"],
+        "identities_delta": d_metrics["affected_identities_count"] - c_metrics["affected_identities_count"],
+        "current_sensitive_count": c_metrics["sensitive_resource_count"],
+        "desired_sensitive_count": d_metrics["sensitive_resource_count"],
+        "sensitive_delta": d_metrics["sensitive_resource_count"] - c_metrics["sensitive_resource_count"],
+        "current_critical_count": c_metrics["critical_resource_count"],
+        "desired_critical_count": d_metrics["critical_resource_count"],
+        "critical_delta": d_metrics["critical_resource_count"] - c_metrics["critical_resource_count"],
+        "current_resource_types": c_metrics["resource_types"],
+        "desired_resource_types": d_metrics["resource_types"],
+        "new_reachable_resources": new_reachable,
+        "removed_reachable_resources": rem_reachable,
     }
 
 

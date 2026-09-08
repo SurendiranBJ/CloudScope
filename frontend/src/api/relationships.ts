@@ -1,4 +1,4 @@
-import { apiClient, APIResponse } from './client';
+import { apiClient, type APIResponse } from './client';
 import type { RelationshipsResponse, RelationshipEntry } from '../types';
 
 export interface RelationshipParams {

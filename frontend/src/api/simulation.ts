@@ -1,4 +1,4 @@
-import { apiClient, APIResponse } from './client';
+import { apiClient, type APIResponse } from './client';
 import type {
   SimulationState,
   SimulationChange,
@@ -56,11 +56,13 @@ export const getSimulationDiff = async (): Promise<{
   simulation_active: boolean;
   pending_changes: number;
   graph_diff: GraphDiff | null;
+  desired_elements?: any[];
 }> => {
   const res = await apiClient.get<APIResponse<{
     simulation_active: boolean;
     pending_changes: number;
     graph_diff: GraphDiff | null;
+    desired_elements?: any[];
   }>>('/simulation/diff');
   return res.data.data;
 };

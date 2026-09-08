@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getAttackPaths } from '../api/attack';
+import { getSimulationAttackPaths } from '../api/simulation';
 import { postCopilotMessage } from '../api/copilot';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
@@ -49,6 +50,10 @@ export interface ConsolidatedAttackPathGroup {
   mitreTechniques: string[];
   recommendation: string;
   description: string;
+  diffStatus?: 'NEW' | 'REMOVED' | 'CHANGED' | 'UNCHANGED';
+  currentRiskScore?: number;
+  desiredRiskScore?: number;
+  riskDelta?: number;
 }
 
 export const AttackPaths: FC = () => {
@@ -61,6 +66,10 @@ export const AttackPaths: FC = () => {
   const [aiExpanded, setAiExpanded] = useState<Record<string, { loading: boolean; text: string; codeBlock?: string } | null>>({});
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
 
+  // Simulation View Controls
+  const [simViewMode, setSimViewMode] = useState<'current' | 'desired' | 'diff'>('diff');
+  const [diffFilter, setDiffFilter] = useState<'all' | 'new' | 'removed' | 'changed' | 'unchanged'>('all');
+
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
 
@@ -70,7 +79,56 @@ export const AttackPaths: FC = () => {
     refetchInterval: 10000
   });
 
-  const rawAttackPaths = data || [];
+  const { data: simAttackData } = useQuery({
+    queryKey: ['simulation-attack-paths'],
+    queryFn: getSimulationAttackPaths,
+    refetchInterval: 5000,
+  });
+
+  const isSimActive = Boolean(simAttackData?.simulation_active);
+
+  const rawAttackPaths = useMemo<AttackPath[]>(() => {
+    if (!isSimActive || !simAttackData) {
+      return data || [];
+    }
+
+    if (simViewMode === 'current') {
+      return (simAttackData.current_paths as AttackPath[]) || data || [];
+    }
+
+    if (simViewMode === 'desired') {
+      const desiredPaths = [
+        ...(simAttackData.unchanged_paths || []),
+        ...(simAttackData.new_paths || []),
+        ...(simAttackData.changed_paths || []).map((c: any) => c.desired),
+      ];
+      return desiredPaths as AttackPath[];
+    }
+
+    // simViewMode === 'diff'
+    const tagged: any[] = [];
+    (simAttackData.new_paths || []).forEach((p: any) => {
+      tagged.push({ ...p, _diffStatus: 'NEW' });
+    });
+    (simAttackData.removed_paths || []).forEach((p: any) => {
+      tagged.push({ ...p, _diffStatus: 'REMOVED' });
+    });
+    (simAttackData.changed_paths || []).forEach((c: any) => {
+      tagged.push({
+        ...c.desired,
+        _diffStatus: 'CHANGED',
+        _currentRisk: c.current?.riskScore ?? 0,
+        _desiredRisk: c.desired?.riskScore ?? 0,
+        _riskDelta: c.risk_delta ?? 0,
+      });
+    });
+    (simAttackData.unchanged_paths || []).forEach((p: any) => {
+      tagged.push({ ...p, _diffStatus: 'UNCHANGED' });
+    });
+
+    if (diffFilter === 'all') return tagged;
+    return tagged.filter(p => p._diffStatus?.toLowerCase() === diffFilter.toLowerCase());
+  }, [isSimActive, simAttackData, simViewMode, diffFilter, data]);
 
   // Extract exact relationship label from backend orderedRelationships (single source of truth)
   function findExactEdgeLabel(group: ConsolidatedAttackPathGroup, srcNodeIdOrName: string, tgtNodeIdOrName: string): string {
@@ -86,7 +144,7 @@ export const AttackPaths: FC = () => {
         }
       }
     }
-    return 'ALLOWS';
+    return 'UNKNOWN';
   }
 
   // 1. ADVANCED DEDUPLICATION & GROUPING ALGORITHM (Cases A, B, C)
@@ -116,7 +174,15 @@ export const AttackPaths: FC = () => {
         : (effectiveTargetNode ? `target:${effectiveTargetNode.type}:${effectiveTargetNode.id || effectiveTargetNode.name}` : `source:${sourceNode.name}`);
 
       const sev = (path.severity || 'high').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
-      const score = path.riskScore ?? path.likelihood ?? 75;
+      const score = typeof path.riskScore === 'number'
+        ? path.riskScore
+        : (sev === 'critical' ? 90 : sev === 'high' ? 75 : sev === 'medium' ? 50 : 30);
+
+      const tagged = path as any;
+      const diffStatus = tagged._diffStatus as 'NEW' | 'REMOVED' | 'CHANGED' | 'UNCHANGED' | undefined;
+      const currentRisk = tagged._currentRisk as number | undefined;
+      const desiredRisk = tagged._desiredRisk as number | undefined;
+      const riskDelta = tagged._riskDelta as number | undefined;
 
       if (!groupMap[chainKey]) {
         groupMap[chainKey] = {
@@ -131,7 +197,11 @@ export const AttackPaths: FC = () => {
           blastRadiusSummary: path.blastRadius || 'Multiple connected resources',
           mitreTechniques: [...(path.mitreTechniques || [])],
           recommendation: path.recommendation || '',
-          description: path.description || ''
+          description: path.description || '',
+          diffStatus,
+          currentRiskScore: currentRisk,
+          desiredRiskScore: desiredRisk,
+          riskDelta,
         };
       } else {
         const group = groupMap[chainKey];
@@ -145,6 +215,16 @@ export const AttackPaths: FC = () => {
         // Deduplicate and append target resource
         if (effectiveTargetNode && !group.targets.some(t => (t.id || t.name) === (effectiveTargetNode.id || effectiveTargetNode.name))) {
           group.targets.push(effectiveTargetNode);
+        }
+
+        // Diff status prioritization: CHANGED > NEW > REMOVED > UNCHANGED
+        if (diffStatus === 'CHANGED' || diffStatus === 'NEW') {
+          group.diffStatus = diffStatus;
+          if (currentRisk !== undefined) group.currentRiskScore = currentRisk;
+          if (desiredRisk !== undefined) group.desiredRiskScore = desiredRisk;
+          if (riskDelta !== undefined) group.riskDelta = riskDelta;
+        } else if (!group.diffStatus && diffStatus) {
+          group.diffStatus = diffStatus;
         }
 
         // Elevate severity if higher
@@ -253,7 +333,8 @@ export const AttackPaths: FC = () => {
                 target: firstSharedId,
                 label: findExactEdgeLabel(group, sourceNode.id || sourceNode.name, firstSharedNode.id || firstSharedNode.name),
                 groupIds: [group.groupId],
-                severity: group.severity
+                severity: group.severity,
+                diffStatus: group.diffStatus
               }
             };
           } else if (!edgesMap[edgeId].data.groupIds.includes(group.groupId)) {
@@ -278,7 +359,8 @@ export const AttackPaths: FC = () => {
               target: tId,
               label: findExactEdgeLabel(group, sNode.id || sNode.name, tNode.id || tNode.name),
               groupIds: [group.groupId],
-              severity: group.severity
+              severity: group.severity,
+              diffStatus: group.diffStatus
             }
           };
         } else if (!edgesMap[edgeId].data.groupIds.includes(group.groupId)) {
@@ -316,7 +398,8 @@ export const AttackPaths: FC = () => {
                 target: targetId,
                 label: findExactEdgeLabel(group, lastSharedNode.id || lastSharedNode.name, targetNode.id || targetNode.name),
                 groupIds: [group.groupId],
-                severity: group.severity
+                severity: group.severity,
+                diffStatus: group.diffStatus
               }
             };
           } else if (!edgesMap[branchEdgeId].data.groupIds.includes(group.groupId)) {
@@ -333,20 +416,22 @@ export const AttackPaths: FC = () => {
   const blastRadiusStats = useMemo(() => {
     const uniqueIdentities = new Set<string>();
     const uniqueTargets = new Set<string>();
+    const uniqueCriticalTargets = new Set<string>();
     let maxDepth = 0;
-    let criticalTargets = 0;
 
     rawAttackPaths.forEach(p => {
-      if (p.nodes.length > 0) {
-        uniqueIdentities.add(p.nodes[0].name);
+      if (p.nodes && p.nodes.length > 0) {
+        const src = p.nodes[0];
+        uniqueIdentities.add(src.id || src.name);
         const target = p.nodes[p.nodes.length - 1];
-        uniqueTargets.add(target.name);
+        const targetId = target.id || target.name;
+        uniqueTargets.add(targetId);
         const t = target.type as string;
-        if (p.severity === 'critical' || t === 'Secrets' || t === 'Secret' || t === 'RDS') {
-          criticalTargets++;
+        if (p.severity === 'critical' || t === 'Secrets' || t === 'Secret' || t === 'RDS' || (target.riskScore && target.riskScore >= 70)) {
+          uniqueCriticalTargets.add(targetId);
         }
       }
-      if (p.nodes.length > maxDepth) {
+      if (p.nodes && p.nodes.length > maxDepth) {
         maxDepth = p.nodes.length;
       }
     });
@@ -356,7 +441,7 @@ export const AttackPaths: FC = () => {
       consolidatedGroupCount: consolidatedGroups.length,
       compromisedIdentities: uniqueIdentities.size,
       reachableAssets: uniqueTargets.size,
-      criticalAssets: criticalTargets,
+      criticalAssets: uniqueCriticalTargets.size,
       maxDepth: Math.max(1, maxDepth)
     };
   }, [rawAttackPaths, consolidatedGroups]);
@@ -506,6 +591,35 @@ export const AttackPaths: FC = () => {
             'opacity': 0.6,
             'transition-property': 'line-color, target-arrow-color, width, opacity',
             'transition-duration': 0.25
+          }
+        },
+        {
+          selector: 'edge[diffStatus = "NEW"]',
+          style: {
+            'line-color': '#10B981',
+            'target-arrow-color': '#10B981',
+            'width': 2.5,
+            'line-style': 'dashed',
+            'opacity': 0.95
+          }
+        },
+        {
+          selector: 'edge[diffStatus = "REMOVED"]',
+          style: {
+            'line-color': '#EF4444',
+            'target-arrow-color': '#EF4444',
+            'width': 2.5,
+            'line-style': 'dashed',
+            'opacity': 0.7
+          }
+        },
+        {
+          selector: 'edge[diffStatus = "CHANGED"]',
+          style: {
+            'line-color': '#F59E0B',
+            'target-arrow-color': '#F59E0B',
+            'width': 2.5,
+            'opacity': 0.95
           }
         },
         // Selected / Highlighted Branch
@@ -740,6 +854,90 @@ Explain why this shared privilege path introduces high blast radius across multi
         </div>
       </div>
 
+      {/* Simulation Active Bar */}
+      {isSimActive && (
+        <div className="bg-[#0F172A] border border-amber-500/40 rounded-xl p-3.5 shadow-xl flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs font-bold text-amber-300 uppercase tracking-wider">
+              SIMULATION ACTIVE ({simAttackData?.pending_changes ?? 1} pending change{(simAttackData?.pending_changes ?? 1) > 1 ? 's' : ''})
+            </span>
+            <span className="text-[10px] text-amber-400/80 font-mono px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">
+              SIMULATION ONLY — NOT APPLIED TO AWS
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* View Mode Buttons: Current / Desired / Diff View */}
+            <div className="flex items-center bg-gray-900 p-1 rounded-lg border border-gray-700 text-xs">
+              <button
+                onClick={() => setSimViewMode('current')}
+                className={`px-3 py-1 rounded font-semibold transition-colors ${
+                  simViewMode === 'current'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                Current Paths
+              </button>
+              <button
+                onClick={() => setSimViewMode('desired')}
+                className={`px-3 py-1 rounded font-semibold transition-colors ${
+                  simViewMode === 'desired'
+                    ? 'bg-indigo-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                Desired Paths
+              </button>
+              <button
+                onClick={() => setSimViewMode('diff')}
+                className={`px-3 py-1 rounded font-semibold transition-colors ${
+                  simViewMode === 'diff'
+                    ? 'bg-amber-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                Diff View
+              </button>
+            </div>
+
+            {/* In Diff View: Filter tabs for New, Removed, Changed, Unchanged */}
+            {simViewMode === 'diff' && (
+              <div className="flex items-center gap-1 bg-gray-900 p-1 rounded-lg border border-gray-700 text-[11px]">
+                {(
+                  [
+                    { id: 'all', label: 'All Diff' },
+                    { id: 'new', label: `+ New (${simAttackData?.new_paths?.length || 0})` },
+                    { id: 'removed', label: `- Removed (${simAttackData?.removed_paths?.length || 0})` },
+                    { id: 'changed', label: `Changed (${simAttackData?.changed_paths?.length || 0})` },
+                    { id: 'unchanged', label: `Unchanged (${simAttackData?.unchanged_paths?.length || 0})` },
+                  ] as const
+                ).map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setDiffFilter(tab.id as any)}
+                    className={`px-2 py-0.5 rounded font-mono font-medium transition-colors ${
+                      diffFilter === tab.id
+                        ? tab.id === 'new'
+                          ? 'bg-emerald-600 text-white'
+                          : tab.id === 'removed'
+                          ? 'bg-red-600 text-white'
+                          : tab.id === 'changed'
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-gray-700 text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Blast Radius & Risk Summary Metric Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <div className="p-3.5 bg-enterprise-card border border-enterprise-border rounded-xl flex items-center gap-3">
@@ -930,6 +1128,12 @@ Explain why this shared privilege path introduces high blast radius across multi
                 className={`bg-enterprise-card border rounded-2xl p-6 transition-all shadow-xl flex flex-col gap-5 cursor-pointer ${
                   isSelected
                     ? 'border-red-500/80 bg-[#141B2D] ring-1 ring-red-500/50 shadow-red-500/10'
+                    : isSimActive && group.diffStatus === 'NEW'
+                    ? 'border-emerald-500/50 bg-emerald-950/10 hover:border-emerald-500'
+                    : isSimActive && group.diffStatus === 'REMOVED'
+                    ? 'border-red-500/40 bg-red-950/10 opacity-70 hover:opacity-90'
+                    : isSimActive && group.diffStatus === 'CHANGED'
+                    ? 'border-amber-500/50 bg-amber-950/10 hover:border-amber-500'
                     : 'border-enterprise-border hover:border-gray-700'
                 }`}
               >
@@ -937,6 +1141,32 @@ Explain why this shared privilege path introduces high blast radius across multi
                 <div className="flex flex-wrap items-start justify-between gap-4 border-b border-enterprise-border pb-4">
                   <div className="space-y-1.5">
                     <div className="flex items-center gap-2.5 flex-wrap">
+                      {isSimActive && group.diffStatus && (
+                        <span
+                          className={`text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider border flex items-center gap-1.5 ${
+                            group.diffStatus === 'NEW'
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'
+                              : group.diffStatus === 'REMOVED'
+                              ? 'bg-red-500/20 text-red-400 border-red-500/50 line-through'
+                              : group.diffStatus === 'CHANGED'
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                              : 'bg-gray-800 text-gray-400 border-gray-700'
+                          }`}
+                        >
+                          {group.diffStatus === 'NEW' && '+ NEW PATH'}
+                          {group.diffStatus === 'REMOVED' && '- REMOVED PATH'}
+                          {group.diffStatus === 'CHANGED' && (
+                            <span>
+                              CHANGED (Current Risk: {group.currentRiskScore ?? '—'} → Desired Risk: {group.desiredRiskScore ?? '—'}{' '}
+                              | Delta:{' '}
+                              {group.riskDelta !== undefined
+                                ? (group.riskDelta > 0 ? `+${group.riskDelta}` : group.riskDelta)
+                                : '0'})
+                            </span>
+                          )}
+                          {group.diffStatus === 'UNCHANGED' && 'UNCHANGED'}
+                        </span>
+                      )}
                       <span
                         className={`text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider border ${
                           group.severity === 'critical'
@@ -1035,7 +1265,9 @@ Explain why this shared privilege path introduces high blast radius across multi
                       <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
                         {group.sharedChain.length > 0 && group.sources.length > 0
                           ? findExactEdgeLabel(group, group.sources[0].id || group.sources[0].name, group.sharedChain[0].id || group.sharedChain[0].name)
-                          : 'CAN_ACCESS'}
+                          : (group.targets.length > 0 && group.sources.length > 0
+                              ? findExactEdgeLabel(group, group.sources[0].id || group.sources[0].name, group.targets[0].id || group.targets[0].name)
+                              : 'UNKNOWN')}
                       </span>
                       <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
                       <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
@@ -1047,7 +1279,11 @@ Explain why this shared privilege path introduces high blast radius across multi
                     <div className="flex flex-col items-center w-full max-w-xl">
                       {group.sharedChain.map((node, index) => {
                         const nextNode = group.sharedChain[index + 1];
-                        const relLabel = nextNode ? findExactEdgeLabel(group, node.id || node.name, nextNode.id || nextNode.name) : 'ALLOWS';
+                        const relLabel = nextNode
+                          ? findExactEdgeLabel(group, node.id || node.name, nextNode.id || nextNode.name)
+                          : (group.targets.length > 0
+                              ? findExactEdgeLabel(group, node.id || node.name, group.targets[0].id || group.targets[0].name)
+                              : 'UNKNOWN');
 
                         return (
                           <div key={node.id || node.name} className="flex flex-col items-center w-full">

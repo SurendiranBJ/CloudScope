@@ -90,7 +90,7 @@ export const Changes: React.FC = () => {
     refetchInterval: 5000,
   });
 
-  const { data: riskData, isLoading: riskLoading } = useQuery({
+  const { data: riskData } = useQuery({
     queryKey: ['simulation-risk'],
     queryFn: getSimulationRisk,
     enabled: !!(simState?.simulation_active),

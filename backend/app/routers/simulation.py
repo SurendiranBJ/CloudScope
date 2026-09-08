@@ -257,6 +257,7 @@ def get_simulation_diff():
             "simulation_active": True,
             "pending_changes": simulation_state.change_count(),
             "graph_diff": analysis.get("graph_diff"),
+            "desired_elements": analysis.get("desired_elements", []),
         },
     )
 

@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Generic, TypeVar, Optional, List
+from typing import Generic, TypeVar, Optional, List, Dict, Any
 from datetime import datetime
 
 T = TypeVar('T')
@@ -252,11 +252,23 @@ class AttackPathComparison(BaseModel):
 # ─── Blast Radius Comparison ─────────────────────────────────────────────────
 
 class BlastRadiusComparison(BaseModel):
-    current_blast_score: int
-    desired_blast_score: int
-    delta: int
-    current_resource_count: int
-    desired_resource_count: int
+    current_blast_score: int = 0
+    desired_blast_score: int = 0
+    delta: int = 0
+    current_resource_count: int = 0
+    desired_resource_count: int = 0
+    resources_delta: int = 0
+    current_identities_count: int = 0
+    desired_identities_count: int = 0
+    identities_delta: int = 0
+    current_sensitive_count: int = 0
+    desired_sensitive_count: int = 0
+    sensitive_delta: int = 0
+    current_critical_count: int = 0
+    desired_critical_count: int = 0
+    critical_delta: int = 0
+    current_resource_types: Dict[str, int] = {}
+    desired_resource_types: Dict[str, int] = {}
     new_reachable_resources: List[dict] = []
     removed_reachable_resources: List[dict] = []
 

@@ -50,7 +50,8 @@ export interface SecurityAlert {
 export interface AttackPathNode {
   id: string;
   name: string;
-  type: 'User' | 'Role' | 'EC2' | 'S3' | 'Lambda' | 'Secrets' | 'Policy';
+  type: 'User' | 'Role' | 'EC2' | 'S3' | 'Lambda' | 'Secrets' | 'Policy' | string;
+  riskScore?: number;
 }
 
 export interface AttackPath {
@@ -67,6 +68,9 @@ export interface AttackPath {
   mitreTechniques: string[];
   recommendation: string;
   description: string;
+  source?: string;
+  destination?: string;
+  diffStatus?: 'new' | 'removed' | 'changed' | 'unchanged' | string;
 }
 
 export interface RiskFinding {
@@ -205,8 +209,20 @@ export interface BlastRadiusComparison {
   delta: number;
   current_resource_count: number;
   desired_resource_count: number;
-  new_reachable_resources: { identity: string; identity_type: string; resource_id: string }[];
-  removed_reachable_resources: { identity: string; identity_type: string; resource_id: string }[];
+  resources_delta?: number;
+  current_identities_count?: number;
+  desired_identities_count?: number;
+  identities_delta?: number;
+  current_sensitive_count?: number;
+  desired_sensitive_count?: number;
+  sensitive_delta?: number;
+  current_critical_count?: number;
+  desired_critical_count?: number;
+  critical_delta?: number;
+  current_resource_types?: Record<string, number>;
+  desired_resource_types?: Record<string, number>;
+  new_reachable_resources: { id?: string; name?: string; type?: string; riskScore?: number; identity?: string; identity_type?: string; resource_id?: string }[];
+  removed_reachable_resources: { id?: string; name?: string; type?: string; riskScore?: number; identity?: string; identity_type?: string; resource_id?: string }[];
 }
 
 // ─── Simulation Analysis ──────────────────────────────────────────────────────
@@ -215,11 +231,12 @@ export interface SimulationAnalysis {
   simulation_active: boolean;
   pending_changes?: number;
   graph_diff?: GraphDiff;
+  desired_elements?: any[];
   risk_comparison?: RiskComparison;
   attack_path_comparison?: AttackPathComparison;
   blast_radius_comparison?: BlastRadiusComparison;
-  new_reachable_resources?: { identity: string; identity_type: string; resource_id: string }[];
-  removed_reachable_resources?: { identity: string; identity_type: string; resource_id: string }[];
+  new_reachable_resources?: { id?: string; name?: string; type?: string; riskScore?: number; identity?: string; identity_type?: string; resource_id?: string }[];
+  removed_reachable_resources?: { id?: string; name?: string; type?: string; riskScore?: number; identity?: string; identity_type?: string; resource_id?: string }[];
   summary?: string;
   simulation_note?: string;
 }
