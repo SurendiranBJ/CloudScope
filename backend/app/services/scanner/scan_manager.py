@@ -439,7 +439,19 @@ class ScanManager:
             logger.info(f"[INFO] Graph construction complete: {nodes_count} nodes, {edges_count} edges (with dynamic activity)")
 
             # 7. STEP 4 OF PIPELINE: Attack Path Engine Analysis on Fully Synchronized Graph
-            attack_paths = path_engine.find_attack_paths(G)
+            _policy_doc_map = {
+                p.get('name', ''): p.get('document', '{}')
+                for p in self.inventory.policies if p.get('name')
+            }
+            _policy_doc_map.update({
+                p.get('arn', ''): p.get('document', '{}')
+                for p in self.inventory.policies if p.get('arn')
+            })
+            attack_paths = path_engine.find_attack_paths(
+                G,
+                inventory=self.inventory,
+                policy_doc_map=_policy_doc_map,
+            )
             logger.info(f"[INFO] Attack Path Engine: {len(attack_paths)} paths detected")
 
             duration = round(time.time() - start_time, 2)
@@ -566,7 +578,7 @@ class ScanManager:
                         "id": f"e-{s}-{t}",
                         "source": s,
                         "target": t,
-                        "label": attr.get('label', 'CONNECTED_TO'),
+                        "label": attr.get('label', ''),
                         "isActivity": attr.get('is_activity', False),
                         "timestamp": attr.get('timestamp', ''),
                         "sourceIp": attr.get('sourceIp', '')

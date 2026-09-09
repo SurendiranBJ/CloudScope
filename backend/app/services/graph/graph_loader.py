@@ -61,7 +61,9 @@ def load_graph_from_neo4j() -> nx.DiGraph:
             source = e['source']
             target = e['target']
             if source and target:
-                G.add_edge(source, target, label=e.get('label', 'CONNECTED_TO'))
+                lbl = e.get('label') or ''
+                if lbl:
+                    G.add_edge(source, target, label=lbl)
 
         logger.info(f"Loaded NetworkX Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     except Exception as e:
@@ -265,7 +267,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         r_id = get_node_id("Role", r['name'])
         r_arn = r.get('arn', '')
 
-        # Annotate Role node with broad-trust flag before evaluating edges
+        # Annotate Role node with broad-trust and conditional-trust metadata
         trust_ev = evaluate_assume_role_trust_with_evidence(
             r.get('trustPolicy', '{}'),
             r['name'],
@@ -274,17 +276,24 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             inventory.roles,
             account_id,
             _policy_doc_map,
+            all_groups=inventory.groups,
         )
 
-        # Annotate the Role node so the graph retains trust-breadth metadata
-        if G.has_node(r_id) and trust_ev.get('trust_is_broad'):
-            G.nodes[r_id]['trust_is_broad'] = True
-            G.nodes[r_id]['trust_principal_types'] = ','.join(
-                sorted(trust_ev.get('trust_principal_types', set()))
-            )
+        # Annotate the Role node so the graph retains trust metadata
+        if G.has_node(r_id):
+            if trust_ev.get('trust_is_broad'):
+                G.nodes[r_id]['trust_is_broad'] = True
+                G.nodes[r_id]['trust_principal_types'] = ','.join(
+                    sorted(trust_ev.get('trust_principal_types', set()))
+                )
+            if trust_ev.get('conditional_trusts'):
+                G.nodes[r_id]['has_conditional_trust'] = True
+                G.nodes[r_id]['conditional_trust_count'] = len(trust_ev['conditional_trusts'])
 
-        # Add CAN_ASSUME edges ONLY for call-permission-verified principals
+        # Add CAN_ASSUME edges ONLY for DEFINITIVE trust and call-permission-verified principals
         for entry in trust_ev.get('users', []):
+            if entry['evidence'].get('trust_status') != 'definitive':
+                continue
             if not entry['evidence'].get('call_permission_verified'):
                 continue
             u = entry['principal']
@@ -297,6 +306,8 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 )
 
         for entry in trust_ev.get('roles', []):
+            if entry['evidence'].get('trust_status') != 'definitive':
+                continue
             if not entry['evidence'].get('call_permission_verified'):
                 continue
             src_r = entry['principal']

@@ -82,7 +82,11 @@ def build_desired_analysis(
     graph_diff = compute_graph_diff(G_current, G_desired)
 
     # ── 5. Attack path comparison ─────────────────────────────────────────────
-    desired_attack_paths = find_attack_paths(G_desired)
+    desired_attack_paths = find_attack_paths(
+        G_desired,
+        inventory=desired_inventory,
+        policy_doc_map=desired_policy_doc_map,
+    )
     attack_path_comparison = compare_attack_paths(current_attack_paths, desired_attack_paths)
 
     # ── 6. Global risk comparison ─────────────────────────────────────────────
@@ -149,7 +153,7 @@ def build_desired_analysis(
                     "id": f"e-{s}-{t}",
                     "source": s,
                     "target": t,
-                    "label": attr.get("label", "UNKNOWN"),
+                    "label": attr.get("label", ""),
                 }
             })
 

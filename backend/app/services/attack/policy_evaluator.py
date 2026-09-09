@@ -501,102 +501,313 @@ def evaluate_assume_role_trust(
 
 # ─── Authoritative Trust + Call-Permission Evaluator ────────────────────────
 
-def _principal_has_assume_role_permission(
-    principal: Dict[str, Any],
-    role_arn: str,
-    policy_doc_map: Dict[str, str],
-) -> bool:
-    """Return True if the principal's identity-based policies grant sts:AssumeRole
-    on the given role ARN (or on Resource: '*').
+# ─── Group Normalization and Effective Policy Collection ─────────────────────
 
-    Args:
-        principal: user or role dict (must contain 'policies' or 'attachedPolicies').
-        role_arn: ARN of the role being assumed.
-        policy_doc_map: maps policy_name → raw JSON document string.
+def _normalize_group_key(key: Any) -> str:
+    """Extract a canonical normalized key (lowercase string) from a group name, ARN, or dict."""
+    if not key:
+        return ""
+    if isinstance(key, dict):
+        s = key.get("name") or key.get("GroupName") or key.get("id") or key.get("arn") or ""
+    else:
+        s = str(key)
+    s = s.strip()
+    if ":group/" in s:
+        s = s.split(":group/")[-1]
+    elif "/" in s:
+        s = s.split("/")[-1]
+    return s.lower().strip()
 
-    Returns:
-        True if at least one Allow statement in the principal's policies
-        grants sts:AssumeRole on the role ARN (or '*') with no overriding Deny.
+
+def _build_normalized_group_map(all_groups: Any) -> Dict[str, Dict[str, Any]]:
+    """Index groups by multiple normalized representations:
+    lowercase short name, full ARN, id.
     """
-    # Collect policy names from the principal (users use 'policies', roles use 'attachedPolicies')
+    g_map: Dict[str, Dict[str, Any]] = {}
+    if not all_groups:
+        return g_map
+    group_list = getattr(all_groups, "groups", all_groups) if not isinstance(all_groups, (list, dict)) else all_groups
+    if isinstance(group_list, dict):
+        group_list = list(group_list.values())
+
+    for g in group_list:
+        if not isinstance(g, dict):
+            continue
+        gname = g.get("name") or g.get("GroupName") or g.get("id") or ""
+        garn = g.get("arn") or ""
+        gid = g.get("id") or ""
+
+        for key in [gname, garn, gid]:
+            if key:
+                norm = _normalize_group_key(key)
+                if norm:
+                    g_map[norm] = g
+                g_map[str(key).strip().lower()] = g
+    return g_map
+
+
+def get_effective_identity_policy_documents(
+    principal: Dict[str, Any],
+    policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
+) -> List[str]:
+    """Collect ALL applicable IAM policy documents for a principal.
+
+    Includes:
+    - Direct attached managed policies
+    - Direct inline policy documents
+    - Inherited group attached managed policies (normalized lookup)
+    - Inherited group inline policy documents
+    """
+    all_docs: List[str] = []
+
+    # 1. Direct managed policies
     p_policy_names = (
         principal.get("policies", []) +
         principal.get("attachedPolicies", [])
     )
-    inline_docs = list(principal.get("inlinePolicyDocuments", {}).values())
-
-    all_docs = []
     for pname in p_policy_names:
         clean = pname.replace("[inline] ", "")
         doc = policy_doc_map.get(pname) or policy_doc_map.get(clean)
         if doc:
             all_docs.append(doc)
-    all_docs.extend(inline_docs)
 
-    if not all_docs:
-        return False
+    # 2. Direct inline policy documents
+    for in_doc in principal.get("inlinePolicyDocuments", {}).values():
+        if in_doc:
+            all_docs.append(in_doc)
 
-    for doc in all_docs:
+    # 3. Inherited group policies (for Users)
+    user_groups = principal.get("groups", [])
+    if user_groups and all_groups:
+        g_map = _build_normalized_group_map(all_groups)
+        for g_ref in user_groups:
+            norm_key = _normalize_group_key(g_ref)
+            g_obj = g_map.get(norm_key)
+            if not g_obj:
+                continue
+            g_pnames = g_obj.get("attachedPolicies", []) + g_obj.get("policies", [])
+            for pname in g_pnames:
+                clean = pname.replace("[inline] ", "")
+                doc = policy_doc_map.get(pname) or policy_doc_map.get(clean)
+                if doc:
+                    all_docs.append(doc)
+            for in_doc in g_obj.get("inlinePolicyDocuments", {}).values():
+                if in_doc:
+                    all_docs.append(in_doc)
+
+    return all_docs
+
+
+def principal_effective_allows_assume_role(
+    principal: Dict[str, Any],
+    role_arn: str,
+    policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
+) -> Tuple[bool, bool]:
+    """Determine if a principal's effective policies grant sts:AssumeRole.
+
+    Evaluates:
+    - Direct policies + group-inherited policies.
+    - Explicit Deny precedence: If ANY statement Denies sts:AssumeRole for role_arn,
+      immediately returns (False, True).
+    - If at least one Allow matches role_arn (or Resource: '*') and NO Deny matches,
+      returns (True, False).
+    - Otherwise returns (False, False).
+
+    Returns:
+        (allowed: bool, explicit_deny: bool)
+    """
+    docs = get_effective_identity_policy_documents(principal, policy_doc_map, all_groups)
+    if not docs:
+        return False, False
+
+    has_allow = False
+
+    for doc in docs:
         stmts = parse_policy_document(doc)
         for stmt in stmts:
-            if stmt["Effect"] != "Allow":
-                continue
+            effect = stmt.get("Effect")
             actions = stmt.get("Action", [])
             resources = stmt.get("Resource", [])
 
-            # Must match sts:AssumeRole
             if not any(match_action(a, "sts:assumerole") for a in actions):
                 continue
 
-            # Must match the role ARN or wildcard resource
+            # Check if this statement applies to role_arn
+            resource_matches = False
             for r in (resources or ["*"]):
                 if r == "*":
-                    return True
+                    resource_matches = True
+                    break
                 if role_arn and fnmatchcase(role_arn.lower(), r.lower()):
-                    return True
+                    resource_matches = True
+                    break
                 if role_arn and r.lower() == role_arn.lower():
-                    return True
+                    resource_matches = True
+                    break
 
-    return False
+            if not resource_matches:
+                continue
+
+            if effect == "Deny":
+                # Explicit Deny strictly overrides any Allow
+                return False, True
+            elif effect == "Allow":
+                has_allow = True
+
+    return has_allow, False
+
+
+def _principal_has_assume_role_permission(
+    principal: Dict[str, Any],
+    role_arn: str,
+    policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
+) -> bool:
+    """Wrapper for backward compatibility."""
+    allowed, explicit_deny = principal_effective_allows_assume_role(
+        principal, role_arn, policy_doc_map, all_groups
+    )
+    return allowed and not explicit_deny
 
 
 def _principal_has_explicit_deny_on_assume(
     principal: Dict[str, Any],
     role_arn: str,
     policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
 ) -> bool:
-    """Return True if any identity policy explicitly Denies sts:AssumeRole
-    for this principal against the role ARN."""
-    p_policy_names = (
-        principal.get("policies", []) +
-        principal.get("attachedPolicies", [])
+    """Wrapper for backward compatibility."""
+    _, explicit_deny = principal_effective_allows_assume_role(
+        principal, role_arn, policy_doc_map, all_groups
     )
-    inline_docs = list(principal.get("inlinePolicyDocuments", {}).values())
+    return explicit_deny
 
-    all_docs = []
-    for pname in p_policy_names:
-        clean = pname.replace("[inline] ", "")
-        doc = policy_doc_map.get(pname) or policy_doc_map.get(clean)
-        if doc:
-            all_docs.append(doc)
-    all_docs.extend(inline_docs)
 
-    for doc in all_docs:
-        stmts = parse_policy_document(doc)
-        for stmt in stmts:
-            if stmt["Effect"] != "Deny":
-                continue
-            actions = stmt.get("Action", [])
-            resources = stmt.get("Resource", [])
-            if not any(match_action(a, "sts:assumerole") for a in actions):
-                continue
-            for r in (resources or []):
-                if r == "*":
-                    return True
-                if role_arn and fnmatchcase(role_arn.lower(), r.lower()):
-                    return True
-    return False
+# ─── Trust Policy Condition Evaluator ────────────────────────────────────────
 
+def evaluate_trust_statement_condition(
+    condition_block: Any,
+    caller: Dict[str, Any],
+    account_id: str,
+) -> Dict[str, Any]:
+    """Evaluate a trust policy statement's Condition block against known inventory context.
+
+    Returns:
+        {
+            "conditions_evaluated": List[str],
+            "conditions_satisfied": List[str],
+            "conditions_unresolved": List[str],
+            "is_violated": bool,         # True if deterministically evaluated to False
+            "is_fully_satisfied": bool,  # True iff conditions existed and all were satisfied
+        }
+    """
+    res = {
+        "conditions_evaluated": [],
+        "conditions_satisfied": [],
+        "conditions_unresolved": [],
+        "is_violated": False,
+        "is_fully_satisfied": False,
+    }
+
+    if not condition_block or not isinstance(condition_block, dict):
+        res["is_fully_satisfied"] = True
+        return res
+
+    caller_arn = str(caller.get("arn") or "").strip().lower()
+    caller_account = str(account_id or "").strip().lower()
+    if not caller_account and ":" in caller_arn:
+        parts = caller_arn.split(":")
+        if len(parts) >= 5:
+            caller_account = parts[4].lower()
+
+    for operator, expr in condition_block.items():
+        if not isinstance(expr, dict):
+            res["conditions_unresolved"].append(str(operator))
+            continue
+
+        op_lower = str(operator).lower().strip()
+
+        for key, raw_val in expr.items():
+            key_str = str(key).strip()
+            key_lower = key_str.lower()
+            cond_repr = f"{operator}:{key_str}={raw_val}"
+            res["conditions_evaluated"].append(cond_repr)
+
+            # Normalize expected values to list of strings
+            if isinstance(raw_val, (list, set, tuple)):
+                expected_vals = [str(v).strip().lower() for v in raw_val]
+            else:
+                expected_vals = [str(raw_val).strip().lower()]
+
+            # 1. aws:principalarn
+            if key_lower in {"aws:principalarn", "principalarn"}:
+                if op_lower in {"stringequals", "arnequals"}:
+                    if not caller_arn:
+                        res["conditions_unresolved"].append(cond_repr)
+                    elif any(caller_arn == ev for ev in expected_vals):
+                        res["conditions_satisfied"].append(cond_repr)
+                    else:
+                        res["is_violated"] = True
+                elif op_lower in {"stringlike", "arnlike"}:
+                    if not caller_arn:
+                        res["conditions_unresolved"].append(cond_repr)
+                    elif any(fnmatchcase(caller_arn, ev) for ev in expected_vals):
+                        res["conditions_satisfied"].append(cond_repr)
+                    else:
+                        res["is_violated"] = True
+                elif op_lower in {"stringnotequals", "arnnotequals"}:
+                    if not caller_arn:
+                        res["conditions_unresolved"].append(cond_repr)
+                    elif all(caller_arn != ev for ev in expected_vals):
+                        res["conditions_satisfied"].append(cond_repr)
+                    else:
+                        res["is_violated"] = True
+                else:
+                    res["conditions_unresolved"].append(cond_repr)
+
+            # 2. aws:principalaccount
+            elif key_lower in {"aws:principalaccount", "principalaccount"}:
+                if op_lower in {"stringequals"}:
+                    if not caller_account:
+                        res["conditions_unresolved"].append(cond_repr)
+                    elif any(caller_account == ev for ev in expected_vals):
+                        res["conditions_satisfied"].append(cond_repr)
+                    else:
+                        res["is_violated"] = True
+                elif op_lower in {"stringnotequals"}:
+                    if not caller_account:
+                        res["conditions_unresolved"].append(cond_repr)
+                    elif all(caller_account != ev for ev in expected_vals):
+                        res["conditions_satisfied"].append(cond_repr)
+                    else:
+                        res["is_violated"] = True
+                else:
+                    res["conditions_unresolved"].append(cond_repr)
+
+            # 3. Runtime/session parameters (MFA, ExternalId, SourceIp, etc.)
+            elif key_lower in {
+                "aws:multifactorauthpresent",
+                "multifactorauthpresent",
+                "sts:externalid",
+                "externalid",
+                "aws:sourceip",
+                "sourceip",
+            }:
+                res["conditions_unresolved"].append(cond_repr)
+
+            # 4. Any other unknown/unsupported condition key or operator
+            else:
+                res["conditions_unresolved"].append(cond_repr)
+
+    if res["conditions_evaluated"] and not res["is_violated"] and not res["conditions_unresolved"]:
+        res["is_fully_satisfied"] = True
+
+    return res
+
+
+# ─── Authoritative Trust + Call-Permission Evaluator ────────────────────────
 
 def evaluate_assume_role_trust_with_evidence(
     trust_policy_input: Any,
@@ -606,9 +817,16 @@ def evaluate_assume_role_trust_with_evidence(
     all_roles: List[Dict[str, Any]],
     account_id: str,
     policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
 ) -> Dict[str, Any]:
-    """Authoritative AssumeRole evaluator that separates trust-policy matching
-    from identity-policy call-permission verification.
+    """Authoritative AssumeRole evaluator enforcing the 4-layer trust model:
+
+    1. TRUST POLICY: Principal match in trust policy statement.
+    2. CALL PERMISSION: Identity policies grant sts:AssumeRole (direct or group-inherited).
+       Exact ARN in trust implies call permission; wildcard/root requires identity policy.
+    3. NO EXPLICIT DENY: No identity policy or trust policy explicitly Denies sts:AssumeRole.
+    4. CONDITIONS PROVEN: All statement conditions must be deterministically satisfied from inventory.
+       Unresolved/runtime conditions (MFA, ExternalId, SourceIp) yield CONDITIONAL_TRUST (no CAN_ASSUME edge).
 
     Returns:
         {
@@ -616,28 +834,28 @@ def evaluate_assume_role_trust_with_evidence(
                 {
                     "principal": <user dict>,
                     "evidence": {
-                        "trust_principal_type": "exact_arn" | "wildcard" | "account_root" | "account_id",
-                        "call_permission_verified": True | False,
-                        "explicit_deny": False
+                        "trust_principal_type": "exact_arn" | "wildcard" | "account_root",
+                        "trust_status": "definitive" | "conditional",
+                        "trust_conditional": bool,
+                        "conditions_evaluated": List[str],
+                        "conditions_satisfied": List[str],
+                        "conditions_unresolved": List[str],
+                        "call_permission_verified": bool,
+                        "explicit_deny": False,
                     }
                 },
                 ...
             ],
             "roles": [ ... same structure ... ],
-            "trust_is_broad": bool,   # True when trust uses wildcard or account-root
-            "trust_principal_types": set of types seen in the trust policy
+            "conditional_trusts": [ ... entries with trust_status == 'conditional' ... ],
+            "trust_is_broad": bool,
+            "trust_principal_types": set(),
         }
-
-    IMPORTANT:
-    - Exact ARN principal match → call_permission_verified = True (trust implies permission).
-    - Wildcard or account-root principal → caller must have an identity policy
-      granting sts:AssumeRole on the role ARN to receive call_permission_verified = True.
-    - Any principal with an explicit Deny is excluded even if trust matches.
-    - Only entries with call_permission_verified = True should produce CAN_ASSUME graph edges.
     """
     result: Dict[str, Any] = {
         "users": [],
         "roles": [],
+        "conditional_trusts": [],
         "trust_is_broad": False,
         "trust_principal_types": set(),
     }
@@ -647,58 +865,141 @@ def evaluate_assume_role_trust_with_evidence(
         return result
 
     user_name_map = {u["name"]: u for u in all_users}
-    user_arn_map  = {u["arn"]: u for u in all_users if u.get("arn")}
+    user_arn_map = {u["arn"]: u for u in all_users if u.get("arn")}
     role_name_map = {r["name"]: r for r in all_roles if r["name"] != role_name}
-    role_arn_map  = {r["arn"]: r for r in all_roles if r["name"] != role_name and r.get("arn")}
+    role_arn_map = {r["arn"]: r for r in all_roles if r["name"] != role_name and r.get("arn")}
 
-    added_user_ids:  Set[str] = set()
+    added_user_ids: Set[str] = set()
     added_role_names: Set[str] = set()
 
-    def _add_user(u_obj: Dict[str, Any], trust_type: str, call_perm: bool):
+    # Pre-check for trust-policy level explicit Deny statements
+    trust_explicit_denies: List[Dict[str, Any]] = [
+        s for s in statements if s.get("Effect") == "Deny"
+        and any(match_action(a, "sts:assumerole") for a in s.get("Action", []))
+    ]
+
+    def _is_denied_by_trust_policy(caller: Dict[str, Any]) -> bool:
+        """Check if any Effect: Deny in the trust policy matches this caller."""
+        caller_arn = str(caller.get("arn") or "").lower()
+        caller_name = str(caller.get("name") or "").lower()
+        for dstmt in trust_explicit_denies:
+            d_princ = dstmt.get("Principal", {})
+            d_cond = dstmt.get("Condition", {})
+            # Check condition on deny statement
+            if d_cond:
+                c_eval = evaluate_trust_statement_condition(d_cond, caller, account_id)
+                if c_eval["is_violated"]:
+                    continue  # Condition violated, Deny does not apply
+
+            # Check principal on deny statement
+            if d_princ == "*":
+                return True
+            if isinstance(d_princ, dict):
+                p_aws = d_princ.get("AWS", [])
+                if isinstance(p_aws, str):
+                    p_aws = [p_aws]
+                for p_str in p_aws:
+                    p_s = str(p_str).strip().lower()
+                    if p_s == "*" or p_s == caller_arn or p_s.endswith(f"/{caller_name}"):
+                        return True
+        return False
+
+    def _process_user(u_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool):
         uid = u_obj.get("id") or u_obj.get("name")
         if uid in added_user_ids:
             return
-        # Check explicit deny before adding
-        explicit_deny = _principal_has_explicit_deny_on_assume(u_obj, role_arn, policy_doc_map)
+
+        # 1. Check trust-policy explicit deny
+        if _is_denied_by_trust_policy(u_obj):
+            return
+
+        # 2. Check identity-policy permissions & explicit deny (including group inheritance)
+        call_perm, explicit_deny = principal_effective_allows_assume_role(
+            u_obj, role_arn, policy_doc_map, all_groups
+        )
         if explicit_deny:
             return
-        result["users"].append({
+
+        # Exact ARN trust implies call permission; wildcard/root requires identity-policy grant
+        if requires_call_perm_check and not call_perm:
+            return
+
+        # 3. Check trust condition resolution
+        has_unresolved = len(cond_eval.get("conditions_unresolved", [])) > 0
+        trust_status = "conditional" if has_unresolved else "definitive"
+        trust_conditional = bool(cond_eval.get("conditions_evaluated", []))
+
+        entry = {
             "principal": u_obj,
             "evidence": {
                 "trust_principal_type": trust_type,
-                "call_permission_verified": call_perm,
+                "trust_status": trust_status,
+                "trust_conditional": trust_conditional,
+                "conditions_evaluated": cond_eval.get("conditions_evaluated", []),
+                "conditions_satisfied": cond_eval.get("conditions_satisfied", []),
+                "conditions_unresolved": cond_eval.get("conditions_unresolved", []),
+                "call_permission_verified": True,
                 "explicit_deny": False,
             },
-        })
+        }
+
+        result["users"].append(entry)
+        if trust_status == "conditional":
+            result["conditional_trusts"].append(entry)
         added_user_ids.add(uid)
 
-    def _add_role(r_obj: Dict[str, Any], trust_type: str, call_perm: bool):
+    def _process_role(r_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool):
         rn = r_obj["name"]
         if rn in added_role_names:
             return
-        explicit_deny = _principal_has_explicit_deny_on_assume(r_obj, role_arn, policy_doc_map)
+
+        if _is_denied_by_trust_policy(r_obj):
+            return
+
+        call_perm, explicit_deny = principal_effective_allows_assume_role(
+            r_obj, role_arn, policy_doc_map, all_groups
+        )
         if explicit_deny:
             return
-        result["roles"].append({
+
+        if requires_call_perm_check and not call_perm:
+            return
+
+        has_unresolved = len(cond_eval.get("conditions_unresolved", [])) > 0
+        trust_status = "conditional" if has_unresolved else "definitive"
+        trust_conditional = bool(cond_eval.get("conditions_evaluated", []))
+
+        entry = {
             "principal": r_obj,
             "evidence": {
                 "trust_principal_type": trust_type,
-                "call_permission_verified": call_perm,
+                "trust_status": trust_status,
+                "trust_conditional": trust_conditional,
+                "conditions_evaluated": cond_eval.get("conditions_evaluated", []),
+                "conditions_satisfied": cond_eval.get("conditions_satisfied", []),
+                "conditions_unresolved": cond_eval.get("conditions_unresolved", []),
+                "call_permission_verified": True,
                 "explicit_deny": False,
             },
-        })
+        }
+
+        result["roles"].append(entry)
+        if trust_status == "conditional":
+            result["conditional_trusts"].append(entry)
         added_role_names.add(rn)
 
     for stmt in statements:
-        if stmt["Effect"] != "Allow":
+        if stmt.get("Effect") != "Allow":
             continue
-        actions = [a.lower() for a in stmt["Action"]]
+        actions = [a.lower() for a in stmt.get("Action", [])]
         if not any(match_action(a, "sts:assumerole") for a in actions):
             continue
 
         principal = stmt.get("Principal", {})
         if not principal:
             continue
+
+        stmt_condition = stmt.get("Condition")
 
         # ── Wildcard principal ("*" at top level or AWS: "*") ────────────────
         is_wildcard = (
@@ -708,17 +1009,16 @@ def evaluate_assume_role_trust_with_evidence(
         if is_wildcard:
             result["trust_is_broad"] = True
             result["trust_principal_types"].add("wildcard")
-            # For wildcard trust, only add principals that can CALL sts:AssumeRole
             for u in all_users:
-                call_perm = _principal_has_assume_role_permission(u, role_arn, policy_doc_map)
-                if call_perm:
-                    _add_user(u, "wildcard", True)
+                c_eval = evaluate_trust_statement_condition(stmt_condition, u, account_id)
+                if not c_eval["is_violated"]:
+                    _process_user(u, "wildcard", c_eval, requires_call_perm_check=True)
             for r in all_roles:
                 if r["name"] == role_name:
                     continue
-                call_perm = _principal_has_assume_role_permission(r, role_arn, policy_doc_map)
-                if call_perm:
-                    _add_role(r, "wildcard", True)
+                c_eval = evaluate_trust_statement_condition(stmt_condition, r, account_id)
+                if not c_eval["is_violated"]:
+                    _process_role(r, "wildcard", c_eval, requires_call_perm_check=True)
             continue
 
         aws_principals = principal.get("AWS", []) if isinstance(principal, dict) else []
@@ -735,15 +1035,15 @@ def evaluate_assume_role_trust_with_evidence(
                 result["trust_is_broad"] = True
                 result["trust_principal_types"].add("wildcard")
                 for u in all_users:
-                    call_perm = _principal_has_assume_role_permission(u, role_arn, policy_doc_map)
-                    if call_perm:
-                        _add_user(u, "wildcard", True)
+                    c_eval = evaluate_trust_statement_condition(stmt_condition, u, account_id)
+                    if not c_eval["is_violated"]:
+                        _process_user(u, "wildcard", c_eval, requires_call_perm_check=True)
                 for r in all_roles:
                     if r["name"] == role_name:
                         continue
-                    call_perm = _principal_has_assume_role_permission(r, role_arn, policy_doc_map)
-                    if call_perm:
-                        _add_role(r, "wildcard", True)
+                    c_eval = evaluate_trust_statement_condition(stmt_condition, r, account_id)
+                    if not c_eval["is_violated"]:
+                        _process_role(r, "wildcard", c_eval, requires_call_perm_check=True)
                 continue
 
             # ── Account root ARN or bare account ID ──────────────────────────
@@ -751,35 +1051,38 @@ def evaluate_assume_role_trust_with_evidence(
                 result["trust_is_broad"] = True
                 result["trust_principal_types"].add("account_root")
                 for u in all_users:
-                    call_perm = _principal_has_assume_role_permission(u, role_arn, policy_doc_map)
-                    if call_perm:
-                        _add_user(u, "account_root", True)
+                    c_eval = evaluate_trust_statement_condition(stmt_condition, u, account_id)
+                    if not c_eval["is_violated"]:
+                        _process_user(u, "account_root", c_eval, requires_call_perm_check=True)
                 for r in all_roles:
                     if r["name"] == role_name:
                         continue
-                    call_perm = _principal_has_assume_role_permission(r, role_arn, policy_doc_map)
-                    if call_perm:
-                        _add_role(r, "account_root", True)
+                    c_eval = evaluate_trust_statement_condition(stmt_condition, r, account_id)
+                    if not c_eval["is_violated"]:
+                        _process_role(r, "account_root", c_eval, requires_call_perm_check=True)
                 continue
 
             # ── Specific Role ARN ─────────────────────────────────────────────
             if ":role/" in p:
-                result["trust_principal_types"].add("exact_arn")
                 r_name = p.split("/")[-1]
                 r_obj = role_name_map.get(r_name) or role_arn_map.get(p)
                 if r_obj:
-                    # Exact ARN in trust — call permission implied by the trust itself
-                    _add_role(r_obj, "exact_arn", True)
+                    c_eval = evaluate_trust_statement_condition(stmt_condition, r_obj, account_id)
+                    if not c_eval["is_violated"]:
+                        result["trust_principal_types"].add("exact_arn")
+                        _process_role(r_obj, "exact_arn", c_eval, requires_call_perm_check=False)
                 continue
 
             # ── Specific User ARN ─────────────────────────────────────────────
             if ":user/" in p:
-                result["trust_principal_types"].add("exact_arn")
                 u_name = p.split("/")[-1]
                 u_obj = user_name_map.get(u_name) or user_arn_map.get(p)
                 if u_obj:
-                    # Exact ARN in trust — call permission implied by the trust itself
-                    _add_user(u_obj, "exact_arn", True)
+                    c_eval = evaluate_trust_statement_condition(stmt_condition, u_obj, account_id)
+                    if not c_eval["is_violated"]:
+                        result["trust_principal_types"].add("exact_arn")
+                        _process_user(u_obj, "exact_arn", c_eval, requires_call_perm_check=False)
                 continue
 
     return result
+

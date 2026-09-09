@@ -2,28 +2,34 @@
 import networkx as nx
 import pytest
 
-from app.services.attack.path_engine import find_attack_paths
+from app.services.attack.path_engine import (
+    find_attack_paths,
+    compute_effective_blast_radius,
+    _validate_path_security_semantics,
+)
 
 
 class TestFindAttackPaths:
     """Verify that find_attack_paths discovers expected paths in a
-    synthetic graph."""
+    synthetic graph conforming to canonical AWS IAM semantics."""
 
     def _build_graph(self):
-        """Build a small graph:
+        """Build a canonical graph:
 
-            low-priv-user  --CAN_ASSUME-->  AdminRole  --CAN_ACCESS-->  S3-Secret-Bucket
+            low-priv-user --CAN_ASSUME--> AdminRole --HAS_POLICY--> AdminPolicy --ALLOWS--> S3-Secret-Bucket
 
         The path engine should discover a path from the User to both the
-        Role and the S3 bucket.
+        Role (escalation) and the S3 bucket (resource compromise).
         """
         G = nx.DiGraph()
         G.add_node("usr-001", label="low-priv-user", type="User", riskScore=20)
         G.add_node("rol-001", label="AdminRole", type="Role", riskScore=85)
+        G.add_node("pol-001", label="AdminPolicy", type="Policy", riskScore=75)
         G.add_node("res-001", label="S3-Secret-Bucket", type="S3", riskScore=70)
 
         G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
-        G.add_edge("rol-001", "res-001", label="CAN_ACCESS")
+        G.add_edge("rol-001", "pol-001", label="HAS_POLICY")
+        G.add_edge("pol-001", "res-001", label="ALLOWS")
         return G
 
     def test_path_is_discovered(self):
@@ -42,8 +48,8 @@ class TestFindAttackPaths:
         assert len(user_to_s3) >= 1, "Expected a path from usr-001 to res-001"
 
     def test_path_contains_intermediate_hop(self):
-        """The discovered path usr-001 → rol-001 → res-001 should have
-        3 nodes (including the intermediate Role hop)."""
+        """The discovered path usr-001 → rol-001 → pol-001 → res-001 should have
+        4 nodes (User -> Role -> Policy -> Resource)."""
         G = self._build_graph()
         paths = find_attack_paths(G)
 
@@ -53,8 +59,7 @@ class TestFindAttackPaths:
             and any(n["id"] == "res-001" for n in p["nodes"])
         ]
         assert len(user_to_s3) >= 1
-        # The path should be usr-001 → rol-001 → res-001 (3 nodes)
-        assert len(user_to_s3[0]["nodes"]) == 3
+        assert len(user_to_s3[0]["nodes"]) == 4
 
     def test_path_metadata_populated(self):
         """The returned path dict must have required schema fields and no likelihood."""
@@ -124,3 +129,68 @@ class TestFindAttackPaths:
         paths = find_attack_paths(G)
         user_to_s3 = [p for p in paths if p["source"] == "usr-001" and p["destination"] == "res-001"]
         assert len(user_to_s3) == 0, "Invalid connectivity path must be rejected by validator"
+
+    def test_direct_role_to_resource_shortcut_rejected(self):
+        """A Role cannot directly allow access to a Resource without a Policy in AWS IAM.
+        Direct edges like Role -CAN_ACCESS-> S3 or Role -ALLOWS-> S3 must be rejected."""
+        G = nx.DiGraph()
+        G.add_node("usr-001", label="dave", type="User", riskScore=20)
+        G.add_node("rol-001", label="AdminRole", type="Role", riskScore=80)
+        G.add_node("res-001", label="DataBucket", type="S3", riskScore=70)
+
+        G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
+        G.add_edge("rol-001", "res-001", label="CAN_ACCESS")
+
+        paths = find_attack_paths(G)
+        user_to_s3 = [p for p in paths if p["source"] == "usr-001" and p["destination"] == "res-001"]
+        assert len(user_to_s3) == 0, "Direct Role->Resource shortcut must be rejected"
+
+    def test_effective_blast_radius_counts_only_cloud_assets(self):
+        """Blast radius must count actual cloud resources (S3, Secrets, RDS, etc.)
+        and never count identity/privilege nodes (User, Group, Role, Policy)."""
+        G = nx.DiGraph()
+        G.add_node("usr-001", label="eve", type="User", riskScore=30)
+        G.add_node("grp-001", label="DevGroup", type="Group")
+        G.add_node("rol-001", label="AppRole", type="Role", riskScore=60)
+        G.add_node("pol-001", label="AppPolicy", type="Policy")
+        G.add_node("s3-001", label="Bucket1", type="S3", riskScore=50)
+        G.add_node("s3-002", label="Bucket2", type="S3", riskScore=60)
+        G.add_node("sec-001", label="DbPassword", type="Secrets", riskScore=90)
+
+        # Structure: User -> Group -> Policy -> Bucket1
+        # Also User -> Role -> Policy -> Bucket2 & DbPassword
+        G.add_edge("usr-001", "grp-001", label="MEMBER_OF")
+        G.add_edge("grp-001", "pol-001", label="HAS_POLICY")
+        G.add_edge("pol-001", "s3-001", label="ALLOWS")
+
+        G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
+        G.add_edge("rol-001", "pol-001", label="HAS_POLICY")
+        G.add_edge("pol-001", "s3-002", label="ALLOWS")
+        G.add_edge("pol-001", "sec-001", label="ALLOWS")
+
+        desc, count = compute_effective_blast_radius("usr-001", G)
+        # Even though there are 4 identity/privilege nodes (User, Group, Role, Policy),
+        # only the 3 unique cloud assets (Bucket1, Bucket2, DbPassword) must be counted.
+        assert count == 3
+        assert "3 unique cloud assets" in desc
+
+    def test_deterministic_path_sorting(self):
+        """Paths must be sorted deterministically: -riskScore, hopCount, source, destination."""
+        G = nx.DiGraph()
+        G.add_node("usr-001", label="alice", type="User", riskScore=10)
+        G.add_node("pol-001", label="LowPol", type="Policy", riskScore=20)
+        G.add_node("pol-002", label="HighPol", type="Policy", riskScore=90)
+        G.add_node("res-low", label="LowBucket", type="S3", riskScore=20)
+        G.add_node("res-high", label="HighSecret", type="Secrets", riskScore=95)
+
+        G.add_edge("usr-001", "pol-001", label="HAS_POLICY")
+        G.add_edge("pol-001", "res-low", label="ALLOWS")
+
+        G.add_edge("usr-001", "pol-002", label="HAS_POLICY")
+        G.add_edge("pol-002", "res-high", label="ALLOWS")
+
+        paths = find_attack_paths(G)
+        assert len(paths) >= 2
+        # First path must have higher or equal riskScore than second
+        assert paths[0]["riskScore"] >= paths[1]["riskScore"]
+        assert paths[0]["destination"] == "res-high"

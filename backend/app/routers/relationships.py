@@ -104,6 +104,7 @@ def get_all_relationships(
     # 5. CAN_ASSUME via trust policies
     account_id = _get_account_id(users)
     pol_doc_map = {p["name"]: p.get("document", "{}") for p in policies}
+    cached_groups = cache.get("v1:groups") or groups
     for r in roles:
         trust_ev = evaluate_assume_role_trust_with_evidence(
             r.get("trustPolicy", "{}"),
@@ -113,8 +114,11 @@ def get_all_relationships(
             roles,
             account_id,
             pol_doc_map,
+            all_groups=cached_groups,
         )
         for tu_entry in trust_ev.get("users", []):
+            if tu_entry.get("evidence", {}).get("trust_status") != "definitive":
+                continue
             if not tu_entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             tu = tu_entry["principal"]
@@ -128,6 +132,8 @@ def get_all_relationships(
                 "target_type": "Role",
             })
         for tr_entry in trust_ev.get("roles", []):
+            if tr_entry.get("evidence", {}).get("trust_status") != "definitive":
+                continue
             if not tr_entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             tr = tr_entry["principal"]

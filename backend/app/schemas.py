@@ -71,7 +71,6 @@ class AttackPath(BaseModel):
     nodes: List[AttackPathNode]
     severity: str  # 'critical' | 'high' | 'medium' | 'low'
     riskScore: Optional[int] = None
-    likelihood: Optional[int] = None  # percentage (deprecated)
     confidence: Optional[int] = None
     blastRadius: str
     mitreTechniques: List[str]

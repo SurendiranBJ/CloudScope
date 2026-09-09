@@ -116,11 +116,14 @@ def compute_effective_access(
             inventory.roles,
             account_id,
             policy_doc_map,
+            all_groups=inventory.groups,
         )
 
         role_docs = role_policy_map.get(rname, [])  # [(pname, doc, parn)]
 
         for entry in trust_ev.get("users", []):
+            if entry.get("evidence", {}).get("trust_status") != "definitive":
+                continue
             if not entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             trusted_user = entry["principal"]
@@ -141,6 +144,8 @@ def compute_effective_access(
 
         # Also role→role trust chains (one level)
         for entry in trust_ev.get("roles", []):
+            if entry.get("evidence", {}).get("trust_status") != "definitive":
+                continue
             if not entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             trusted_role = entry["principal"]

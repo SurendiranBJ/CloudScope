@@ -3,12 +3,13 @@ CloudScope Deterministic Attack Path Engine.
 
 Discovers, evaluates, and scores lateral movement attack paths traversing
 identities, IAM policies, AssumeRole trust boundaries, and cloud resources.
-Computes deterministic path scores, classifications, and exact relationship chains.
+Computes deterministic path scores, classifications, exact relationship chains,
+and authoritative effective-access blast radius metrics.
 """
 
 import logging
 import networkx as nx
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Set, Tuple, Optional
 from app.services.risk.risk_constants import get_severity_label
 
 logger = logging.getLogger("scanner")
@@ -17,6 +18,7 @@ MAX_ATTACK_PATHS = 200
 
 # Security-Semantic Path Allowed Transitions
 # Paths traversing relationships outside this table are rejected — graph connectivity is not authorization.
+# Cloud resources can ONLY be reached through Policy ALLOWS (no fake direct Role->Resource edges).
 RESOURCE_TYPES = {"S3", "EC2", "Lambda", "RDS", "DynamoDB", "Secrets", "Secret"}
 
 VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
@@ -32,8 +34,6 @@ VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
 
 for _res in RESOURCE_TYPES:
     VALID_TRANSITIONS[("Policy", _res)] = {"ALLOWS"}
-    # Direct role->resource allowed in simplified/synthetic models or tests
-    VALID_TRANSITIONS[("Role", _res)] = {"ALLOWS", "CAN_ACCESS"}
 
 
 def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
@@ -63,15 +63,15 @@ def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) 
     """Classify the primary security vector type for this attack path."""
     target_node = G.nodes[path[-1]]
     target_type = target_node.get('type', '')
-    
+
     if 'CAN_ASSUME' in ordered_rels or 'ASSUMED_ROLE' in ordered_rels:
         if target_type == 'Role':
             return "privilege_escalation"
         return "lateral_movement"
-    
+
     if target_type in ['Secrets', 'Secret', 'RDS']:
         return "sensitive_resource_access"
-        
+
     if target_type == 'S3':
         target_details = target_node.get('details', {})
         if not target_details.get('public_blocked', True):
@@ -89,10 +89,6 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
     source_risk = source_attr.get('riskScore', 0)
     target_risk = target_attr.get('riskScore', 0)
 
-    # 1. Source Identity Baseline (weighted 25%)
-    # 2. Intermediate Privilege Escalation Evidence (weighted 35%)
-    # 3. Target Resource Sensitivity (weighted 40%)
-    
     escalation_bonus = 0
     if 'CAN_ASSUME' in ordered_rels:
         escalation_bonus += 25
@@ -121,8 +117,6 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
 
     path_score = min(100, max(15, int(raw_score)))
     severity = get_severity_label(path_score)
-
-    # Risk confidence based on evidence completeness (whether policies & trust are verified)
     confidence = 95 if len(ordered_rels) > 0 else 80
 
     return {
@@ -132,7 +126,78 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
     }
 
 
-def find_attack_paths(G: nx.DiGraph, max_hops: int = 6) -> List[Dict[str, Any]]:
+def compute_effective_blast_radius(
+    source_node_id: str,
+    G: nx.DiGraph,
+    inventory: Any = None,
+    policy_doc_map: Optional[Dict[str, str]] = None,
+) -> Tuple[str, int]:
+    """Calculate the authoritative blast radius for an identity based on actual effective access.
+
+    Counts unique real cloud resources (S3, EC2, Lambda, RDS, DynamoDB, Secrets).
+    Never counts identity/privilege nodes (User, Group, Policy, Role).
+    Returns (blast_radius_desc, unique_asset_count).
+    """
+    unique_assets: Set[str] = set()
+
+    # 1. Authoritative effective access engine if inventory is available
+    if inventory and policy_doc_map:
+        try:
+            from app.services.simulation.effective_access import compute_effective_access
+            all_res = (
+                getattr(inventory, "s3", []) + getattr(inventory, "secrets", []) +
+                getattr(inventory, "rds", []) + getattr(inventory, "dynamodb", []) +
+                getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", [])
+            )
+            records = compute_effective_access(inventory, policy_doc_map, all_res)
+            s_name = G.nodes[source_node_id].get("label", source_node_id) if G.has_node(source_node_id) else source_node_id
+            for rec in records:
+                ident_name = rec.get("identity_name", "")
+                ident_id = rec.get("identity_id", "")
+                if ident_name == s_name or ident_id == source_node_id:
+                    rid = rec.get("target_resource_id") or rec.get("target_resource_name")
+                    if rid and rec.get("target_resource_type") in RESOURCE_TYPES:
+                        unique_assets.add(rid)
+        except Exception as e:
+            logger.debug(f"Effective access computation fallback for blast radius: {e}")
+
+    # 2. Fallback: trace valid semantic paths through G to actual cloud resources
+    if not unique_assets and G and G.has_node(source_node_id):
+        target_resource_nodes = [
+            n for n, attr in G.nodes(data=True)
+            if attr.get("type") in RESOURCE_TYPES
+        ]
+        for tr in target_resource_nodes:
+            if not nx.has_path(G, source_node_id, tr):
+                continue
+            try:
+                for p in nx.all_simple_paths(G, source_node_id, tr, cutoff=6):
+                    if _validate_path_security_semantics(p, G):
+                        canonical_id = G.nodes[tr].get("arn") or G.nodes[tr].get("label") or tr
+                        unique_assets.add(canonical_id)
+                        break
+            except Exception:
+                continue
+
+    count = len(unique_assets)
+    if count >= 5:
+        desc = f"High ({count} unique cloud assets)"
+    elif count >= 2:
+        desc = f"Medium ({count} unique cloud assets)"
+    elif count == 1:
+        desc = "Low (1 unique cloud asset)"
+    else:
+        desc = "Low (0 unique cloud assets)"
+
+    return desc, count
+
+
+def find_attack_paths(
+    G: nx.DiGraph,
+    max_hops: int = 6,
+    inventory: Any = None,
+    policy_doc_map: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """Discover deterministic attack paths traversing identities, policies, and cloud resources."""
     if not G or G.number_of_nodes() == 0:
         return []
@@ -173,7 +238,9 @@ def find_attack_paths(G: nx.DiGraph, max_hops: int = 6) -> List[Dict[str, Any]]:
                 logger.debug(f"Path search exception for {source} -> {target}: {e}")
                 continue
 
-    # Score each candidate path
+    # Pre-cache effective blast radius per source node
+    blast_cache: Dict[str, str] = {}
+
     evaluated_paths = []
     for path in candidate_paths:
         source = path[0]
@@ -205,30 +272,31 @@ def find_attack_paths(G: nx.DiGraph, max_hops: int = 6) -> List[Dict[str, Any]]:
         path_eval = calculate_path_risk_score(path, G, ordered_relationships)
         path_type = classify_path_type(path, G, ordered_relationships)
 
-        # Reachable count from source
-        reachable_count = len(nx.descendants(G, source))
-        if reachable_count >= 6:
-            blast_radius_desc = f"High ({reachable_count} reachable assets)"
-        elif reachable_count >= 2:
-            blast_radius_desc = f"Medium ({reachable_count} reachable assets)"
-        else:
-            blast_radius_desc = f"Low ({reachable_count} reachable asset{'s' if reachable_count != 1 else ''})"
+        # Authoritative effective-access blast radius
+        if source not in blast_cache:
+            desc, _ = compute_effective_blast_radius(source, G, inventory, policy_doc_map)
+            blast_cache[source] = desc
+        blast_radius_desc = blast_cache[source]
 
-        # MITRE ATT&CK mapping
+        # MITRE ATT&CK mapping based on actual security behavior
         mitre = []
-        path_types = [G.nodes[nid].get('type', '') for nid in path]
-        if 'User' in path_types:
+        source_type = source_attr.get('type', '')
+        target_type = target_attr.get('type', '')
+
+        if source_type == 'User':
             mitre.append("T1078 - Valid Accounts")
-        if 'CAN_ASSUME' in ordered_relationships or 'ASSUMED_ROLE' in ordered_relationships:
-            mitre.append("T1548.003 - AssumeRole Abuse")
-        if 'S3' in path_types:
-            mitre.append("T1530 - Data from Cloud Storage")
-        if 'Secrets' in path_types or 'Secret' in path_types:
-            mitre.append("T1552.004 - Credentials in Cloud Secrets")
-        if 'RDS' in path_types or 'DynamoDB' in path_types:
-            mitre.append("T1530 - Cloud Database Access")
-        if 'EC2' in path_types:
+        if source_type == 'EC2' and 'ATTACHED_TO' in ordered_relationships:
             mitre.append("T1078.004 - Cloud Administration via Instance Profile")
+        if 'CAN_ASSUME' in ordered_relationships:
+            mitre.append("T1548.003 - Subvert Trust Controls: AssumeRole")
+        if 'ASSUMED_ROLE' in ordered_relationships:
+            mitre.append("T1548.003 - Subvert Trust Controls: AssumeRole (Observed Activity)")
+        if target_type == 'S3' and 'ALLOWS' in ordered_relationships:
+            mitre.append("T1530 - Data from Cloud Storage Object")
+        if target_type in ['Secrets', 'Secret'] and 'ALLOWS' in ordered_relationships:
+            mitre.append("T1552.004 - Credentials in Cloud Secrets")
+        if target_type in ['RDS', 'DynamoDB'] and 'ALLOWS' in ordered_relationships:
+            mitre.append("T1530 - Data from Cloud Database")
 
         source_label = source_attr.get('label', source)
         target_label = target_attr.get('label', target)
@@ -271,8 +339,8 @@ def find_attack_paths(G: nx.DiGraph, max_hops: int = 6) -> List[Dict[str, Any]]:
             "recommendation": recommendation,
         })
 
-    # Sort descending by riskScore, then ascending by hopCount for tie-breaking
-    evaluated_paths.sort(key=lambda p: (-p["riskScore"], p["hopCount"]))
+    # Deterministic sort: descending by riskScore, ascending by hopCount, then by source and destination
+    evaluated_paths.sort(key=lambda p: (-p["riskScore"], p["hopCount"], p["source"], p["destination"]))
 
     # Cap at MAX_ATTACK_PATHS
     final_paths = evaluated_paths[:MAX_ATTACK_PATHS]
