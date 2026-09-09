@@ -5,7 +5,8 @@ from typing import Any
 from app.database import execute_read
 from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
-    evaluate_assume_role_trust
+    evaluate_assume_role_trust,
+    evaluate_assume_role_trust_with_evidence,
 )
 from app.services.aws.session import get_account_id
 
@@ -254,23 +255,58 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 G.add_edge(l_id, r_id, label='EXECUTES_WITH')
 
     # 7. AssumeRole Trust: Users/Roles -> CAN_ASSUME -> Role
+    # Build policy_doc_map from inventory so call-permission can be verified.
+    _policy_doc_map = {}
+    for _p in inventory.policies:
+        if _p.get('name') and _p.get('document'):
+            _policy_doc_map[_p['name']] = _p['document']
+
     for r in inventory.roles:
         r_id = get_node_id("Role", r['name'])
-        trust_analysis = evaluate_assume_role_trust(
+        r_arn = r.get('arn', '')
+
+        # Annotate Role node with broad-trust flag before evaluating edges
+        trust_ev = evaluate_assume_role_trust_with_evidence(
             r.get('trustPolicy', '{}'),
             r['name'],
+            r_arn,
             inventory.users,
             inventory.roles,
-            account_id
+            account_id,
+            _policy_doc_map,
         )
-        for u in trust_analysis["users"]:
+
+        # Annotate the Role node so the graph retains trust-breadth metadata
+        if G.has_node(r_id) and trust_ev.get('trust_is_broad'):
+            G.nodes[r_id]['trust_is_broad'] = True
+            G.nodes[r_id]['trust_principal_types'] = ','.join(
+                sorted(trust_ev.get('trust_principal_types', set()))
+            )
+
+        # Add CAN_ASSUME edges ONLY for call-permission-verified principals
+        for entry in trust_ev.get('users', []):
+            if not entry['evidence'].get('call_permission_verified'):
+                continue
+            u = entry['principal']
             u_id = get_node_id("User", u['name'])
             if G.has_node(u_id) and G.has_node(r_id):
-                G.add_edge(u_id, r_id, label='CAN_ASSUME')
-        for src_r in trust_analysis["roles"]:
+                G.add_edge(
+                    u_id, r_id,
+                    label='CAN_ASSUME',
+                    trust_type=entry['evidence']['trust_principal_type'],
+                )
+
+        for entry in trust_ev.get('roles', []):
+            if not entry['evidence'].get('call_permission_verified'):
+                continue
+            src_r = entry['principal']
             src_r_id = get_node_id("Role", src_r['name'])
             if G.has_node(src_r_id) and G.has_node(r_id) and src_r_id != r_id:
-                G.add_edge(src_r_id, r_id, label='CAN_ASSUME')
+                G.add_edge(
+                    src_r_id, r_id,
+                    label='CAN_ASSUME',
+                    trust_type=entry['evidence']['trust_principal_type'],
+                )
 
     # 8. Policy -> ALLOWS -> Resource via policy_evaluator
     all_resources = (

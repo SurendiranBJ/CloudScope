@@ -8,10 +8,55 @@ Computes deterministic path scores, classifications, and exact relationship chai
 
 import logging
 import networkx as nx
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set, Tuple
 from app.services.risk.risk_constants import get_severity_label
 
 logger = logging.getLogger("scanner")
+
+MAX_ATTACK_PATHS = 200
+
+# Security-Semantic Path Allowed Transitions
+# Paths traversing relationships outside this table are rejected — graph connectivity is not authorization.
+RESOURCE_TYPES = {"S3", "EC2", "Lambda", "RDS", "DynamoDB", "Secrets", "Secret"}
+
+VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
+    ("User", "Group"): {"MEMBER_OF"},
+    ("User", "Policy"): {"HAS_POLICY"},
+    ("User", "Role"): {"CAN_ASSUME", "ASSUMED_ROLE"},
+    ("Group", "Policy"): {"HAS_POLICY"},
+    ("Role", "Policy"): {"HAS_POLICY"},
+    ("Role", "Role"): {"CAN_ASSUME", "ASSUMED_ROLE"},
+    ("EC2", "Role"): {"ATTACHED_TO"},
+    ("Lambda", "Role"): {"EXECUTES_WITH"},
+}
+
+for _res in RESOURCE_TYPES:
+    VALID_TRANSITIONS[("Policy", _res)] = {"ALLOWS"}
+    # Direct role->resource allowed in simplified/synthetic models or tests
+    VALID_TRANSITIONS[("Role", _res)] = {"ALLOWS", "CAN_ACCESS"}
+
+
+def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
+    """Validate that every successive node-type transition along path adheres
+    to explicit AWS IAM security semantics.
+    Graph connectivity alone is not authorization.
+    """
+    if len(path) < 2:
+        return False
+
+    for i in range(len(path) - 1):
+        u, v = path[i], path[i + 1]
+        u_type = G.nodes[u].get("type", "")
+        v_type = G.nodes[v].get("type", "")
+
+        edge_data = G.get_edge_data(u, v, default={})
+        rel_label = edge_data.get("label") or edge_data.get("type") or ""
+
+        allowed_rels = VALID_TRANSITIONS.get((u_type, v_type))
+        if not allowed_rels or rel_label not in allowed_rels:
+            return False
+
+    return True
 
 
 def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) -> str:
@@ -89,9 +134,8 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
 
 def find_attack_paths(G: nx.DiGraph, max_hops: int = 6) -> List[Dict[str, Any]]:
     """Discover deterministic attack paths traversing identities, policies, and cloud resources."""
-    paths_list = []
     if not G or G.number_of_nodes() == 0:
-        return paths_list
+        return []
 
     # Starting points (Users and Compute)
     starts = [n for n, attr in G.nodes(data=True) if attr.get('type') in ['User', 'EC2']]
@@ -103,117 +147,141 @@ def find_attack_paths(G: nx.DiGraph, max_hops: int = 6) -> List[Dict[str, Any]]:
         or (attr.get('type') == 'Role' and attr.get('riskScore', 0) >= 40)
     ]
 
-    idx = 1
+    seen_paths = set()
+    candidate_paths = []
+
     for source in starts:
         for target in targets:
             if source == target:
                 continue
 
             try:
-                if nx.has_path(G, source, target):
-                    path = nx.shortest_path(G, source, target)
+                if not nx.has_path(G, source, target):
+                    continue
 
-                    if len(path) - 1 > max_hops:
+                for path in nx.all_simple_paths(G, source, target, cutoff=max_hops):
+                    path_tuple = tuple(path)
+                    if path_tuple in seen_paths:
+                        continue
+                    seen_paths.add(path_tuple)
+
+                    if not _validate_path_security_semantics(path, G):
                         continue
 
-                    source_attr = G.nodes[source]
-                    target_attr = G.nodes[target]
-
-                    # Extract ordered nodes metadata
-                    nodes_details = []
-                    for node_id in path:
-                        attr = G.nodes[node_id]
-                        nodes_details.append({
-                            "id": node_id,
-                            "name": attr.get('label', node_id),
-                            "type": attr.get('type', 'Resource'),
-                            "arn": attr.get('arn', ''),
-                            "riskScore": attr.get('riskScore', 0)
-                        })
-
-                    # Extract ordered relationships along the path from graph edges
-                    ordered_relationships = []
-                    for i in range(len(path) - 1):
-                        u, v = path[i], path[i + 1]
-                        edge_data = G.get_edge_data(u, v, default={})
-                        rel_label = edge_data.get('label') or edge_data.get('type') or 'CONNECTED_TO'
-                        ordered_relationships.append(rel_label)
-
-                    # Compute deterministic path score & severity
-                    path_eval = calculate_path_risk_score(path, G, ordered_relationships)
-                    path_type = classify_path_type(path, G, ordered_relationships)
-
-                    # Reachable count from source
-                    reachable_count = len(nx.descendants(G, source))
-                    if reachable_count >= 6:
-                        blast_radius_desc = f"High ({reachable_count} reachable assets)"
-                    elif reachable_count >= 2:
-                        blast_radius_desc = f"Medium ({reachable_count} reachable assets)"
-                    else:
-                        blast_radius_desc = f"Low ({reachable_count} reachable asset{'s' if reachable_count != 1 else ''})"
-
-                    # MITRE ATT&CK mapping
-                    mitre = []
-                    path_types = [G.nodes[nid].get('type', '') for nid in path]
-                    if 'User' in path_types:
-                        mitre.append("T1078 - Valid Accounts")
-                    if 'CAN_ASSUME' in ordered_relationships or 'ASSUMED_ROLE' in ordered_relationships:
-                        mitre.append("T1548.003 - AssumeRole Abuse")
-                    if 'S3' in path_types:
-                        mitre.append("T1530 - Data from Cloud Storage")
-                    if 'Secrets' in path_types or 'Secret' in path_types:
-                        mitre.append("T1552.004 - Credentials in Cloud Secrets")
-                    if 'RDS' in path_types or 'DynamoDB' in path_types:
-                        mitre.append("T1530 - Cloud Database Access")
-                    if 'EC2' in path_types:
-                        mitre.append("T1078.004 - Cloud Administration via Instance Profile")
-
-                    source_label = source_attr.get('label', source)
-                    target_label = target_attr.get('label', target)
-                    hop_count = len(path) - 1
-
-                    rel_chain = " → ".join(
-                        f"[{ordered_relationships[i]}] {G.nodes[path[i+1]].get('label', path[i+1])}"
-                        for i in range(len(ordered_relationships))
-                    )
-                    description = (
-                        f"Identity '{source_label}' reaches {target_attr.get('type', 'resource')} '{target_label}' "
-                        f"via {hop_count} hop(s): {source_label} → {rel_chain}."
-                    )
-
-                    recommendations = []
-                    if 'CAN_ASSUME' in ordered_relationships:
-                        recommendations.append("Enforce MFA conditions and IP restrictions in AssumeRole trust policies")
-                    if 'ALLOWS' in ordered_relationships:
-                        recommendations.append("Replace wildcard actions/resources with least-privilege scoping")
-                    if target_attr.get('type') == 'S3':
-                        recommendations.append(f"Enable S3 Block Public Access and bucket encryption on '{target_label}'")
-                    if target_attr.get('type') in ['Secrets', 'Secret']:
-                        recommendations.append(f"Enable automatic secret rotation and restrict access to '{target_label}'")
-
-                    recommendation = ". ".join(recommendations) + "." if recommendations else "Review IAM permissions and restrict access paths."
-
-                    paths_list.append({
-                        "id": f"path-{idx:03d}",
-                        "name": f"Attack Path {idx}: {source_label} → {target_label}",
-                        "source": source,
-                        "destination": target,
-                        "pathType": path_type,
-                        "nodes": nodes_details,
-                        "orderedRelationships": ordered_relationships,
-                        "hopCount": hop_count,
-                        "riskScore": path_eval["score"],
-                        "severity": path_eval["severity"],
-                        "likelihood": path_eval["score"],
-                        "confidence": path_eval["confidence"],
-                        "blastRadius": blast_radius_desc,
-                        "mitreTechniques": mitre,
-                        "description": description,
-                        "recommendation": recommendation
-                    })
-                    idx += 1
+                    candidate_paths.append(path)
             except Exception as e:
                 logger.debug(f"Path search exception for {source} -> {target}: {e}")
                 continue
 
-    return paths_list
+    # Score each candidate path
+    evaluated_paths = []
+    for path in candidate_paths:
+        source = path[0]
+        target = path[-1]
+        source_attr = G.nodes[source]
+        target_attr = G.nodes[target]
+
+        # Extract ordered nodes metadata
+        nodes_details = []
+        for node_id in path:
+            attr = G.nodes[node_id]
+            nodes_details.append({
+                "id": node_id,
+                "name": attr.get('label', node_id),
+                "type": attr.get('type', 'Resource'),
+                "arn": attr.get('arn', ''),
+                "riskScore": attr.get('riskScore', 0)
+            })
+
+        # Extract ordered relationships along the path from graph edges
+        ordered_relationships = []
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i + 1]
+            edge_data = G.get_edge_data(u, v, default={})
+            rel_label = edge_data.get('label') or edge_data.get('type') or ''
+            ordered_relationships.append(rel_label)
+
+        # Compute deterministic path score & severity
+        path_eval = calculate_path_risk_score(path, G, ordered_relationships)
+        path_type = classify_path_type(path, G, ordered_relationships)
+
+        # Reachable count from source
+        reachable_count = len(nx.descendants(G, source))
+        if reachable_count >= 6:
+            blast_radius_desc = f"High ({reachable_count} reachable assets)"
+        elif reachable_count >= 2:
+            blast_radius_desc = f"Medium ({reachable_count} reachable assets)"
+        else:
+            blast_radius_desc = f"Low ({reachable_count} reachable asset{'s' if reachable_count != 1 else ''})"
+
+        # MITRE ATT&CK mapping
+        mitre = []
+        path_types = [G.nodes[nid].get('type', '') for nid in path]
+        if 'User' in path_types:
+            mitre.append("T1078 - Valid Accounts")
+        if 'CAN_ASSUME' in ordered_relationships or 'ASSUMED_ROLE' in ordered_relationships:
+            mitre.append("T1548.003 - AssumeRole Abuse")
+        if 'S3' in path_types:
+            mitre.append("T1530 - Data from Cloud Storage")
+        if 'Secrets' in path_types or 'Secret' in path_types:
+            mitre.append("T1552.004 - Credentials in Cloud Secrets")
+        if 'RDS' in path_types or 'DynamoDB' in path_types:
+            mitre.append("T1530 - Cloud Database Access")
+        if 'EC2' in path_types:
+            mitre.append("T1078.004 - Cloud Administration via Instance Profile")
+
+        source_label = source_attr.get('label', source)
+        target_label = target_attr.get('label', target)
+        hop_count = len(path) - 1
+
+        rel_chain = " → ".join(
+            f"[{ordered_relationships[i]}] {G.nodes[path[i+1]].get('label', path[i+1])}"
+            for i in range(len(ordered_relationships))
+        )
+        description = (
+            f"Identity '{source_label}' reaches {target_attr.get('type', 'resource')} '{target_label}' "
+            f"via {hop_count} hop(s): {source_label} → {rel_chain}."
+        )
+
+        recommendations = []
+        if 'CAN_ASSUME' in ordered_relationships:
+            recommendations.append("Enforce MFA conditions and IP restrictions in AssumeRole trust policies")
+        if 'ALLOWS' in ordered_relationships:
+            recommendations.append("Replace wildcard actions/resources with least-privilege scoping")
+        if target_attr.get('type') == 'S3':
+            recommendations.append(f"Enable S3 Block Public Access and bucket encryption on '{target_label}'")
+        if target_attr.get('type') in ['Secrets', 'Secret']:
+            recommendations.append(f"Enable automatic secret rotation and restrict access to '{target_label}'")
+
+        recommendation = ". ".join(recommendations) + "." if recommendations else "Review IAM permissions and restrict access paths."
+
+        evaluated_paths.append({
+            "source": source,
+            "destination": target,
+            "pathType": path_type,
+            "nodes": nodes_details,
+            "orderedRelationships": ordered_relationships,
+            "hopCount": hop_count,
+            "riskScore": path_eval["score"],
+            "severity": path_eval["severity"],
+            "confidence": path_eval["confidence"],
+            "blastRadius": blast_radius_desc,
+            "mitreTechniques": mitre,
+            "description": description,
+            "recommendation": recommendation,
+        })
+
+    # Sort descending by riskScore, then ascending by hopCount for tie-breaking
+    evaluated_paths.sort(key=lambda p: (-p["riskScore"], p["hopCount"]))
+
+    # Cap at MAX_ATTACK_PATHS
+    final_paths = evaluated_paths[:MAX_ATTACK_PATHS]
+
+    # Assign IDs and names
+    for idx, p in enumerate(final_paths, start=1):
+        s_lbl = G.nodes[p["source"]].get('label', p["source"])
+        t_lbl = G.nodes[p["destination"]].get('label', p["destination"])
+        p["id"] = f"path-{idx:03d}"
+        p["name"] = f"Attack Path {idx}: {s_lbl} → {t_lbl}"
+
+    return final_paths

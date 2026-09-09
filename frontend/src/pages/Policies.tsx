@@ -48,6 +48,8 @@ function RiskBar({ score }: { score: number }) {
 export const Policies: React.FC = () => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterType>('all');
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(100);
   const [sortField, setSortField] = useState<SortField>('riskScore');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selected, setSelected] = useState<PolicyCatalogEntry | null>(null);
@@ -69,15 +71,20 @@ export const Policies: React.FC = () => {
     queryFn: getIAMRoles,
   });
 
-  const { data: policies = [], isLoading, refetch } = useQuery({
-    queryKey: ['policies', filter, search],
+  const { data: catalogData, isLoading, refetch } = useQuery({
+    queryKey: ['policies', filter, search, page, pageSize],
     queryFn: () => getPolicyCatalog({
       type_filter: filter === 'all' ? undefined : filter,
       search: search || undefined,
-      limit: 500,
+      page,
+      page_size: pageSize,
     }),
     staleTime: 60_000,
   });
+
+  const policies = catalogData?.items ?? [];
+  const total = catalogData?.total ?? 0;
+  const totalPages = catalogData?.total_pages ?? 1;
 
   const { data: simState } = useQuery({
     queryKey: ['simulation-state'],
@@ -190,8 +197,8 @@ export const Policies: React.FC = () => {
             <input
               id="policy-search"
               value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search policies by name..."
+              onChange={e => { setSearch(e.target.value); setPage(1); }}
+              placeholder="Search policies by name or ARN..."
               className="w-full pl-9 pr-4 py-2 bg-enterprise-card border border-enterprise-border rounded-lg text-sm text-gray-200 placeholder-enterprise-subtext focus:outline-none focus:border-enterprise-accent"
             />
           </div>
@@ -201,7 +208,7 @@ export const Policies: React.FC = () => {
             {filterTabs.map(t => (
               <button
                 key={t.value}
-                onClick={() => setFilter(t.value)}
+                onClick={() => { setFilter(t.value); setPage(1); }}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                   filter === t.value
                     ? 'bg-enterprise-accent/15 text-enterprise-accent border border-enterprise-accent/30'
@@ -269,10 +276,39 @@ export const Policies: React.FC = () => {
           )}
         </div>
 
-        {/* Count footer */}
+        {/* Pagination footer */}
         {!isLoading && (
-          <div className="shrink-0 px-6 py-2 border-t border-enterprise-border text-[10px] text-enterprise-subtext">
-            {sorted.length} polic{sorted.length !== 1 ? 'ies' : 'y'} displayed
+          <div className="shrink-0 px-6 py-2.5 border-t border-enterprise-border flex items-center justify-between text-xs text-enterprise-subtext">
+            <div>
+              {total > 0 ? (
+                <span>
+                  Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total} policies
+                </span>
+              ) : (
+                <span>0 policies</span>
+              )}
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  disabled={page <= 1}
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  className="px-2.5 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:hover:bg-gray-800 text-gray-200 border border-gray-700 text-xs transition-colors"
+                >
+                  Previous
+                </button>
+                <span className="font-mono text-gray-300 text-xs">
+                  {page} / {totalPages}
+                </span>
+                <button
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  className="px-2.5 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:hover:bg-gray-800 text-gray-200 border border-gray-700 text-xs transition-colors"
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

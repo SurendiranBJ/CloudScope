@@ -52,11 +52,11 @@ def compute_graph_diff(
 
     # Edge comparison — use (source, target, label) as edge identity
     current_edges: Set[Tuple[str, str, str]] = {
-        (s, t, d.get("label", "CONNECTED_TO"))
+        (s, t, d.get("label", "UNKNOWN"))
         for s, t, d in G_current.edges(data=True)
     }
     desired_edges: Set[Tuple[str, str, str]] = {
-        (s, t, d.get("label", "CONNECTED_TO"))
+        (s, t, d.get("label", "UNKNOWN"))
         for s, t, d in G_desired.edges(data=True)
     }
 

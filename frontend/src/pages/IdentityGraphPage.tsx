@@ -110,7 +110,7 @@ export const IdentityGraphPage: React.FC = () => {
           id: `diff-edge-${e.source}-${e.target}-${e.label || 'edge'}`,
           source: e.source,
           target: e.target,
-          label: e.label || 'CONNECTED_TO',
+          label: e.label || '',
           diffStatus: 'added',
         },
         classes: 'diff-added',

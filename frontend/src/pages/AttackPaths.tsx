@@ -144,7 +144,7 @@ export const AttackPaths: FC = () => {
         }
       }
     }
-    return 'UNKNOWN';
+    return '';
   }
 
   // 1. ADVANCED DEDUPLICATION & GROUPING ALGORITHM (Cases A, B, C)
@@ -173,10 +173,8 @@ export const AttackPaths: FC = () => {
         ? effectiveSharedChain.map(n => `${n.type}:${n.id || n.name}`).join('->')
         : (effectiveTargetNode ? `target:${effectiveTargetNode.type}:${effectiveTargetNode.id || effectiveTargetNode.name}` : `source:${sourceNode.name}`);
 
-      const sev = (path.severity || 'high').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
-      const score = typeof path.riskScore === 'number'
-        ? path.riskScore
-        : (sev === 'critical' ? 90 : sev === 'high' ? 75 : sev === 'medium' ? 50 : 30);
+      const sev = (path.severity || 'low').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
+      const score = typeof path.riskScore === 'number' ? path.riskScore : 0;
 
       const tagged = path as any;
       const diffStatus = tagged._diffStatus as 'NEW' | 'REMOVED' | 'CHANGED' | 'UNCHANGED' | undefined;
@@ -1262,13 +1260,18 @@ Explain why this shared privilege path introduces high blast radius across multi
                       {group.sources.length > 1 && (
                         <div className="w-48 h-[2px] bg-gradient-to-r from-blue-500/20 via-blue-500 to-blue-500/20 my-0.5" />
                       )}
-                      <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
-                        {group.sharedChain.length > 0 && group.sources.length > 0
+                      {(() => {
+                        const lbl = group.sharedChain.length > 0 && group.sources.length > 0
                           ? findExactEdgeLabel(group, group.sources[0].id || group.sources[0].name, group.sharedChain[0].id || group.sharedChain[0].name)
                           : (group.targets.length > 0 && group.sources.length > 0
                               ? findExactEdgeLabel(group, group.sources[0].id || group.sources[0].name, group.targets[0].id || group.targets[0].name)
-                              : 'UNKNOWN')}
-                      </span>
+                              : '');
+                        return lbl ? (
+                          <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
+                            {lbl}
+                          </span>
+                        ) : null;
+                      })()}
                       <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
                       <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
                     </div>
@@ -1283,7 +1286,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                           ? findExactEdgeLabel(group, node.id || node.name, nextNode.id || nextNode.name)
                           : (group.targets.length > 0
                               ? findExactEdgeLabel(group, node.id || node.name, group.targets[0].id || group.targets[0].name)
-                              : 'UNKNOWN');
+                              : '');
 
                         return (
                           <div key={node.id || node.name} className="flex flex-col items-center w-full">
@@ -1320,9 +1323,11 @@ Explain why this shared privilege path introduces high blast radius across multi
 
                             {/* Vertical Connector Down */}
                             <div className="flex flex-col items-center py-1">
-                              <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
-                                {relLabel}
-                              </span>
+                              {relLabel ? (
+                                <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
+                                  {relLabel}
+                                </span>
+                              ) : null}
                               <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
                               <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
                             </div>

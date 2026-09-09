@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 from datetime import datetime
 
-from app.schemas import APIResponse, PolicyCatalogEntry
+from app.schemas import APIResponse, PolicyCatalogEntry, PaginatedPolicyCatalog
 from app.cache import cache
 from app.services.attack.policy_evaluator import evaluate_policy_document_risk
 
@@ -24,18 +24,20 @@ logger = logging.getLogger("scanner")
 router = APIRouter(tags=["Policies"])
 
 
-@router.get("/policies", response_model=APIResponse[List[dict]])
+@router.get("/policies", response_model=APIResponse[PaginatedPolicyCatalog])
 def get_policy_catalog(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
     type_filter: Optional[str] = Query(None, description="Filter by type: aws-managed | customer-managed | inline"),
-    search: Optional[str] = Query(None, description="Search by policy name"),
-    limit: int = Query(500, ge=1, le=2000),
+    search: Optional[str] = Query(None, description="Search by policy name or ARN"),
+    limit: Optional[int] = Query(None, ge=1, le=2000, description="Legacy limit override"),
 ):
-    """Return the full policy catalog from cache (Level 1 — metadata without documents).
+    """Return the paginated policy catalog from cache (Level 1 — metadata without documents).
 
-    Documents are not included unless already cached (e.g., policies that have
-    been opened in the detail view or were fetched during a scan).
+    The search and type filters operate across the COMPLETE cached catalog.
+    Documents are never loaded or fetched during catalog listing to ensure high performance.
     """
-    catalog = cache.get("v1:policy_catalog") or []
+    catalog = list(cache.get("v1:policy_catalog") or [])
 
     # Also include policies discovered during scan (from v1:policies)
     scan_policies = cache.get("v1:policies") or []
@@ -55,18 +57,33 @@ def get_policy_catalog(
                 "findings": [],
             })
 
-    # Apply filters
+    # Apply type filtering across the complete catalog
     if type_filter:
-        catalog = [p for p in catalog if p.get("type", "").lower() == type_filter.lower()]
+        tf = type_filter.strip().lower()
+        catalog = [p for p in catalog if p.get("type", "").lower() == tf]
+
+    # Apply search across the complete catalog
     if search:
-        q = search.lower()
-        catalog = [p for p in catalog if q in p.get("name", "").lower()]
+        q = search.strip().lower()
+        catalog = [
+            p for p in catalog
+            if q in p.get("name", "").lower() or q in p.get("arn", "").lower()
+        ]
+
+    total = len(catalog)
+    effective_page_size = limit if limit is not None else page_size
+    total_pages = max(1, (total + effective_page_size - 1) // effective_page_size) if total > 0 else 1
+
+    start_idx = (page - 1) * effective_page_size
+    end_idx = start_idx + effective_page_size
+    page_items = catalog[start_idx:end_idx]
 
     # Return risk-scored entries (use cached scores if present)
+    # Never fetch documents from AWS in list view
     result = []
-    for p in catalog[:limit]:
+    for p in page_items:
         entry = dict(p)
-        # Compute risk if document available and score not yet set
+        # Compute risk ONLY if document already in entry or cached
         if entry.get("riskScore", 0) == 0 and entry.get("document"):
             risk = _score_policy(entry.get("document", "{}"))
             entry["riskScore"] = risk["score"]
@@ -76,15 +93,24 @@ def get_policy_catalog(
             entry["severity"] = "unknown"
         else:
             entry["severity"] = _score_to_severity(entry.get("riskScore", 0))
-        # Never return None document in list view — omit it
+
+        # Omit document in list view to enforce Level 1 metadata-only
         entry.pop("document", None)
         result.append(entry)
 
+    data = {
+        "items": result,
+        "page": page,
+        "page_size": effective_page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
+
     return APIResponse(
         success=True,
-        message=f"Policy catalog: {len(result)} policies returned",
+        message=f"Policy catalog: {len(result)} of {total} policies returned (page {page}/{total_pages})",
         timestamp=datetime.utcnow().isoformat() + "Z",
-        data=result,
+        data=data,
     )
 
 

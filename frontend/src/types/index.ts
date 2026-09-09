@@ -60,6 +60,7 @@ export interface AttackPath {
   nodes: AttackPathNode[];
   severity: 'critical' | 'high' | 'medium' | 'low';
   riskScore?: number;
+  /** @deprecated Canonical attack-path risk is riskScore (0-100). Likelihood is legacy metadata and must not be used for security decisions. */
   likelihood?: number;
   confidence?: number;
   pathType?: string;
@@ -137,6 +138,14 @@ export interface PolicyCatalogEntry {
   severity: 'critical' | 'high' | 'medium' | 'low' | 'unknown';
   findings: PolicyFinding[];
   attachedTo?: { type: string; name: string; arn: string }[];
+}
+
+export interface PaginatedPolicyCatalog {
+  items: PolicyCatalogEntry[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
 }
 
 // ─── Simulation ───────────────────────────────────────────────────────────────

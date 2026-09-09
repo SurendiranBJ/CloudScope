@@ -62,17 +62,26 @@ class AttackPathNode(BaseModel):
     id: str
     name: str
     type: str  # 'User' | 'Role' | 'EC2' | 'S3' | 'Lambda' | 'Secrets' | 'Policy'
+    arn: Optional[str] = None
+    riskScore: Optional[int] = None
 
 class AttackPath(BaseModel):
     id: str
     name: str
     nodes: List[AttackPathNode]
     severity: str  # 'critical' | 'high' | 'medium' | 'low'
-    likelihood: int  # percentage
+    riskScore: Optional[int] = None
+    likelihood: Optional[int] = None  # percentage (deprecated)
+    confidence: Optional[int] = None
     blastRadius: str
     mitreTechniques: List[str]
     recommendation: str
     description: str
+    source: Optional[str] = None
+    destination: Optional[str] = None
+    pathType: Optional[str] = None
+    orderedRelationships: Optional[List[str]] = None
+    hopCount: Optional[int] = None
 
 class RiskFinding(BaseModel):
     id: str
@@ -177,6 +186,14 @@ class PolicyCatalogEntry(BaseModel):
     riskScore: int = 0
     severity: str = "low"
     findings: List[PolicyFinding] = []
+
+
+class PaginatedPolicyCatalog(BaseModel):
+    items: List[PolicyCatalogEntry]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
 
 
 # ─── Simulation ──────────────────────────────────────────────────────────────

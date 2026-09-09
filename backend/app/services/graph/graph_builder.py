@@ -13,7 +13,8 @@ from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
 from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
-    evaluate_assume_role_trust
+    evaluate_assume_role_trust,
+    evaluate_assume_role_trust_with_evidence,
 )
 from app.services.aws.session import get_account_id
 
@@ -315,33 +316,76 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     {"r_id": r_id, "p_id": p_id}
                 )
 
-        # 10. Relationship: User / Role -> Role (CAN_ASSUME) via AST Trust Evaluation
+        # 10. Relationship: User / Role -> Role (CAN_ASSUME) — evidence-verified only
+        # Build policy_doc_map from inventory so call-permission can be verified.
+        _policy_doc_map = {}
+        for _p in inventory.policies:
+            if _p.get('name') and _p.get('document'):
+                _policy_doc_map[_p['name']] = _p['document']
+
         for r in inventory.roles:
             r_id = get_node_id("Role", r['name'])
-            trust_result = evaluate_assume_role_trust(
+            r_arn = r.get('arn', '')
+
+            trust_ev = evaluate_assume_role_trust_with_evidence(
                 r.get('trustPolicy', '{}'),
                 r['name'],
+                r_arn,
                 inventory.users,
                 inventory.roles,
-                account_id
+                account_id,
+                _policy_doc_map,
             )
-            for trusted_u in trust_result["users"]:
+
+            # Annotate Role node with broad-trust metadata in Neo4j
+            if trust_ev.get('trust_is_broad'):
+                execute_write(
+                    """
+                    MATCH (r:Role {id: $r_id})
+                    SET r.trust_is_broad = true,
+                        r.trust_principal_types = $tpt
+                    """,
+                    {
+                        "r_id": r_id,
+                        "tpt": ','.join(sorted(trust_ev.get('trust_principal_types', set())))
+                    }
+                )
+
+            # Only MERGE CAN_ASSUME edges for call-permission-verified principals
+            for entry in trust_ev.get('users', []):
+                if not entry['evidence'].get('call_permission_verified'):
+                    continue
+                trusted_u = entry['principal']
                 u_id = get_node_id("User", trusted_u['name'])
                 execute_write(
                     """
                     MATCH (u:User {id: $u_id}), (r:Role {id: $r_id})
-                    MERGE (u)-[:CAN_ASSUME]->(r)
+                    MERGE (u)-[rel:CAN_ASSUME]->(r)
+                    SET rel.trust_type = $trust_type
                     """,
-                    {"u_id": u_id, "r_id": r_id}
+                    {
+                        "u_id": u_id,
+                        "r_id": r_id,
+                        "trust_type": entry['evidence']['trust_principal_type'],
+                    }
                 )
-            for trusted_r in trust_result["roles"]:
+
+            for entry in trust_ev.get('roles', []):
+                if not entry['evidence'].get('call_permission_verified'):
+                    continue
+                trusted_r = entry['principal']
                 tr_id = get_node_id("Role", trusted_r['name'])
                 execute_write(
                     """
                     MATCH (tr:Role {id: $tr_id}), (r:Role {id: $r_id})
-                    MERGE (tr)-[:CAN_ASSUME]->(r)
+                    MERGE (tr)-[rel:CAN_ASSUME]->(r)
+                    SET rel.trust_type = $trust_type
                     """,
-                    {"tr_id": tr_id, "r_id": r_id}
+                    {
+                        "tr_id": tr_id,
+                        "r_id": r_id,
+                        "trust_type": entry['evidence']['trust_principal_type'],
+                    }
                 )
 
         # 11. Relationship: Policy -> Target Resource (ALLOWS) via AST Evaluation

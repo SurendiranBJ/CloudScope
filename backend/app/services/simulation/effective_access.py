@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Tuple
 from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
     evaluate_assume_role_trust,
+    evaluate_assume_role_trust_with_evidence,
 )
 
 logger = logging.getLogger("scanner")
@@ -107,17 +108,22 @@ def compute_effective_access(
     # ── Chain 3: Users via CAN_ASSUME → Role ─────────────────────────────────
     for role in inventory.roles:
         rname = role["name"]
-        trust_result = evaluate_assume_role_trust(
+        trust_ev = evaluate_assume_role_trust_with_evidence(
             role.get("trustPolicy", "{}"),
             rname,
+            role.get("arn", ""),
             inventory.users,
             inventory.roles,
             account_id,
+            policy_doc_map,
         )
 
         role_docs = role_policy_map.get(rname, [])  # [(pname, doc, parn)]
 
-        for trusted_user in trust_result["users"]:
+        for entry in trust_ev.get("users", []):
+            if not entry.get("evidence", {}).get("call_permission_verified"):
+                continue
+            trusted_user = entry["principal"]
             uname = trusted_user["name"]
             for pname, doc, parn in role_docs:
                 matched = evaluate_policy_allows_resources(doc, all_resources)
@@ -134,7 +140,10 @@ def compute_effective_access(
                     ))
 
         # Also role→role trust chains (one level)
-        for trusted_role in trust_result["roles"]:
+        for entry in trust_ev.get("roles", []):
+            if not entry.get("evidence", {}).get("call_permission_verified"):
+                continue
+            trusted_role = entry["principal"]
             tr_name = trusted_role["name"]
             for pname, doc, parn in role_docs:
                 matched = evaluate_policy_allows_resources(doc, all_resources)

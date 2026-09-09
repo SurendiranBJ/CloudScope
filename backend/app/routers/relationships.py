@@ -17,7 +17,10 @@ from typing import List, Optional
 
 from app.schemas import APIResponse
 from app.cache import cache
-from app.services.attack.policy_evaluator import evaluate_assume_role_trust
+from app.services.attack.policy_evaluator import (
+    evaluate_assume_role_trust,
+    evaluate_assume_role_trust_with_evidence,
+)
 
 logger = logging.getLogger("scanner")
 router = APIRouter(tags=["Relationships"])
@@ -100,15 +103,21 @@ def get_all_relationships(
 
     # 5. CAN_ASSUME via trust policies
     account_id = _get_account_id(users)
+    pol_doc_map = {p["name"]: p.get("document", "{}") for p in policies}
     for r in roles:
-        trust_result = evaluate_assume_role_trust(
+        trust_ev = evaluate_assume_role_trust_with_evidence(
             r.get("trustPolicy", "{}"),
             r["name"],
+            r.get("arn", ""),
             users,
             roles,
             account_id,
+            pol_doc_map,
         )
-        for tu in trust_result.get("users", []):
+        for tu_entry in trust_ev.get("users", []):
+            if not tu_entry.get("evidence", {}).get("call_permission_verified"):
+                continue
+            tu = tu_entry["principal"]
             relationships.append({
                 "source_id": f"aws:user:{tu['name']}",
                 "source_label": tu["name"],
@@ -118,7 +127,10 @@ def get_all_relationships(
                 "target_label": r["name"],
                 "target_type": "Role",
             })
-        for tr in trust_result.get("roles", []):
+        for tr_entry in trust_ev.get("roles", []):
+            if not tr_entry.get("evidence", {}).get("call_permission_verified"):
+                continue
+            tr = tr_entry["principal"]
             relationships.append({
                 "source_id": f"aws:role:{tr['name']}",
                 "source_label": tr["name"],
@@ -131,7 +143,6 @@ def get_all_relationships(
 
     # 6. Policy ALLOWS Resource (from cached graph edges)
     resources = cache.get("v1:resources") or []
-    pol_doc_map = {p["name"]: p.get("document", "{}") for p in policies}
     from app.services.attack.policy_evaluator import evaluate_policy_allows_resources
     for p in policies:
         doc = p.get("document", "{}")

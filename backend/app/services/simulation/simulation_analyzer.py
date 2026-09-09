@@ -10,7 +10,7 @@ Uses existing engines — no duplicated logic, no contradictory definitions.
 
 import logging
 import networkx as nx
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.services.graph.graph_loader import build_local_graph
 from app.services.attack.path_engine import find_attack_paths
@@ -27,7 +27,10 @@ from app.services.simulation.diff_engine import (
     compare_attack_paths,
     compare_reachable_resources,
 )
-from app.services.simulation.effective_access import compute_reachable_resources
+from app.services.simulation.effective_access import (
+    compute_effective_access,
+    compute_reachable_resources,
+)
 
 logger = logging.getLogger("scanner")
 
@@ -146,13 +149,18 @@ def build_desired_analysis(
                     "id": f"e-{s}-{t}",
                     "source": s,
                     "target": t,
-                    "label": attr.get("label", "CONNECTED_TO"),
+                    "label": attr.get("label", "UNKNOWN"),
                 }
             })
 
     # ── 9. Blast radius (accurate unique identities and reachable resources) ──
     blast_comparison = _compute_blast_comparison(
-        G_current, G_desired, current_inventory, desired_inventory
+        G_current,
+        G_desired,
+        current_inventory,
+        desired_inventory,
+        current_policy_doc_map,
+        desired_policy_doc_map,
     )
 
     summary = _build_summary(attack_path_comparison, resource_diff, risk_comparison)
@@ -298,32 +306,109 @@ def _build_risk_reasons(
     return reasons[:8]  # Cap at 8 reasons for display
 
 
-def _compute_blast_metrics(G: Any, inventory: Any) -> Dict[str, Any]:
+def _classify_resource(res: Dict[str, Any]) -> Tuple[bool, bool]:
+    """Deterministically classify a resource as sensitive and/or critical.
+
+    Supported categories: S3, EC2, Lambda, RDS, DynamoDB, Secrets Manager.
+    Returns: (is_sensitive, is_critical)
+    """
+    rtype = str(res.get("type", "")).strip()
+    rname = str(res.get("name") or res.get("id") or res.get("label") or "").lower()
+    rrisk = res.get("riskScore", 0)
+    rsev = str(res.get("severity", "")).lower()
+
+    sensitive_types = {"Secrets", "Secret", "RDS", "DynamoDB"}
+    is_sensitive = (
+        rtype in sensitive_types
+        or "pii" in rname
+        or "secret" in rname
+        or "credential" in rname
+        or "token" in rname
+        or "confidential" in rname
+        or rrisk >= 60
+    )
+
+    critical_types = {"Secrets", "Secret", "RDS"}
+    is_critical = (
+        rtype in critical_types
+        or rsev == "critical"
+        or rrisk >= 70
+        or ("prod" in rname and is_sensitive)
+    )
+
+    return is_sensitive, is_critical
+
+
+def _compute_blast_metrics(
+    G: Any,
+    inventory: Any,
+    policy_doc_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Calculate blast radius metrics representing actual reachable impact across all identities.
 
-    Identifies:
-      - unique affected identities (users, roles that have reachability to cloud resources)
-      - unique reachable resources (deduplicated across all paths/identities)
-      - unique sensitive resources (Secrets, RDS, S3 containing sensitive/PII data or risk >= 60)
-      - unique critical resources (critical severity or high risk or secrets/RDS)
-      - resource types breakdown
+    Uses the authoritative EFFECTIVE ACCESS ENGINE when inventory and policy documents
+    are available, calculating unique affected identities and unique reachable resources.
+    Falls back gracefully to graph reachability if inventory is None (e.g. graph-only unit tests).
     """
     cloud_resource_types = {"S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB"}
-    sensitive_types = {"Secrets", "Secret", "RDS"}
-
-    all_identities = []
-    if G:
-        for nid, data in G.nodes(data=True):
-            if data.get("type") in {"User", "Role"}:
-                all_identities.append(nid)
 
     affected_identities: Set[str] = set()
     reachable_resources: Set[str] = set()
     sensitive_resources: Set[str] = set()
     critical_resources: Set[str] = set()
     resource_types: Dict[str, int] = {}
+    resource_details_map: Dict[str, Dict[str, Any]] = {}
 
-    if G:
+    all_res = _all_resources(inventory) if inventory else []
+    for r in all_res:
+        rid = r.get("id") or r.get("name", "")
+        if rid:
+            resource_details_map[rid] = r
+            if r.get("name"):
+                resource_details_map[r["name"]] = r
+
+    # 1. Authoritative Effective Access Engine if inventory and policies are available
+    if inventory and (all_res or getattr(inventory, "policies", [])):
+        p_map = policy_doc_map or {}
+        access_records = compute_effective_access(inventory, p_map, all_res)
+
+        has_users = bool(getattr(inventory, "users", []))
+        for rec in access_records:
+            rid = rec.get("target_resource_id") or rec.get("target_resource_name")
+            if not rid:
+                continue
+
+            rtype = rec.get("target_resource_type", "Resource")
+            # Track unique reachable resource
+            if rid not in reachable_resources:
+                reachable_resources.add(rid)
+                resource_types[rtype] = resource_types.get(rtype, 0) + 1
+
+                res_obj = resource_details_map.get(rid) or {
+                    "id": rid,
+                    "name": rec.get("target_resource_name", rid),
+                    "type": rtype,
+                }
+                is_sens, is_crit = _classify_resource(res_obj)
+                if is_sens:
+                    sensitive_resources.add(rid)
+                if is_crit:
+                    critical_resources.add(rid)
+
+            # Track affected identities (unique users or roles that have reachability)
+            if has_users:
+                if rec.get("identity_type") == "User":
+                    affected_identities.add(rec["identity_name"])
+            else:
+                affected_identities.add(rec["identity_name"])
+
+    # 2. Graph topology fallback if inventory was not provided or had no records
+    elif G:
+        all_identities = []
+        for nid, data in G.nodes(data=True):
+            if data.get("type") in {"User", "Role"}:
+                all_identities.append(nid)
+
         for ident in all_identities:
             try:
                 descendants = nx.descendants(G, ident)
@@ -342,27 +427,23 @@ def _compute_blast_metrics(G: Any, inventory: Any) -> Dict[str, Any]:
                         reachable_resources.add(d)
                         resource_types[d_type] = resource_types.get(d_type, 0) + 1
 
-                    # Check sensitive
-                    d_label = str(d_data.get("label", "")).lower()
-                    d_risk = d_data.get("riskScore", 0)
-                    is_sensitive = (
-                        d_type in sensitive_types
-                        or "pii" in d_label
-                        or "secret" in d_label
-                        or "credential" in d_label
-                        or d_risk >= 60
-                    )
-                    if is_sensitive:
-                        sensitive_resources.add(d)
-
-                    # Check critical
-                    if d_type in sensitive_types or d_risk >= 70 or d_data.get("severity") == "critical":
-                        critical_resources.add(d)
+                        is_sens, is_crit = _classify_resource({
+                            "id": d,
+                            "name": d_data.get("label", d),
+                            "type": d_type,
+                            "riskScore": d_data.get("riskScore", 0),
+                            "severity": d_data.get("severity", ""),
+                        })
+                        if is_sens:
+                            sensitive_resources.add(d)
+                        if is_crit:
+                            critical_resources.add(d)
 
             if ident_has_resource:
                 affected_identities.add(ident)
 
     # Blast score based on unique reachable assets, sensitive/critical weighting, and affected identities
+    # Deterministic 0-100 score; no probability, no likelihood, no randomness
     raw_score = (
         len(reachable_resources) * 8
         + len(sensitive_resources) * 15
@@ -390,40 +471,109 @@ def _compute_blast_comparison(
     G_desired: Any,
     current_inventory: Any,
     desired_inventory: Any,
+    current_policy_doc_map: Optional[Dict[str, str]] = None,
+    desired_policy_doc_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Calculate blast radius comparison between current and desired state.
 
-    Uses unique affected identities and unique reachable resources across all
-    paths to accurately measure simulation impact without selecting a single user
-    or double-counting duplicate paths.
+    Uses authoritative effective access results, unique affected identities, and
+    unique reachable resources across all paths to accurately measure simulation impact
+    without double-counting duplicate paths or fabricating heuristics.
     """
-    c_metrics = _compute_blast_metrics(G_current, current_inventory)
-    d_metrics = _compute_blast_metrics(G_desired, desired_inventory)
+    c_metrics = _compute_blast_metrics(G_current, current_inventory, current_policy_doc_map)
+    d_metrics = _compute_blast_metrics(G_desired, desired_inventory, desired_policy_doc_map)
 
     new_res_ids = d_metrics["reachable_resource_ids"] - c_metrics["reachable_resource_ids"]
     rem_res_ids = c_metrics["reachable_resource_ids"] - d_metrics["reachable_resource_ids"]
 
+    # Collect resource lookup metadata
+    all_cur = _all_resources(current_inventory) if current_inventory else []
+    all_des = _all_resources(desired_inventory) if desired_inventory else []
+
+    cur_res_map = {r.get("id") or r.get("name", ""): r for r in all_cur}
+    des_res_map = {r.get("id") or r.get("name", ""): r for r in all_des}
+
     new_reachable = []
-    if G_desired:
-        for rid in new_res_ids:
-            if G_desired.has_node(rid):
-                new_reachable.append({
-                    "id": rid,
-                    "name": G_desired.nodes[rid].get("label", rid),
-                    "type": G_desired.nodes[rid].get("type", "Resource"),
-                    "riskScore": G_desired.nodes[rid].get("riskScore", 0),
-                })
+    for rid in sorted(new_res_ids):
+        res_info = des_res_map.get(rid)
+        name = rid
+        rtype = "Resource"
+        risk = 0
+        sev = "unknown"
+        if res_info:
+            name = res_info.get("name", rid)
+            rtype = res_info.get("type", "Resource")
+            risk = res_info.get("riskScore", 0)
+            sev = res_info.get("severity", "unknown")
+        elif G_desired and G_desired.has_node(rid):
+            name = G_desired.nodes[rid].get("label", rid)
+            rtype = G_desired.nodes[rid].get("type", "Resource")
+            risk = G_desired.nodes[rid].get("riskScore", 0)
+            sev = G_desired.nodes[rid].get("severity", "unknown")
+
+        is_sens, is_crit = _classify_resource({"id": rid, "name": name, "type": rtype, "riskScore": risk, "severity": sev})
+        new_reachable.append({
+            "id": rid,
+            "name": name,
+            "type": rtype,
+            "riskScore": risk,
+            "severity": sev,
+            "isSensitive": is_sens,
+            "isCritical": is_crit,
+        })
 
     rem_reachable = []
-    if G_current:
-        for rid in rem_res_ids:
-            if G_current.has_node(rid):
-                rem_reachable.append({
-                    "id": rid,
-                    "name": G_current.nodes[rid].get("label", rid),
-                    "type": G_current.nodes[rid].get("type", "Resource"),
-                    "riskScore": G_current.nodes[rid].get("riskScore", 0),
-                })
+    for rid in sorted(rem_res_ids):
+        res_info = cur_res_map.get(rid)
+        name = rid
+        rtype = "Resource"
+        risk = 0
+        sev = "unknown"
+        if res_info:
+            name = res_info.get("name", rid)
+            rtype = res_info.get("type", "Resource")
+            risk = res_info.get("riskScore", 0)
+            sev = res_info.get("severity", "unknown")
+        elif G_current and G_current.has_node(rid):
+            name = G_current.nodes[rid].get("label", rid)
+            rtype = G_current.nodes[rid].get("type", "Resource")
+            risk = G_current.nodes[rid].get("riskScore", 0)
+            sev = G_current.nodes[rid].get("severity", "unknown")
+
+        is_sens, is_crit = _classify_resource({"id": rid, "name": name, "type": rtype, "riskScore": risk, "severity": sev})
+        rem_reachable.append({
+            "id": rid,
+            "name": name,
+            "type": rtype,
+            "riskScore": risk,
+            "severity": sev,
+            "isSensitive": is_sens,
+            "isCritical": is_crit,
+        })
+
+    # Track affected identities by comparing effective reachable sets
+    impacted_identities: List[str] = []
+    newly_affected_identities: List[str] = []
+    no_longer_affected_identities: List[str] = []
+    changed_access_identities: List[str] = []
+
+    if current_inventory and desired_inventory:
+        cur_reach = compute_reachable_resources(current_inventory, current_policy_doc_map or {}, all_cur)
+        des_reach = compute_reachable_resources(desired_inventory, desired_policy_doc_map or {}, all_des)
+        all_keys = sorted(set(cur_reach.keys()) | set(des_reach.keys()))
+
+        for ikey in all_keys:
+            c_set = cur_reach.get(ikey, set())
+            d_set = des_reach.get(ikey, set())
+            if c_set != d_set:
+                iname = ikey.split(":", 1)[1] if ":" in ikey else ikey
+                impacted_identities.append(iname)
+                if not c_set and d_set:
+                    newly_affected_identities.append(iname)
+                elif c_set and not d_set:
+                    no_longer_affected_identities.append(iname)
+                else:
+                    changed_access_identities.append(iname)
 
     return {
         "current_blast_score": c_metrics["blast_score"],
@@ -445,6 +595,10 @@ def _compute_blast_comparison(
         "desired_resource_types": d_metrics["resource_types"],
         "new_reachable_resources": new_reachable,
         "removed_reachable_resources": rem_reachable,
+        "impacted_identities": impacted_identities,
+        "newly_affected_identities": newly_affected_identities,
+        "no_longer_affected_identities": no_longer_affected_identities,
+        "changed_access_identities": changed_access_identities,
     }
 
 

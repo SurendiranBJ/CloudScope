@@ -20,7 +20,12 @@ IDENTITY_TYPES = {"User"}
 
 
 def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
-    """Calculate the blast radius and reachability of a compromised node in the graph."""
+    """GRAPH-TOPOLOGY APPROXIMATION — not authoritative effective access.
+    
+    Calculate the topological blast radius and reachability of a compromised node
+    by traversing outgoing graph edges. For authoritative effective access provenance,
+    use effective_access.py and simulation_analyzer.py.
+    """
     if not G or not G.has_node(node_id):
         return {
             "node_id": node_id,

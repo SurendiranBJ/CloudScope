@@ -497,3 +497,289 @@ def evaluate_assume_role_trust(
                         matched_user_ids.add(u_id)
 
     return result
+
+
+# ─── Authoritative Trust + Call-Permission Evaluator ────────────────────────
+
+def _principal_has_assume_role_permission(
+    principal: Dict[str, Any],
+    role_arn: str,
+    policy_doc_map: Dict[str, str],
+) -> bool:
+    """Return True if the principal's identity-based policies grant sts:AssumeRole
+    on the given role ARN (or on Resource: '*').
+
+    Args:
+        principal: user or role dict (must contain 'policies' or 'attachedPolicies').
+        role_arn: ARN of the role being assumed.
+        policy_doc_map: maps policy_name → raw JSON document string.
+
+    Returns:
+        True if at least one Allow statement in the principal's policies
+        grants sts:AssumeRole on the role ARN (or '*') with no overriding Deny.
+    """
+    # Collect policy names from the principal (users use 'policies', roles use 'attachedPolicies')
+    p_policy_names = (
+        principal.get("policies", []) +
+        principal.get("attachedPolicies", [])
+    )
+    inline_docs = list(principal.get("inlinePolicyDocuments", {}).values())
+
+    all_docs = []
+    for pname in p_policy_names:
+        clean = pname.replace("[inline] ", "")
+        doc = policy_doc_map.get(pname) or policy_doc_map.get(clean)
+        if doc:
+            all_docs.append(doc)
+    all_docs.extend(inline_docs)
+
+    if not all_docs:
+        return False
+
+    for doc in all_docs:
+        stmts = parse_policy_document(doc)
+        for stmt in stmts:
+            if stmt["Effect"] != "Allow":
+                continue
+            actions = stmt.get("Action", [])
+            resources = stmt.get("Resource", [])
+
+            # Must match sts:AssumeRole
+            if not any(match_action(a, "sts:assumerole") for a in actions):
+                continue
+
+            # Must match the role ARN or wildcard resource
+            for r in (resources or ["*"]):
+                if r == "*":
+                    return True
+                if role_arn and fnmatchcase(role_arn.lower(), r.lower()):
+                    return True
+                if role_arn and r.lower() == role_arn.lower():
+                    return True
+
+    return False
+
+
+def _principal_has_explicit_deny_on_assume(
+    principal: Dict[str, Any],
+    role_arn: str,
+    policy_doc_map: Dict[str, str],
+) -> bool:
+    """Return True if any identity policy explicitly Denies sts:AssumeRole
+    for this principal against the role ARN."""
+    p_policy_names = (
+        principal.get("policies", []) +
+        principal.get("attachedPolicies", [])
+    )
+    inline_docs = list(principal.get("inlinePolicyDocuments", {}).values())
+
+    all_docs = []
+    for pname in p_policy_names:
+        clean = pname.replace("[inline] ", "")
+        doc = policy_doc_map.get(pname) or policy_doc_map.get(clean)
+        if doc:
+            all_docs.append(doc)
+    all_docs.extend(inline_docs)
+
+    for doc in all_docs:
+        stmts = parse_policy_document(doc)
+        for stmt in stmts:
+            if stmt["Effect"] != "Deny":
+                continue
+            actions = stmt.get("Action", [])
+            resources = stmt.get("Resource", [])
+            if not any(match_action(a, "sts:assumerole") for a in actions):
+                continue
+            for r in (resources or []):
+                if r == "*":
+                    return True
+                if role_arn and fnmatchcase(role_arn.lower(), r.lower()):
+                    return True
+    return False
+
+
+def evaluate_assume_role_trust_with_evidence(
+    trust_policy_input: Any,
+    role_name: str,
+    role_arn: str,
+    all_users: List[Dict[str, Any]],
+    all_roles: List[Dict[str, Any]],
+    account_id: str,
+    policy_doc_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """Authoritative AssumeRole evaluator that separates trust-policy matching
+    from identity-policy call-permission verification.
+
+    Returns:
+        {
+            "users": [
+                {
+                    "principal": <user dict>,
+                    "evidence": {
+                        "trust_principal_type": "exact_arn" | "wildcard" | "account_root" | "account_id",
+                        "call_permission_verified": True | False,
+                        "explicit_deny": False
+                    }
+                },
+                ...
+            ],
+            "roles": [ ... same structure ... ],
+            "trust_is_broad": bool,   # True when trust uses wildcard or account-root
+            "trust_principal_types": set of types seen in the trust policy
+        }
+
+    IMPORTANT:
+    - Exact ARN principal match → call_permission_verified = True (trust implies permission).
+    - Wildcard or account-root principal → caller must have an identity policy
+      granting sts:AssumeRole on the role ARN to receive call_permission_verified = True.
+    - Any principal with an explicit Deny is excluded even if trust matches.
+    - Only entries with call_permission_verified = True should produce CAN_ASSUME graph edges.
+    """
+    result: Dict[str, Any] = {
+        "users": [],
+        "roles": [],
+        "trust_is_broad": False,
+        "trust_principal_types": set(),
+    }
+
+    statements = parse_policy_document(trust_policy_input)
+    if not statements:
+        return result
+
+    user_name_map = {u["name"]: u for u in all_users}
+    user_arn_map  = {u["arn"]: u for u in all_users if u.get("arn")}
+    role_name_map = {r["name"]: r for r in all_roles if r["name"] != role_name}
+    role_arn_map  = {r["arn"]: r for r in all_roles if r["name"] != role_name and r.get("arn")}
+
+    added_user_ids:  Set[str] = set()
+    added_role_names: Set[str] = set()
+
+    def _add_user(u_obj: Dict[str, Any], trust_type: str, call_perm: bool):
+        uid = u_obj.get("id") or u_obj.get("name")
+        if uid in added_user_ids:
+            return
+        # Check explicit deny before adding
+        explicit_deny = _principal_has_explicit_deny_on_assume(u_obj, role_arn, policy_doc_map)
+        if explicit_deny:
+            return
+        result["users"].append({
+            "principal": u_obj,
+            "evidence": {
+                "trust_principal_type": trust_type,
+                "call_permission_verified": call_perm,
+                "explicit_deny": False,
+            },
+        })
+        added_user_ids.add(uid)
+
+    def _add_role(r_obj: Dict[str, Any], trust_type: str, call_perm: bool):
+        rn = r_obj["name"]
+        if rn in added_role_names:
+            return
+        explicit_deny = _principal_has_explicit_deny_on_assume(r_obj, role_arn, policy_doc_map)
+        if explicit_deny:
+            return
+        result["roles"].append({
+            "principal": r_obj,
+            "evidence": {
+                "trust_principal_type": trust_type,
+                "call_permission_verified": call_perm,
+                "explicit_deny": False,
+            },
+        })
+        added_role_names.add(rn)
+
+    for stmt in statements:
+        if stmt["Effect"] != "Allow":
+            continue
+        actions = [a.lower() for a in stmt["Action"]]
+        if not any(match_action(a, "sts:assumerole") for a in actions):
+            continue
+
+        principal = stmt.get("Principal", {})
+        if not principal:
+            continue
+
+        # ── Wildcard principal ("*" at top level or AWS: "*") ────────────────
+        is_wildcard = (
+            principal == "*"
+            or (isinstance(principal, dict) and principal.get("AWS") == "*")
+        )
+        if is_wildcard:
+            result["trust_is_broad"] = True
+            result["trust_principal_types"].add("wildcard")
+            # For wildcard trust, only add principals that can CALL sts:AssumeRole
+            for u in all_users:
+                call_perm = _principal_has_assume_role_permission(u, role_arn, policy_doc_map)
+                if call_perm:
+                    _add_user(u, "wildcard", True)
+            for r in all_roles:
+                if r["name"] == role_name:
+                    continue
+                call_perm = _principal_has_assume_role_permission(r, role_arn, policy_doc_map)
+                if call_perm:
+                    _add_role(r, "wildcard", True)
+            continue
+
+        aws_principals = principal.get("AWS", []) if isinstance(principal, dict) else []
+        if isinstance(aws_principals, str):
+            aws_principals = [aws_principals]
+        elif not isinstance(aws_principals, list):
+            aws_principals = []
+
+        for p_str in aws_principals:
+            p = str(p_str).strip()
+
+            # ── Per-entry wildcard ────────────────────────────────────────────
+            if p == "*":
+                result["trust_is_broad"] = True
+                result["trust_principal_types"].add("wildcard")
+                for u in all_users:
+                    call_perm = _principal_has_assume_role_permission(u, role_arn, policy_doc_map)
+                    if call_perm:
+                        _add_user(u, "wildcard", True)
+                for r in all_roles:
+                    if r["name"] == role_name:
+                        continue
+                    call_perm = _principal_has_assume_role_permission(r, role_arn, policy_doc_map)
+                    if call_perm:
+                        _add_role(r, "wildcard", True)
+                continue
+
+            # ── Account root ARN or bare account ID ──────────────────────────
+            if p.endswith(":root") or (account_id and p == account_id):
+                result["trust_is_broad"] = True
+                result["trust_principal_types"].add("account_root")
+                for u in all_users:
+                    call_perm = _principal_has_assume_role_permission(u, role_arn, policy_doc_map)
+                    if call_perm:
+                        _add_user(u, "account_root", True)
+                for r in all_roles:
+                    if r["name"] == role_name:
+                        continue
+                    call_perm = _principal_has_assume_role_permission(r, role_arn, policy_doc_map)
+                    if call_perm:
+                        _add_role(r, "account_root", True)
+                continue
+
+            # ── Specific Role ARN ─────────────────────────────────────────────
+            if ":role/" in p:
+                result["trust_principal_types"].add("exact_arn")
+                r_name = p.split("/")[-1]
+                r_obj = role_name_map.get(r_name) or role_arn_map.get(p)
+                if r_obj:
+                    # Exact ARN in trust — call permission implied by the trust itself
+                    _add_role(r_obj, "exact_arn", True)
+                continue
+
+            # ── Specific User ARN ─────────────────────────────────────────────
+            if ":user/" in p:
+                result["trust_principal_types"].add("exact_arn")
+                u_name = p.split("/")[-1]
+                u_obj = user_name_map.get(u_name) or user_arn_map.get(p)
+                if u_obj:
+                    # Exact ARN in trust — call permission implied by the trust itself
+                    _add_user(u_obj, "exact_arn", True)
+                continue
+
+    return result
