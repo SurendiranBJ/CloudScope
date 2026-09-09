@@ -23,6 +23,8 @@ from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
     evaluate_assume_role_trust,
     evaluate_assume_role_trust_with_evidence,
+    check_resource_explicitly_denied,
+    get_effective_identity_policy_documents,
 )
 from app.services.attack.constants import MAX_ROLE_HOPS
 
@@ -61,6 +63,7 @@ def compute_effective_access(
     # ── Chain 1 & 2: Users via direct policies and group memberships ──────────
     for user in inventory.users:
         uname = user["name"]
+        user_applicable_docs = get_effective_identity_policy_documents(user, policy_doc_map, inventory.groups)
 
         # Collect (policy_name, policy_arn, access_chain, rel_chain) tuples
         access_sources: List[Tuple[str, str, List[str], List[str]]] = []
@@ -93,7 +96,14 @@ def compute_effective_access(
             doc = policy_doc_map.get(pname) or policy_doc_map.get(pname.replace("[inline] ", ""))
             if not doc:
                 continue
-            matched = evaluate_policy_allows_resources(doc, all_resources)
+            matched = evaluate_policy_allows_resources(doc, all_resources, principal=user, account_id=account_id)
+            # 1. Deny precedence: remove any resource explicitly denied by ANY of user's applicable policies
+            matched = [
+                res for res in matched
+                if not check_resource_explicitly_denied(user_applicable_docs, res, principal=user, account_id=account_id)
+            ]
+            # 2. Filter through Permissions Boundary if attached to user
+            matched = _filter_by_permissions_boundary(user, matched, policy_doc_map, account_id)
             for res in matched:
                 result.append(_build_record(
                     identity_id=_user_id(uname),
@@ -158,10 +168,21 @@ def compute_effective_access(
                 continue
             visited_chains.add(chain_key)
 
-            # Evaluate effective access granted by curr_role
+            # Evaluate effective access granted by curr_role (respecting curr_role's permissions boundary and Deny)
+            curr_role_obj = _find_role(inventory.roles, curr_role)
+            curr_role_principal = curr_role_obj or {"name": curr_role}
+            role_applicable_docs = get_effective_identity_policy_documents(curr_role_principal, policy_doc_map)
             role_docs = role_policy_map.get(curr_role, [])
             for pname, doc, parn in role_docs:
-                matched = evaluate_policy_allows_resources(doc, all_resources)
+                matched = evaluate_policy_allows_resources(doc, all_resources, principal=curr_role_principal, account_id=account_id)
+                # 1. Deny precedence across role's applicable policies
+                matched = [
+                    res for res in matched
+                    if not check_resource_explicitly_denied(role_applicable_docs, res, principal=curr_role_principal, account_id=account_id)
+                ]
+                # 2. Permissions boundary attached to the role
+                if curr_role_obj:
+                    matched = _filter_by_permissions_boundary(curr_role_obj, matched, policy_doc_map, account_id)
                 for res in matched:
                     # Provenance: User -> RoleA -> RoleB -> Policy -> Resource
                     full_node_path = [uname] + role_chain + [pname, res.get("name", res.get("id", ""))]
@@ -201,9 +222,18 @@ def compute_effective_access(
                 continue
             visited_chains.add(chain_key)
 
+            curr_role_obj = _find_role(inventory.roles, curr_role)
+            curr_role_principal = curr_role_obj or {"name": curr_role}
+            role_applicable_docs = get_effective_identity_policy_documents(curr_role_principal, policy_doc_map)
             role_docs = role_policy_map.get(curr_role, [])
             for pname, doc, parn in role_docs:
-                matched = evaluate_policy_allows_resources(doc, all_resources)
+                matched = evaluate_policy_allows_resources(doc, all_resources, principal=curr_role_principal, account_id=account_id)
+                matched = [
+                    res for res in matched
+                    if not check_resource_explicitly_denied(role_applicable_docs, res, principal=curr_role_principal, account_id=account_id)
+                ]
+                if curr_role_obj:
+                    matched = _filter_by_permissions_boundary(curr_role_obj, matched, policy_doc_map, account_id)
                 for res in matched:
                     # Provenance: RoleA -> RoleB -> RoleC -> Policy -> Resource
                     full_node_path = [rname] + role_chain + [pname, res.get("name", res.get("id", ""))]
@@ -227,8 +257,14 @@ def compute_effective_access(
     # ── Chain 4: Roles directly ───────────────────────────────────────────────
     for role in inventory.roles:
         rname = role["name"]
+        role_applicable_docs = get_effective_identity_policy_documents(role, policy_doc_map)
         for pname, doc, parn in role_policy_map.get(rname, []):
-            matched = evaluate_policy_allows_resources(doc, all_resources)
+            matched = evaluate_policy_allows_resources(doc, all_resources, principal=role, account_id=account_id)
+            matched = [
+                res for res in matched
+                if not check_resource_explicitly_denied(role_applicable_docs, res, principal=role, account_id=account_id)
+            ]
+            matched = _filter_by_permissions_boundary(role, matched, policy_doc_map, account_id)
             for res in matched:
                 result.append(_build_record(
                     identity_id=_role_id(rname),
@@ -335,6 +371,52 @@ def _find_group(groups: List[dict], name: str) -> dict | None:
         if g["name"] == name:
             return g
     return None
+
+
+def _find_role(roles: List[dict], name: str) -> dict | None:
+    for r in roles:
+        if r.get("name") == name or r.get("arn", "").endswith(f"/{name}"):
+            return r
+    return None
+
+
+def _filter_by_permissions_boundary(
+    principal: Dict[str, Any],
+    matched_resources: List[Dict[str, Any]],
+    policy_doc_map: Dict[str, str],
+    account_id: str,
+) -> List[Dict[str, Any]]:
+    """Filter resources by principal's permissions boundary.
+
+    AWS authorization semantics:
+    effective permissions = identity/group permissions INTERSECT permissions boundary
+    subject to explicit Deny precedence.
+
+    - If principal has no boundary attached: returns matched_resources unmodified.
+    - If boundary document is unavailable/unresolved: returns [] (cannot prove Allow).
+    - If boundary document exists: evaluates boundary document against matched_resources;
+      only resources that boundary explicitly Allows and does NOT explicitly Deny are returned.
+    """
+    if not matched_resources:
+        return []
+
+    boundary_arn = principal.get("permissionsBoundary")
+    if not boundary_arn:
+        return matched_resources
+
+    clean_bname = boundary_arn.split("/")[-1] if "/" in boundary_arn else boundary_arn
+    b_doc = policy_doc_map.get(boundary_arn) or policy_doc_map.get(clean_bname)
+    if not b_doc:
+        logger.warning(
+            f"Permissions boundary {boundary_arn} attached to {principal.get('name')} "
+            f"could not be resolved; denying resource access."
+        )
+        return []
+
+    return evaluate_policy_allows_resources(
+        b_doc, matched_resources, principal=principal, account_id=account_id
+    )
+
 
 
 def _user_id(name: str) -> str:

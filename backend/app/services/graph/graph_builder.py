@@ -379,24 +379,23 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 all_groups=inventory.groups,
             )
 
-            # Annotate Role node with broad-trust and conditional-trust metadata in Neo4j
-            if trust_ev.get('trust_is_broad') or trust_ev.get('conditional_trusts'):
-                execute_write(
-                    """
-                    MATCH (r:Role {id: $r_id})
-                    SET r.trust_is_broad = $tib,
-                        r.trust_principal_types = $tpt,
-                        r.has_conditional_trust = $hct,
-                        r.conditional_trust_count = $ctc
-                    """,
-                    {
-                        "r_id": r_id,
-                        "tib": bool(trust_ev.get('trust_is_broad')),
-                        "tpt": ','.join(sorted(trust_ev.get('trust_principal_types', set()))),
-                        "hct": bool(trust_ev.get('conditional_trusts')),
-                        "ctc": len(trust_ev.get('conditional_trusts', [])),
-                    }
-                )
+            # Annotate Role node with trust metadata in Neo4j (always reset to clean state)
+            execute_write(
+                """
+                MATCH (r:Role {id: $r_id})
+                SET r.trust_is_broad = $tib,
+                    r.trust_principal_types = $tpt,
+                    r.has_conditional_trust = $hct,
+                    r.conditional_trust_count = $ctc
+                """,
+                {
+                    "r_id": r_id,
+                    "tib": bool(trust_ev.get('trust_is_broad', False)),
+                    "tpt": ','.join(sorted(trust_ev.get('trust_principal_types', set()))),
+                    "hct": bool(trust_ev.get('conditional_trusts', [])),
+                    "ctc": len(trust_ev.get('conditional_trusts', [])),
+                }
+            )
 
             # Compute currently valid definitive source IDs
             valid_source_ids = []

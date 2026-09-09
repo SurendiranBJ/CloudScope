@@ -103,12 +103,14 @@ def match_action(action_pattern: str, target_action: str) -> bool:
 def has_service_action(stmt_actions: List[str], not_actions: List[str], service_prefix: str) -> bool:
     """Check if actions grant access to the specified AWS service (taking NotAction into account)."""
     service = service_prefix.lower().rstrip(":")
-    
-    # If NotAction is used with an Allow statement
+
+    # If NotAction is used
     if not_actions:
-        # If the target service is NOT excluded by NotAction, it is permitted
-        if not any(a.lower().startswith(f"{service}:") for a in not_actions):
-            return True
+        # If the target service is entirely excluded by NotAction (e.g. "s3:*" or "*"), it is NOT permitted
+        if any(na.lower().strip() in (f"{service}:*", "*", "*:*") for na in not_actions):
+            return False
+        # If NotAction excludes other services (e.g. "iam:*"), this service is permitted
+        return True
 
     for action in stmt_actions:
         a = action.lower().strip()
@@ -119,30 +121,25 @@ def has_service_action(stmt_actions: List[str], not_actions: List[str], service_
     return False
 
 
-def match_resource_arn(resource_pattern: str, not_resources: List[str], target_res: Dict[str, Any]) -> bool:
-    """Match a policy resource ARN pattern against an inventory resource object."""
+def _matches_single_resource_pattern(pattern: str, target_res: Dict[str, Any]) -> bool:
+    """Match a single pattern string against an inventory resource object."""
+    p_clean = pattern.strip()
+    if not p_clean or p_clean == "*":
+        return True
+
     res_arn = target_res.get("arn", "").strip()
     res_name = target_res.get("name", "").strip()
     res_type = target_res.get("type", "").strip()
 
-    # Check NotResource exclusions
-    if not_resources:
-        for nr in not_resources:
-            nr_clean = nr.strip()
-            if fnmatchcase(res_arn.lower(), nr_clean.lower()):
-                return False
-
-    pattern = resource_pattern.strip()
-    if pattern == "*":
-        return True
-
     # Exact or glob pattern match on full ARN
-    if res_arn and fnmatchcase(res_arn.lower(), pattern.lower()):
+    if res_arn and fnmatchcase(res_arn.lower(), p_clean.lower()):
         return True
 
     # S3 specific matching: arn:aws:s3:::bucket-name or arn:aws:s3:::bucket-name/*
     if res_type == "S3":
-        clean_pattern = pattern.rstrip("/*").rstrip("/")
+        clean_pattern = p_clean.rstrip("/*").rstrip("/")
+        if res_arn and fnmatchcase(res_arn.lower(), clean_pattern.lower()):
+            return True
         if clean_pattern.lower() == f"arn:aws:s3:::{res_name}".lower():
             return True
         if fnmatchcase(f"arn:aws:s3:::{res_name}".lower(), clean_pattern.lower()):
@@ -150,41 +147,61 @@ def match_resource_arn(resource_pattern: str, not_resources: List[str], target_r
 
     # Secrets Manager specific matching: arn contains secret name prefix
     if res_type == "Secrets":
-        if pattern.endswith("*"):
-            prefix = pattern.rstrip("*")
+        if p_clean.endswith("*"):
+            prefix = p_clean.rstrip("*")
             if res_arn.lower().startswith(prefix.lower()):
                 return True
-        if f":secret:{res_name}" in pattern:
+        if f":secret:{res_name}" in p_clean:
             return True
 
     # DynamoDB specific matching: arn:aws:dynamodb:...:table/TableName
     if res_type == "DynamoDB":
-        if f":table/{res_name}" in pattern:
+        if f":table/{res_name}" in p_clean:
             return True
 
     # RDS specific matching: arn:aws:rds:...:db:DbInstanceIdentifier
     if res_type == "RDS":
-        if f":db:{res_name}" in pattern:
+        if f":db:{res_name}" in p_clean:
             return True
 
     # EC2 specific matching: arn:aws:ec2:...:instance/i-xxx
     if res_type == "EC2":
-        if f":instance/{res_name}" in pattern:
+        if f":instance/{res_name}" in p_clean:
             return True
 
     # Lambda specific matching: arn:aws:lambda:...:function:FuncName
     if res_type == "Lambda":
-        if f":function:{res_name}" in pattern:
+        if f":function:{res_name}" in p_clean:
             return True
 
     return False
 
 
-def evaluate_policy_allows_resources(policy_doc_input: Any, inventory_resources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def match_resource_arn(resource_pattern: str, not_resources: List[str], target_res: Dict[str, Any]) -> bool:
+    """Match a policy resource ARN pattern against an inventory resource object."""
+    # Check NotResource exclusions
+    if not_resources:
+        for nr in not_resources:
+            if _matches_single_resource_pattern(nr, target_res):
+                return False
+
+    if not resource_pattern:
+        return True
+
+    return _matches_single_resource_pattern(resource_pattern, target_res)
+
+
+
+def evaluate_policy_allows_resources(
+    policy_doc_input: Any,
+    inventory_resources: List[Dict[str, Any]],
+    principal: Optional[Dict[str, Any]] = None,
+    account_id: str = "",
+) -> List[Dict[str, Any]]:
     """Determine which specific inventory resources a policy document grants access to.
 
     Evaluates Effect: Allow statements against each resource in the inventory,
-    and ensures explicit DENY statements properly override any ALLOW.
+    evaluates statement Conditions, and ensures explicit DENY statements properly override any ALLOW.
     """
     statements = parse_policy_document(policy_doc_input)
     if not statements:
@@ -234,6 +251,17 @@ def evaluate_policy_allows_resources(policy_doc_input: Any, inventory_resources:
                     break
 
             if resource_matches:
+                # Evaluate Condition block
+                cond = stmt.get("Condition")
+                if cond:
+                    c_eval = evaluate_condition_block(cond, principal or {}, account_id)
+                    # If condition deterministically violated, statement does NOT apply
+                    if c_eval["is_violated"]:
+                        continue
+                    # If condition has unresolved runtime parameters, it cannot provide unconditional Allow or unconditional Deny
+                    if c_eval["conditions_unresolved"]:
+                        continue
+
                 if effect == "Deny":
                     is_denied = True
                     break  # Explicit Deny wins immediately
@@ -244,6 +272,72 @@ def evaluate_policy_allows_resources(policy_doc_input: Any, inventory_resources:
             matched_resources.append(res)
 
     return matched_resources
+
+
+def check_resource_explicitly_denied(
+    applicable_docs: List[Any],
+    resource: Dict[str, Any],
+    principal: Optional[Dict[str, Any]] = None,
+    account_id: str = "",
+) -> bool:
+    """Check if ANY statement across all applicable policy documents has an explicit Deny for resource.
+
+    Evaluates Action, NotAction, Resource, NotResource, and Condition blocks.
+    Deterministic conditions that are violated do not apply.
+    Conditions with unresolved runtime parameters do not unconditionally deny.
+    """
+    res_type = resource.get("type")
+    if not res_type:
+        return False
+
+    service_prefix_map = {
+        "S3": "s3",
+        "Secrets": "secretsmanager",
+        "Secret": "secretsmanager",
+        "RDS": "rds",
+        "DynamoDB": "dynamodb",
+        "EC2": "ec2",
+        "Lambda": "lambda",
+    }
+    service_prefix = service_prefix_map.get(res_type)
+    if not service_prefix:
+        return False
+
+    for doc in applicable_docs:
+        statements = parse_policy_document(doc)
+        for stmt in statements:
+            if stmt.get("Effect") != "Deny":
+                continue
+
+            actions = stmt.get("Action", [])
+            not_actions = stmt.get("NotAction", [])
+            if not has_service_action(actions, not_actions, service_prefix):
+                continue
+
+            resources = stmt.get("Resource", [])
+            not_resources = stmt.get("NotResource", [])
+            res_matches = False
+            for res_pattern in (resources or ["*"]):
+                if match_resource_arn(res_pattern, not_resources, resource):
+                    res_matches = True
+                    break
+            if not res_matches:
+                continue
+
+            cond = stmt.get("Condition")
+            if cond:
+                c_eval = evaluate_condition_block(cond, principal or {}, account_id)
+                # If condition deterministically violated, Deny statement does not apply
+                if c_eval["is_violated"]:
+                    continue
+                # If condition has unresolved runtime parameters, it cannot unconditionally deny
+                if c_eval["conditions_unresolved"]:
+                    continue
+
+            return True
+
+    return False
+
 
 
 def evaluate_policy_document_risk(policy_docs: List[Any]) -> Dict[str, Any]:
@@ -715,12 +809,24 @@ def principal_effective_allows_assume_role(
         for stmt in stmts:
             effect = stmt.get("Effect")
             actions = stmt.get("Action", [])
+            not_actions = stmt.get("NotAction", [])
             resources = stmt.get("Resource", [])
+            not_resources = stmt.get("NotResource", [])
 
-            if not any(match_action(a, "sts:assumerole") for a in actions):
+            action_matches = False
+            if actions:
+                action_matches = any(match_action(a, "sts:assumerole") for a in actions)
+            elif not_actions:
+                action_matches = not any(match_action(na, "sts:assumerole") for na in not_actions)
+
+            if not action_matches:
                 continue
 
             # Check if this statement applies to role_arn
+            if not_resources:
+                if any(nr == "*" or (role_arn and fnmatchcase(role_arn.lower(), nr.lower())) for nr in not_resources):
+                    continue
+
             resource_matches = False
             for r in (resources or ["*"]):
                 if r == "*":
@@ -775,19 +881,34 @@ def principal_effective_allows_assume_role(
             for b_s in b_stmts:
                 b_effect = b_s.get("Effect")
                 b_actions = b_s.get("Action", [])
+                b_not_actions = b_s.get("NotAction", [])
                 b_resources = b_s.get("Resource", [])
-                if any(match_action(a, "sts:assumerole") for a in b_actions):
-                    res_match = False
-                    for br in (b_resources or ["*"]):
-                        if br == "*" or (role_arn and fnmatchcase(role_arn.lower(), br.lower())):
-                            res_match = True
-                            break
-                    if res_match:
-                        if b_effect == "Deny":
-                            b_denied = True
-                            break
-                        elif b_effect == "Allow":
-                            b_allowed = True
+                b_not_resources = b_s.get("NotResource", [])
+
+                b_act_match = False
+                if b_actions:
+                    b_act_match = any(match_action(a, "sts:assumerole") for a in b_actions)
+                elif b_not_actions:
+                    b_act_match = not any(match_action(na, "sts:assumerole") for na in b_not_actions)
+
+                if not b_act_match:
+                    continue
+
+                if b_not_resources:
+                    if any(bnr == "*" or (role_arn and fnmatchcase(role_arn.lower(), bnr.lower())) for bnr in b_not_resources):
+                        continue
+
+                res_match = False
+                for br in (b_resources or ["*"]):
+                    if br == "*" or (role_arn and fnmatchcase(role_arn.lower(), br.lower())):
+                        res_match = True
+                        break
+                if res_match:
+                    if b_effect == "Deny":
+                        b_denied = True
+                        break
+                    elif b_effect == "Allow":
+                        b_allowed = True
             if b_denied or not b_allowed:
                 boundary_status = "restricts_assume_role"
             else:

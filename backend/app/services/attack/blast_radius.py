@@ -43,7 +43,16 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
         }
 
     try:
-        descendants = list(nx.descendants(G, node_id))
+        from app.services.attack.constants import MAX_ROLE_HOPS
+
+        try:
+            reachable_lengths = nx.single_source_shortest_path_length(G, node_id, cutoff=MAX_ROLE_HOPS)
+        except Exception:
+            reachable_lengths = {}
+
+        descendants = [nid for nid in reachable_lengths if nid != node_id]
+
+
         
         identities: List[str] = []
         privileges: List[str] = []

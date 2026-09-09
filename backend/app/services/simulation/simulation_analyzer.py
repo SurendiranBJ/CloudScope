@@ -408,6 +408,8 @@ def _compute_blast_metrics(
 
     # 2. Graph topology fallback if inventory was not provided or had no records
     elif G:
+        from app.services.attack.constants import MAX_ROLE_HOPS
+
         all_identities = []
         for nid, data in G.nodes(data=True):
             if data.get("type") in {"User", "Role"}:
@@ -415,13 +417,13 @@ def _compute_blast_metrics(
 
         for ident in all_identities:
             try:
-                descendants = nx.descendants(G, ident)
+                paths_to_nodes = nx.single_source_shortest_path_length(G, ident, cutoff=MAX_ROLE_HOPS)
             except Exception:
-                descendants = set()
+                paths_to_nodes = {}
 
             ident_has_resource = False
-            for d in descendants:
-                if not G.has_node(d):
+            for d in paths_to_nodes:
+                if d == ident or not G.has_node(d):
                     continue
                 d_data = G.nodes[d]
                 d_type = d_data.get("type", "Resource")
@@ -444,7 +446,10 @@ def _compute_blast_metrics(
                             critical_resources.add(d)
 
             if ident_has_resource:
-                affected_identities.add(ident)
+                ident_label = G.nodes[ident].get("label", ident)
+                affected_identities.add(ident_label)
+
+
 
     # Blast score based on unique reachable assets, sensitive/critical weighting, and affected identities
     # Deterministic 0-100 score; no probability, no likelihood, no randomness

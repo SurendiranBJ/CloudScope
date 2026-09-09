@@ -7,7 +7,7 @@ GET  /api/v1/relationships/{entity_id}  — relationships for a specific entity
 Returns EXACT relationship labels from the backend model:
     MEMBER_OF, HAS_POLICY, CAN_ASSUME, ALLOWS, TRUSTS, ATTACHED_TO, EXECUTES_WITH
 
-Never invents labels. Uses UNKNOWN when label cannot be determined.
+Never invents labels. All relationship labels are exact backend types.
 """
 
 import logging
