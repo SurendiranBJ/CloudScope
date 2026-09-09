@@ -118,14 +118,21 @@ def test_evaluate_assume_role_trust_wildcard():
             }
         ]
     }
-    users = [{"id": "u1", "name": "alice", "arn": "arn:aws:iam::123:user/alice"}]
+    users = [{"id": "u1", "name": "alice", "arn": "arn:aws:iam::123:user/alice", "policies": []}]
     roles = [
         {"name": "AdminRole", "arn": "arn:aws:iam::123:role/AdminRole"},
-        {"name": "DevRole", "arn": "arn:aws:iam::123:role/DevRole"}
+        {"name": "DevRole", "arn": "arn:aws:iam::123:role/DevRole", "attachedPolicies": ["AssumePolicy"]}
     ]
-    result = evaluate_assume_role_trust(trust_doc, "AdminRole", users, roles, "123")
-    assert len(result["users"]) == 1
-    assert result["users"][0]["name"] == "alice"
+    policy_doc_map = {
+        "AssumePolicy": json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
+        })
+    }
+    # alice has no identity policy allowing sts:AssumeRole, so wildcard trust CANNOT authorize her
+    result = evaluate_assume_role_trust(trust_doc, "AdminRole", users, roles, "123", policy_doc_map=policy_doc_map)
+    assert len(result["users"]) == 0, "Unprivileged user must not receive AssumeRole under wildcard trust"
+    # DevRole has AssumePolicy, so it is authorized
     assert len(result["roles"]) == 1
     assert result["roles"][0]["name"] == "DevRole"
 

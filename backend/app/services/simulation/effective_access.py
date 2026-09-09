@@ -105,7 +105,11 @@ def compute_effective_access(
                     policy_arns=[parn] if parn else [],
                 ))
 
-    # ── Chain 3: Users via CAN_ASSUME → Role ─────────────────────────────────
+    # ── Chain 3: Multi-hop role assumptions (User → Role* and Role → Role*) ─
+    # First, build direct CAN_ASSUME adjacency maps using definitive verified trust
+    user_direct_roles: Dict[str, List[str]] = {}  # uname -> [rname]
+    role_direct_roles: Dict[str, List[str]] = {}  # rname -> [rname]
+
     for role in inventory.roles:
         rname = role["name"]
         trust_ev = evaluate_assume_role_trust_with_evidence(
@@ -119,50 +123,107 @@ def compute_effective_access(
             all_groups=inventory.groups,
         )
 
-        role_docs = role_policy_map.get(rname, [])  # [(pname, doc, parn)]
-
         for entry in trust_ev.get("users", []):
             if entry.get("evidence", {}).get("trust_status") != "definitive":
                 continue
             if not entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             trusted_user = entry["principal"]
-            uname = trusted_user["name"]
-            for pname, doc, parn in role_docs:
-                matched = evaluate_policy_allows_resources(doc, all_resources)
-                for res in matched:
-                    result.append(_build_record(
-                        identity_id=_user_id(uname),
-                        identity_name=uname,
-                        identity_type="User",
-                        resource=res,
-                        chain=[uname, rname, pname, res.get("name", res.get("id", ""))],
-                        rel_chain=["CAN_ASSUME", "HAS_POLICY", "ALLOWS"],
-                        policy_names=[pname],
-                        policy_arns=[parn] if parn else [],
-                    ))
+            user_direct_roles.setdefault(trusted_user["name"], []).append(rname)
 
-        # Also role→role trust chains (one level)
         for entry in trust_ev.get("roles", []):
             if entry.get("evidence", {}).get("trust_status") != "definitive":
                 continue
             if not entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             trusted_role = entry["principal"]
-            tr_name = trusted_role["name"]
+            role_direct_roles.setdefault(trusted_role["name"], []).append(rname)
+
+    MAX_ROLE_HOPS = 5
+
+    # 3a. Users assuming roles (multi-hop BFS)
+    for user in inventory.users:
+        uname = user["name"]
+        initial_roles = user_direct_roles.get(uname, [])
+        if not initial_roles:
+            continue
+
+        # Queue contains: (current_role_name, [role1, role2, ...])
+        queue: List[Tuple[str, List[str]]] = [(r, [r]) for r in initial_roles]
+        visited_chains = set()
+
+        while queue:
+            curr_role, role_chain = queue.pop(0)
+            chain_key = tuple(role_chain)
+            if chain_key in visited_chains:
+                continue
+            visited_chains.add(chain_key)
+
+            # Evaluate effective access granted by curr_role
+            role_docs = role_policy_map.get(curr_role, [])
             for pname, doc, parn in role_docs:
                 matched = evaluate_policy_allows_resources(doc, all_resources)
                 for res in matched:
+                    # Provenance: User -> RoleA -> RoleB -> Policy -> Resource
+                    full_node_path = [uname] + role_chain + [pname, res.get("name", res.get("id", ""))]
+                    rel_chain = (["CAN_ASSUME"] * len(role_chain)) + ["HAS_POLICY", "ALLOWS"]
                     result.append(_build_record(
-                        identity_id=_role_id(tr_name),
-                        identity_name=tr_name,
-                        identity_type="Role",
+                        identity_id=_user_id(uname),
+                        identity_name=uname,
+                        identity_type="User",
                         resource=res,
-                        chain=[tr_name, rname, pname, res.get("name", res.get("id", ""))],
-                        rel_chain=["CAN_ASSUME", "HAS_POLICY", "ALLOWS"],
+                        chain=full_node_path,
+                        rel_chain=rel_chain,
                         policy_names=[pname],
                         policy_arns=[parn] if parn else [],
                     ))
+
+            # Expand next hops if depth < MAX_ROLE_HOPS
+            if len(role_chain) < MAX_ROLE_HOPS:
+                for next_role in role_direct_roles.get(curr_role, []):
+                    # Cycle protection: role cannot reappear in the same assumption chain
+                    if next_role not in role_chain:
+                        queue.append((next_role, role_chain + [next_role]))
+
+    # 3b. Roles assuming other roles (multi-hop BFS)
+    for role in inventory.roles:
+        rname = role["name"]
+        initial_roles = role_direct_roles.get(rname, [])
+        if not initial_roles:
+            continue
+
+        queue = [(r, [r]) for r in initial_roles]
+        visited_chains = set()
+
+        while queue:
+            curr_role, role_chain = queue.pop(0)
+            chain_key = tuple(role_chain)
+            if chain_key in visited_chains:
+                continue
+            visited_chains.add(chain_key)
+
+            role_docs = role_policy_map.get(curr_role, [])
+            for pname, doc, parn in role_docs:
+                matched = evaluate_policy_allows_resources(doc, all_resources)
+                for res in matched:
+                    # Provenance: RoleA -> RoleB -> RoleC -> Policy -> Resource
+                    full_node_path = [rname] + role_chain + [pname, res.get("name", res.get("id", ""))]
+                    rel_chain = (["CAN_ASSUME"] * len(role_chain)) + ["HAS_POLICY", "ALLOWS"]
+                    result.append(_build_record(
+                        identity_id=_role_id(rname),
+                        identity_name=rname,
+                        identity_type="Role",
+                        resource=res,
+                        chain=full_node_path,
+                        rel_chain=rel_chain,
+                        policy_names=[pname],
+                        policy_arns=[parn] if parn else [],
+                    ))
+
+            if len(role_chain) < MAX_ROLE_HOPS:
+                for next_role in role_direct_roles.get(curr_role, []):
+                    if next_role not in role_chain and next_role != rname:
+                        queue.append((next_role, role_chain + [next_role]))
 
     # ── Chain 4: Roles directly ───────────────────────────────────────────────
     for role in inventory.roles:

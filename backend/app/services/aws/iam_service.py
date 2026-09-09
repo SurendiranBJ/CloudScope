@@ -127,6 +127,9 @@ def collect_users() -> list:
                 create_date = u.get('CreateDate')
                 status = "active" if password_last_used or last_active != "Never" else "inactive"
 
+                pb = u.get('PermissionsBoundary')
+                pb_arn = pb.get('PermissionsBoundaryArn') if isinstance(pb, dict) else (pb if isinstance(pb, str) else None)
+
                 users_data.append({
                     "id": user_id,
                     "name": username,
@@ -136,6 +139,7 @@ def collect_users() -> list:
                     "attachedPolicyArns": policy_arns,  # name -> ARN, for AWS-managed doc resolution
                     "inlinePolicyDocuments": user_inline_docs,
                     "groups": group_names,
+                    "permissionsBoundary": pb_arn,
                     "riskScore": 0,  # Calculated downstream by risk_engine
                     "mfaEnabled": mfa_enabled,
                     "lastActive": last_active,
@@ -250,6 +254,9 @@ def collect_roles() -> list:
                 except Exception:
                     pass
 
+                pb = r.get('PermissionsBoundary')
+                pb_arn = pb.get('PermissionsBoundaryArn') if isinstance(pb, dict) else (pb if isinstance(pb, str) else None)
+
                 roles_data.append({
                     "name": role_name,
                     "arn": arn,
@@ -260,6 +267,7 @@ def collect_roles() -> list:
                     "attachedPolicies": attached_policy_names,
                     "attachedPolicyArns": attached_policy_arns,  # name -> ARN, for AWS-managed doc resolution
                     "inlinePolicyDocuments": role_inline_docs,
+                    "permissionsBoundary": pb_arn,
                     "type": "Role",
                     "region": "global",
                     "status": "active",

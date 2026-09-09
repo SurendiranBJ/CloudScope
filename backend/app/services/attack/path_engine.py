@@ -60,12 +60,39 @@ def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
 
 
 def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) -> str:
-    """Classify the primary security vector type for this attack path."""
-    target_node = G.nodes[path[-1]]
-    target_type = target_node.get('type', '')
+    """Classify the primary security vector type for this attack path based on evidence.
 
-    if 'CAN_ASSUME' in ordered_rels or 'ASSUMED_ROLE' in ordered_rels:
-        if target_type == 'Role':
+    Privilege escalation is only classified when the destination role or assumed role
+    genuinely increases privileges over the source.
+    """
+    source_node = G.nodes[path[0]]
+    target_node = G.nodes[path[-1]]
+    source_type = source_node.get('type', '')
+    target_type = target_node.get('type', '')
+    source_risk = source_node.get('riskScore', 0)
+    target_risk = target_node.get('riskScore', 0)
+
+    # Check if path traverses AssumeRole
+    has_assume_role = 'CAN_ASSUME' in ordered_rels or 'ASSUMED_ROLE' in ordered_rels
+
+    if target_type == 'Role':
+        if has_assume_role:
+            # Genuine privilege increase: destination role has high risk or materially higher risk than source
+            if target_risk >= 60 or (target_risk - source_risk) >= 15:
+                return "privilege_escalation"
+            return "lateral_movement"
+        return "privilege_escalation" if target_risk >= 60 else "lateral_movement"
+
+    if has_assume_role:
+        # Reaching resources via AssumeRole
+        if target_type in ['Secrets', 'Secret', 'RDS']:
+            return "sensitive_resource_access"
+        if target_type == 'S3':
+            target_details = target_node.get('details', {})
+            if not target_details.get('public_blocked', True):
+                return "exposed_resource_path"
+            return "sensitive_resource_access"
+        if target_risk >= 70 or (target_risk - source_risk) >= 20:
             return "privilege_escalation"
         return "lateral_movement"
 

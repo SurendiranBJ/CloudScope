@@ -535,6 +535,31 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     {"l_id": l_id, "r_id": r_id}
                 )
 
+        # 14. Configuration Node Reconciliation: prune stale AWS inventory nodes
+        # Strictly preserves historical CloudTrail (:ActivityEvent) nodes and edges
+        node_type_specs = [
+            ("User", [get_node_id("User", u['name']) for u in inventory.users]),
+            ("Group", [get_node_id("Group", g['name']) for g in inventory.groups]),
+            ("Role", [get_node_id("Role", r['name']) for r in inventory.roles]),
+            ("Policy", [get_node_id("Policy", p['name']) for p in inventory.policies]),
+            ("S3", [get_node_id("S3", s['name']) for s in inventory.s3]),
+            ("EC2", [get_node_id("EC2", e['name']) for e in inventory.ec2]),
+            ("Lambda", [get_node_id("Lambda", l['name']) for l in inventory.lambdas]),
+            ("Secrets", [get_node_id("Secrets", s['name']) for s in inventory.secrets]),
+            ("RDS", [get_node_id("RDS", r['name']) for r in inventory.rds]),
+            ("DynamoDB", [get_node_id("DynamoDB", d['name']) for d in inventory.dynamodb]),
+        ]
+
+        for label, valid_ids in node_type_specs:
+            execute_write(
+                f"""
+                MATCH (n:{label})
+                WHERE NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"valid_ids": valid_ids}
+            )
+
         logger.info("Neo4j idempotent synchronization completed successfully.")
     except Exception as e:
         logger.error(f"Error synchronizing Neo4j graph: {e}")

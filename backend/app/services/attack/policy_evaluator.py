@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from fnmatch import fnmatchcase
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple, Optional
 from app.services.risk.risk_constants import (
     WEIGHTS,
     DANGEROUS_ESCALATION_ACTIONS,
@@ -395,108 +395,44 @@ def evaluate_assume_role_trust(
     role_name: str,
     all_users: List[Dict[str, Any]],
     all_roles: List[Dict[str, Any]],
-    account_id: str
+    account_id: str,
+    policy_doc_map: Optional[Dict[str, str]] = None,
+    all_groups: Any = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Parse an AssumeRole trust policy to identify which Users and Roles can assume this Role."""
-    result: Dict[str, List[Dict[str, Any]]] = {"users": [], "roles": []}
-    statements = parse_policy_document(trust_policy_input)
-    if not statements:
-        return result
+    """Compatibility wrapper around evaluate_assume_role_trust_with_evidence.
 
-    user_name_map = {u["name"]: u for u in all_users}
-    user_arn_map = {u["arn"]: u for u in all_users}
-    role_name_map = {r["name"]: r for r in all_roles if r["name"] != role_name}
-    role_arn_map = {r["arn"]: r for r in all_roles if r["name"] != role_name}
+    DEPRECATED: Prefer evaluate_assume_role_trust_with_evidence.
+    Delegates completely to the authoritative evaluator.
+    Returns only principals with verified call permissions and definitive trust.
+    NEVER independently expands wildcard Principal: '*' to unauthorized callers.
+    """
+    role_arn = f"arn:aws:iam::{account_id}:role/{role_name}" if account_id else f"role/{role_name}"
+    for r in all_roles:
+        if r.get("name") == role_name and r.get("arn"):
+            role_arn = r["arn"]
+            break
 
-    matched_user_ids: Set[str] = set()
-    matched_role_names: Set[str] = set()
-
-    for stmt in statements:
-        if stmt["Effect"] != "Allow":
-            continue
-
-        actions = [a.lower() for a in stmt["Action"]]
-        if not any(match_action(a, "sts:assumerole") for a in actions):
-            continue
-
-        principal = stmt.get("Principal", {})
-        if not principal:
-            continue
-
-        if principal == "*" or (isinstance(principal, dict) and principal.get("AWS") == "*"):
-            for u in all_users:
-                u_id = u.get("id") or u.get("name")
-                if u_id not in matched_user_ids:
-                    result["users"].append(u)
-                    matched_user_ids.add(u_id)
-            for r in all_roles:
-                if r["name"] != role_name and r["name"] not in matched_role_names:
-                    result["roles"].append(r)
-                    matched_role_names.add(r["name"])
-            continue
-
-        aws_principals = principal.get("AWS", []) if isinstance(principal, dict) else []
-        if isinstance(aws_principals, str):
-            aws_principals = [aws_principals]
-        elif not isinstance(aws_principals, list):
-            aws_principals = []
-
-        for p in aws_principals:
-            p_str = str(p).strip()
-
-            if p_str == "*":
-                for u in all_users:
-                    u_id = u.get("id") or u.get("name")
-                    if u_id not in matched_user_ids:
-                        result["users"].append(u)
-                        matched_user_ids.add(u_id)
-                for r in all_roles:
-                    if r["name"] != role_name and r["name"] not in matched_role_names:
-                        result["roles"].append(r)
-                        matched_role_names.add(r["name"])
-                continue
-
-            # Account root ARN or Account ID
-            if p_str.endswith(":root") or (account_id and p_str == account_id):
-                for u in all_users:
-                    u_id = u.get("id") or u.get("name")
-                    if u_id not in matched_user_ids:
-                        result["users"].append(u)
-                        matched_user_ids.add(u_id)
-                for r in all_roles:
-                    if r["name"] != role_name and r["name"] not in matched_role_names:
-                        result["roles"].append(r)
-                        matched_role_names.add(r["name"])
-                continue
-
-            # Specific Role ARN
-            if ":role/" in p_str:
-                r_name = p_str.split("/")[-1]
-                if r_name in role_name_map and r_name not in matched_role_names:
-                    result["roles"].append(role_name_map[r_name])
-                    matched_role_names.add(r_name)
-                elif p_str in role_arn_map and role_arn_map[p_str]["name"] not in matched_role_names:
-                    matched_r = role_arn_map[p_str]
-                    result["roles"].append(matched_r)
-                    matched_role_names.add(matched_r["name"])
-
-            # Specific User ARN
-            elif ":user/" in p_str:
-                u_name = p_str.split("/")[-1]
-                if u_name in user_name_map:
-                    u_obj = user_name_map[u_name]
-                    u_id = u_obj.get("id") or u_obj.get("name")
-                    if u_id not in matched_user_ids:
-                        result["users"].append(u_obj)
-                        matched_user_ids.add(u_id)
-                elif p_str in user_arn_map:
-                    u_obj = user_arn_map[p_str]
-                    u_id = u_obj.get("id") or u_obj.get("name")
-                    if u_id not in matched_user_ids:
-                        result["users"].append(u_obj)
-                        matched_user_ids.add(u_id)
-
-    return result
+    ev_res = evaluate_assume_role_trust_with_evidence(
+        trust_policy_input=trust_policy_input,
+        role_name=role_name,
+        role_arn=role_arn,
+        all_users=all_users,
+        all_roles=all_roles,
+        account_id=account_id,
+        policy_doc_map=policy_doc_map or {},
+        all_groups=all_groups,
+    )
+    valid_users = [
+        u["principal"] for u in ev_res.get("users", [])
+        if u.get("evidence", {}).get("trust_status") == "definitive"
+        and u.get("evidence", {}).get("call_permission_verified")
+    ]
+    valid_roles = [
+        r["principal"] for r in ev_res.get("roles", [])
+        if r.get("evidence", {}).get("trust_status") == "definitive"
+        and r.get("evidence", {}).get("call_permission_verified")
+    ]
+    return {"users": valid_users, "roles": valid_roles}
 
 
 # ─── Authoritative Trust + Call-Permission Evaluator ────────────────────────
@@ -599,100 +535,24 @@ def get_effective_identity_policy_documents(
     return all_docs
 
 
-def principal_effective_allows_assume_role(
-    principal: Dict[str, Any],
-    role_arn: str,
-    policy_doc_map: Dict[str, str],
-    all_groups: Any = None,
-) -> Tuple[bool, bool]:
-    """Determine if a principal's effective policies grant sts:AssumeRole.
+class AssumeRolePermResult(tuple):
+    """Result tuple supporting (allowed, explicit_deny) unpacking with extended authorization evidence."""
+    def __new__(cls, allowed: bool, explicit_deny: bool, is_conditional: bool = False, evidence: Optional[Dict[str, Any]] = None):
+        return super().__new__(cls, (allowed, explicit_deny))
 
-    Evaluates:
-    - Direct policies + group-inherited policies.
-    - Explicit Deny precedence: If ANY statement Denies sts:AssumeRole for role_arn,
-      immediately returns (False, True).
-    - If at least one Allow matches role_arn (or Resource: '*') and NO Deny matches,
-      returns (True, False).
-    - Otherwise returns (False, False).
-
-    Returns:
-        (allowed: bool, explicit_deny: bool)
-    """
-    docs = get_effective_identity_policy_documents(principal, policy_doc_map, all_groups)
-    if not docs:
-        return False, False
-
-    has_allow = False
-
-    for doc in docs:
-        stmts = parse_policy_document(doc)
-        for stmt in stmts:
-            effect = stmt.get("Effect")
-            actions = stmt.get("Action", [])
-            resources = stmt.get("Resource", [])
-
-            if not any(match_action(a, "sts:assumerole") for a in actions):
-                continue
-
-            # Check if this statement applies to role_arn
-            resource_matches = False
-            for r in (resources or ["*"]):
-                if r == "*":
-                    resource_matches = True
-                    break
-                if role_arn and fnmatchcase(role_arn.lower(), r.lower()):
-                    resource_matches = True
-                    break
-                if role_arn and r.lower() == role_arn.lower():
-                    resource_matches = True
-                    break
-
-            if not resource_matches:
-                continue
-
-            if effect == "Deny":
-                # Explicit Deny strictly overrides any Allow
-                return False, True
-            elif effect == "Allow":
-                has_allow = True
-
-    return has_allow, False
+    def __init__(self, allowed: bool, explicit_deny: bool, is_conditional: bool = False, evidence: Optional[Dict[str, Any]] = None):
+        self.allowed = allowed
+        self.explicit_deny = explicit_deny
+        self.is_conditional = is_conditional
+        self.evidence = evidence or {}
 
 
-def _principal_has_assume_role_permission(
-    principal: Dict[str, Any],
-    role_arn: str,
-    policy_doc_map: Dict[str, str],
-    all_groups: Any = None,
-) -> bool:
-    """Wrapper for backward compatibility."""
-    allowed, explicit_deny = principal_effective_allows_assume_role(
-        principal, role_arn, policy_doc_map, all_groups
-    )
-    return allowed and not explicit_deny
-
-
-def _principal_has_explicit_deny_on_assume(
-    principal: Dict[str, Any],
-    role_arn: str,
-    policy_doc_map: Dict[str, str],
-    all_groups: Any = None,
-) -> bool:
-    """Wrapper for backward compatibility."""
-    _, explicit_deny = principal_effective_allows_assume_role(
-        principal, role_arn, policy_doc_map, all_groups
-    )
-    return explicit_deny
-
-
-# ─── Trust Policy Condition Evaluator ────────────────────────────────────────
-
-def evaluate_trust_statement_condition(
+def evaluate_condition_block(
     condition_block: Any,
-    caller: Dict[str, Any],
-    account_id: str,
+    principal: Dict[str, Any],
+    account_id: str = "",
 ) -> Dict[str, Any]:
-    """Evaluate a trust policy statement's Condition block against known inventory context.
+    """Evaluate an IAM Condition block (from trust policy or identity policy) against inventory context.
 
     Returns:
         {
@@ -715,7 +575,7 @@ def evaluate_trust_statement_condition(
         res["is_fully_satisfied"] = True
         return res
 
-    caller_arn = str(caller.get("arn") or "").strip().lower()
+    caller_arn = str(principal.get("arn") or "").strip().lower()
     caller_account = str(account_id or "").strip().lower()
     if not caller_account and ":" in caller_arn:
         parts = caller_arn.split(":")
@@ -807,6 +667,230 @@ def evaluate_trust_statement_condition(
     return res
 
 
+evaluate_trust_statement_condition = evaluate_condition_block
+
+
+def principal_effective_allows_assume_role(
+    principal: Dict[str, Any],
+    role_arn: str,
+    policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
+    account_id: str = "",
+) -> AssumeRolePermResult:
+    """Determine if a principal's effective identity policies grant sts:AssumeRole.
+
+    Evaluates:
+    - Direct attached managed + direct inline + group attached + group inline policies.
+    - Identity statement Condition blocks (MFA, SourceIp, ExternalId, PrincipalArn, etc.).
+    - Permissions boundary (if attached to principal) as limiting policy.
+    - Explicit Deny precedence across direct, group, and boundary policies.
+
+    Returns:
+        AssumeRolePermResult (subclass of tuple, unpacks as (allowed: bool, explicit_deny: bool)).
+        Extended attributes:
+            result.is_conditional: bool
+            result.evidence: Dict[str, Any]
+    """
+    docs = get_effective_identity_policy_documents(principal, policy_doc_map, all_groups)
+    if not docs:
+        return AssumeRolePermResult(
+            False, False, is_conditional=False,
+            evidence={
+                "identity_policy_allow": False,
+                "explicit_deny": False,
+                "boundary_status": "none",
+                "organization_policy_status": "not_collected",
+                "conditions_status": "none",
+                "authorization_status": "DENIED",
+            }
+        )
+
+    has_definitive_allow = False
+    has_conditional_allow = False
+    unresolved_conditions: List[str] = []
+    satisfied_conditions: List[str] = []
+
+    for doc in docs:
+        stmts = parse_policy_document(doc)
+        for stmt in stmts:
+            effect = stmt.get("Effect")
+            actions = stmt.get("Action", [])
+            resources = stmt.get("Resource", [])
+
+            if not any(match_action(a, "sts:assumerole") for a in actions):
+                continue
+
+            # Check if this statement applies to role_arn
+            resource_matches = False
+            for r in (resources or ["*"]):
+                if r == "*":
+                    resource_matches = True
+                    break
+                if role_arn and fnmatchcase(role_arn.lower(), r.lower()):
+                    resource_matches = True
+                    break
+                if role_arn and r.lower() == role_arn.lower():
+                    resource_matches = True
+                    break
+
+            if not resource_matches:
+                continue
+
+            # Evaluate statement condition if present
+            c_eval = evaluate_condition_block(stmt.get("Condition"), principal, account_id)
+            if c_eval["is_violated"]:
+                continue  # Condition violated, statement does not apply
+
+            if effect == "Deny":
+                # Explicit Deny strictly overrides any Allow
+                return AssumeRolePermResult(
+                    False, True, is_conditional=False,
+                    evidence={
+                        "identity_policy_allow": False,
+                        "explicit_deny": True,
+                        "boundary_status": "none",
+                        "organization_policy_status": "not_collected",
+                        "conditions_status": "satisfied" if c_eval.get("is_fully_satisfied") else "none",
+                        "authorization_status": "DENIED",
+                    }
+                )
+            elif effect == "Allow":
+                if c_eval.get("conditions_unresolved"):
+                    has_conditional_allow = True
+                    unresolved_conditions.extend(c_eval["conditions_unresolved"])
+                else:
+                    has_definitive_allow = True
+                    satisfied_conditions.extend(c_eval.get("conditions_satisfied", []))
+
+    # Evaluate Permissions Boundary (if attached to principal)
+    boundary_arn = principal.get("permissionsBoundary")
+    boundary_status = "none"
+    if boundary_arn:
+        clean_bname = boundary_arn.split("/")[-1] if "/" in boundary_arn else boundary_arn
+        b_doc = policy_doc_map.get(boundary_arn) or policy_doc_map.get(clean_bname)
+        if b_doc:
+            b_stmts = parse_policy_document(b_doc)
+            b_allowed = False
+            b_denied = False
+            for b_s in b_stmts:
+                b_effect = b_s.get("Effect")
+                b_actions = b_s.get("Action", [])
+                b_resources = b_s.get("Resource", [])
+                if any(match_action(a, "sts:assumerole") for a in b_actions):
+                    res_match = False
+                    for br in (b_resources or ["*"]):
+                        if br == "*" or (role_arn and fnmatchcase(role_arn.lower(), br.lower())):
+                            res_match = True
+                            break
+                    if res_match:
+                        if b_effect == "Deny":
+                            b_denied = True
+                            break
+                        elif b_effect == "Allow":
+                            b_allowed = True
+            if b_denied or not b_allowed:
+                boundary_status = "restricts_assume_role"
+            else:
+                boundary_status = "satisfied"
+        else:
+            boundary_status = "unresolved"
+
+    # Boundary restricts AssumeRole -> Effective Deny
+    if boundary_status == "restricts_assume_role":
+        return AssumeRolePermResult(
+            False, False, is_conditional=False,
+            evidence={
+                "identity_policy_allow": has_definitive_allow or has_conditional_allow,
+                "explicit_deny": False,
+                "boundary_status": "restricts_assume_role",
+                "organization_policy_status": "not_collected",
+                "conditions_status": "none",
+                "authorization_status": "DENIED",
+            }
+        )
+
+    # Boundary document unresolved -> Conditional
+    if boundary_status == "unresolved":
+        return AssumeRolePermResult(
+            False, False, is_conditional=True,
+            evidence={
+                "identity_policy_allow": has_definitive_allow or has_conditional_allow,
+                "explicit_deny": False,
+                "boundary_status": "unresolved",
+                "organization_policy_status": "not_collected",
+                "conditions_status": "conditional",
+                "conditions_unresolved": ["permissions_boundary_document_unresolved"],
+                "authorization_status": "CONDITIONAL",
+            }
+        )
+
+    if has_definitive_allow:
+        return AssumeRolePermResult(
+            True, False, is_conditional=False,
+            evidence={
+                "identity_policy_allow": True,
+                "explicit_deny": False,
+                "boundary_status": boundary_status,
+                "organization_policy_status": "not_collected",
+                "conditions_status": "satisfied" if satisfied_conditions else "none",
+                "conditions_satisfied": satisfied_conditions,
+                "authorization_status": "DEFINITIVE_ALLOW",
+            }
+        )
+
+    if has_conditional_allow:
+        return AssumeRolePermResult(
+            False, False, is_conditional=True,
+            evidence={
+                "identity_policy_allow": True,
+                "explicit_deny": False,
+                "boundary_status": boundary_status,
+                "organization_policy_status": "not_collected",
+                "conditions_status": "conditional",
+                "conditions_unresolved": unresolved_conditions,
+                "authorization_status": "CONDITIONAL",
+            }
+        )
+
+    return AssumeRolePermResult(
+        False, False, is_conditional=False,
+        evidence={
+            "identity_policy_allow": False,
+            "explicit_deny": False,
+            "boundary_status": boundary_status,
+            "organization_policy_status": "not_collected",
+            "conditions_status": "none",
+            "authorization_status": "DENIED",
+        }
+    )
+
+
+def _principal_has_assume_role_permission(
+    principal: Dict[str, Any],
+    role_arn: str,
+    policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
+) -> bool:
+    """Wrapper for backward compatibility."""
+    res = principal_effective_allows_assume_role(
+        principal, role_arn, policy_doc_map, all_groups
+    )
+    return res[0] and not res[1]
+
+
+def _principal_has_explicit_deny_on_assume(
+    principal: Dict[str, Any],
+    role_arn: str,
+    policy_doc_map: Dict[str, str],
+    all_groups: Any = None,
+) -> bool:
+    """Wrapper for backward compatibility."""
+    res = principal_effective_allows_assume_role(
+        principal, role_arn, policy_doc_map, all_groups
+    )
+    return res[1]
+
+
 # ─── Authoritative Trust + Call-Permission Evaluator ────────────────────────
 
 def evaluate_assume_role_trust_with_evidence(
@@ -837,11 +921,16 @@ def evaluate_assume_role_trust_with_evidence(
                         "trust_principal_type": "exact_arn" | "wildcard" | "account_root",
                         "trust_status": "definitive" | "conditional",
                         "trust_conditional": bool,
+                        "authorization_status": "DEFINITIVE_ALLOW" | "CONDITIONAL" | "DENIED" | "UNSUPPORTED",
+                        "identity_policy_allow": bool,
+                        "explicit_deny": bool,
+                        "boundary_status": "none" | "satisfied" | "restricts_assume_role" | "unresolved",
+                        "organization_policy_status": "not_collected",
+                        "conditions_status": "satisfied" | "conditional" | "violated" | "none",
                         "conditions_evaluated": List[str],
                         "conditions_satisfied": List[str],
                         "conditions_unresolved": List[str],
                         "call_permission_verified": bool,
-                        "explicit_deny": False,
                     }
                 },
                 ...
@@ -869,8 +958,8 @@ def evaluate_assume_role_trust_with_evidence(
     role_name_map = {r["name"]: r for r in all_roles if r["name"] != role_name}
     role_arn_map = {r["arn"]: r for r in all_roles if r["name"] != role_name and r.get("arn")}
 
-    added_user_ids: Set[str] = set()
-    added_role_names: Set[str] = set()
+    added_user_ids: Dict[str, Dict[str, Any]] = {}
+    added_role_names: Dict[str, Dict[str, Any]] = {}
 
     # Pre-check for trust-policy level explicit Deny statements
     trust_explicit_denies: List[Dict[str, Any]] = [
@@ -885,13 +974,11 @@ def evaluate_assume_role_trust_with_evidence(
         for dstmt in trust_explicit_denies:
             d_princ = dstmt.get("Principal", {})
             d_cond = dstmt.get("Condition", {})
-            # Check condition on deny statement
             if d_cond:
-                c_eval = evaluate_trust_statement_condition(d_cond, caller, account_id)
+                c_eval = evaluate_condition_block(d_cond, caller, account_id)
                 if c_eval["is_violated"]:
                     continue  # Condition violated, Deny does not apply
 
-            # Check principal on deny statement
             if d_princ == "*":
                 return True
             if isinstance(d_princ, dict):
@@ -906,28 +993,39 @@ def evaluate_assume_role_trust_with_evidence(
 
     def _process_user(u_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool):
         uid = u_obj.get("id") or u_obj.get("name")
-        if uid in added_user_ids:
-            return
 
         # 1. Check trust-policy explicit deny
         if _is_denied_by_trust_policy(u_obj):
             return
 
-        # 2. Check identity-policy permissions & explicit deny (including group inheritance)
-        call_perm, explicit_deny = principal_effective_allows_assume_role(
-            u_obj, role_arn, policy_doc_map, all_groups
+        # 2. Check identity-policy permissions, conditions, and boundary
+        perm_res = principal_effective_allows_assume_role(
+            u_obj, role_arn, policy_doc_map, all_groups, account_id=account_id
         )
+        call_perm = perm_res.allowed
+        explicit_deny = perm_res.explicit_deny
+        is_conditional_perm = perm_res.is_conditional
+        perm_ev = perm_res.evidence
+
         if explicit_deny:
             return
-
-        # Exact ARN trust implies call permission; wildcard/root requires identity-policy grant
-        if requires_call_perm_check and not call_perm:
+        if perm_ev.get("boundary_status") == "restricts_assume_role":
             return
 
-        # 3. Check trust condition resolution
-        has_unresolved = len(cond_eval.get("conditions_unresolved", [])) > 0
+        if requires_call_perm_check and not call_perm and not is_conditional_perm:
+            return
+
+        # 3. Check trust condition resolution & identity condition resolution
+        all_unresolved = cond_eval.get("conditions_unresolved", []) + perm_ev.get("conditions_unresolved", [])
+        all_evaluated = cond_eval.get("conditions_evaluated", []) + perm_ev.get("conditions_unresolved", [])
+        all_satisfied = cond_eval.get("conditions_satisfied", []) + perm_ev.get("conditions_satisfied", [])
+        boundary_unresolved = perm_ev.get("boundary_status") == "unresolved"
+
+        has_unresolved = len(all_unresolved) > 0 or is_conditional_perm or boundary_unresolved
         trust_status = "conditional" if has_unresolved else "definitive"
-        trust_conditional = bool(cond_eval.get("conditions_evaluated", []))
+        trust_conditional = bool(all_evaluated)
+        auth_status = "CONDITIONAL" if has_unresolved else "DEFINITIVE_ALLOW"
+        call_verified = (call_perm if requires_call_perm_check else True) and not has_unresolved
 
         entry = {
             "principal": u_obj,
@@ -935,39 +1033,65 @@ def evaluate_assume_role_trust_with_evidence(
                 "trust_principal_type": trust_type,
                 "trust_status": trust_status,
                 "trust_conditional": trust_conditional,
-                "conditions_evaluated": cond_eval.get("conditions_evaluated", []),
-                "conditions_satisfied": cond_eval.get("conditions_satisfied", []),
-                "conditions_unresolved": cond_eval.get("conditions_unresolved", []),
-                "call_permission_verified": True,
+                "authorization_status": auth_status,
+                "identity_policy_allow": call_perm or is_conditional_perm or (trust_type == "exact_arn"),
                 "explicit_deny": False,
+                "boundary_status": perm_ev.get("boundary_status", "none"),
+                "organization_policy_status": "not_collected",
+                "conditions_status": "conditional" if (all_unresolved or boundary_unresolved) else ("satisfied" if all_satisfied else "none"),
+                "conditions_evaluated": all_evaluated,
+                "conditions_satisfied": all_satisfied,
+                "conditions_unresolved": all_unresolved,
+                "call_permission_verified": call_verified,
             },
         }
+
+        # Handle promotion from conditional to definitive if multiple statements apply
+        if uid in added_user_ids:
+            existing = added_user_ids[uid]
+            if existing["evidence"]["trust_status"] == "conditional" and trust_status == "definitive":
+                existing["evidence"].update(entry["evidence"])
+                if existing in result["conditional_trusts"]:
+                    result["conditional_trusts"].remove(existing)
+            return
 
         result["users"].append(entry)
         if trust_status == "conditional":
             result["conditional_trusts"].append(entry)
-        added_user_ids.add(uid)
+        added_user_ids[uid] = entry
 
     def _process_role(r_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool):
         rn = r_obj["name"]
-        if rn in added_role_names:
-            return
 
         if _is_denied_by_trust_policy(r_obj):
             return
 
-        call_perm, explicit_deny = principal_effective_allows_assume_role(
-            r_obj, role_arn, policy_doc_map, all_groups
+        perm_res = principal_effective_allows_assume_role(
+            r_obj, role_arn, policy_doc_map, all_groups, account_id=account_id
         )
+        call_perm = perm_res.allowed
+        explicit_deny = perm_res.explicit_deny
+        is_conditional_perm = perm_res.is_conditional
+        perm_ev = perm_res.evidence
+
         if explicit_deny:
             return
-
-        if requires_call_perm_check and not call_perm:
+        if perm_ev.get("boundary_status") == "restricts_assume_role":
             return
 
-        has_unresolved = len(cond_eval.get("conditions_unresolved", [])) > 0
+        if requires_call_perm_check and not call_perm and not is_conditional_perm:
+            return
+
+        all_unresolved = cond_eval.get("conditions_unresolved", []) + perm_ev.get("conditions_unresolved", [])
+        all_evaluated = cond_eval.get("conditions_evaluated", []) + perm_ev.get("conditions_unresolved", [])
+        all_satisfied = cond_eval.get("conditions_satisfied", []) + perm_ev.get("conditions_satisfied", [])
+        boundary_unresolved = perm_ev.get("boundary_status") == "unresolved"
+
+        has_unresolved = len(all_unresolved) > 0 or is_conditional_perm or boundary_unresolved
         trust_status = "conditional" if has_unresolved else "definitive"
-        trust_conditional = bool(cond_eval.get("conditions_evaluated", []))
+        trust_conditional = bool(all_evaluated)
+        auth_status = "CONDITIONAL" if has_unresolved else "DEFINITIVE_ALLOW"
+        call_verified = (call_perm if requires_call_perm_check else True) and not has_unresolved
 
         entry = {
             "principal": r_obj,
@@ -975,18 +1099,31 @@ def evaluate_assume_role_trust_with_evidence(
                 "trust_principal_type": trust_type,
                 "trust_status": trust_status,
                 "trust_conditional": trust_conditional,
-                "conditions_evaluated": cond_eval.get("conditions_evaluated", []),
-                "conditions_satisfied": cond_eval.get("conditions_satisfied", []),
-                "conditions_unresolved": cond_eval.get("conditions_unresolved", []),
-                "call_permission_verified": True,
+                "authorization_status": auth_status,
+                "identity_policy_allow": call_perm or is_conditional_perm or (trust_type == "exact_arn"),
                 "explicit_deny": False,
+                "boundary_status": perm_ev.get("boundary_status", "none"),
+                "organization_policy_status": "not_collected",
+                "conditions_status": "conditional" if (all_unresolved or boundary_unresolved) else ("satisfied" if all_satisfied else "none"),
+                "conditions_evaluated": all_evaluated,
+                "conditions_satisfied": all_satisfied,
+                "conditions_unresolved": all_unresolved,
+                "call_permission_verified": call_verified,
             },
         }
+
+        if rn in added_role_names:
+            existing = added_role_names[rn]
+            if existing["evidence"]["trust_status"] == "conditional" and trust_status == "definitive":
+                existing["evidence"].update(entry["evidence"])
+                if existing in result["conditional_trusts"]:
+                    result["conditional_trusts"].remove(existing)
+            return
 
         result["roles"].append(entry)
         if trust_status == "conditional":
             result["conditional_trusts"].append(entry)
-        added_role_names.add(rn)
+        added_role_names[rn] = entry
 
     for stmt in statements:
         if stmt.get("Effect") != "Allow":

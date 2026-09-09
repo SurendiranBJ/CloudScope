@@ -267,11 +267,31 @@ def run_diagnostics():
 
     print("-" * 115)
     print(f"RESULTS: {passed_checks}/{total_checks} diagnostic checks PASSED.")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # PHASE 15: CAN_ASSUME EVIDENCE DETAIL PRINTER
+    # ──────────────────────────────────────────────────────────────────────────
+    print("\n" + "=" * 100)
+    print(" PHASE 15 — CAN_ASSUME EVIDENCE INSPECTOR")
+    print("=" * 100)
+    for u in res1["users"]:
+        ev = u.get("evidence", {})
+        print(f"\n{u['principal']['name']}")
+        print(f"  -> {wildcard_role['name']}")
+        print(f"  trust={ev.get('trust_principal_type')}")
+        print(f"  trust_status={ev.get('trust_status')}")
+        print(f"  condition_status={ev.get('conditions_status')}")
+        print(f"  identity_allow={ev.get('identity_policy_allow')}")
+        print(f"  explicit_deny={ev.get('explicit_deny')}")
+        print(f"  boundary={ev.get('boundary_status')}")
+        print(f"  org_policy={ev.get('organization_policy_status')}")
+        print(f"  final_status={ev.get('authorization_status')}")
+
     if passed_checks == total_checks:
-        print("[SUCCESS] All IAM trust, condition, and attack path invariants are 100% SATISFIED.\n")
+        print("\n[SUCCESS] All IAM trust, condition, and attack path invariants are 100% SATISFIED.\n")
         return 0
     else:
-        print("[FAILURE] Some diagnostic invariants were VIOLATED.\n")
+        print("\n[FAILURE] Some diagnostic invariants were VIOLATED.\n")
         return 1
 
 
