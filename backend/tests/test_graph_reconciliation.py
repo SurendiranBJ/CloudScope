@@ -121,3 +121,42 @@ class TestGraphReconciliation:
         assert params["u_id"] == "aws:user:carol"
         assert params["valid_p_ids"] == ["aws:policy:ValidPolicy"]
         assert "DELETE rel" in query
+
+    @patch("app.services.graph.graph_builder.get_account_id", return_value="123456789012")
+    @patch("app.services.graph.graph_builder.execute_write")
+    def test_w_stale_configuration_node_reconciliation_preserves_activity_events(self, mock_execute_write, mock_acc_id):
+        """When an AWS inventory resource (Role, S3, EC2, User, etc.) is deleted from AWS,
+        the configuration reconciliation step prunes obsolete configuration nodes
+        while strictly preserving :ActivityEvent nodes and historical CloudTrail data."""
+        inv = AWSInventory()
+        inv.roles = [
+            {
+                "name": "ActiveRole",
+                "arn": "arn:aws:iam::123456789012:role/ActiveRole",
+                "trustPolicy": "{}",
+                "attachedPolicies": []
+            }
+        ]
+
+        build_graph_in_neo4j(inv)
+
+        write_queries = [call.args[0] for call in mock_execute_write.call_args_list]
+        write_params = [call.args[1] if len(call.args) > 1 else {} for call in mock_execute_write.call_args_list]
+
+        # Verify role node reconciliation query
+        role_prunes = [
+            (q, p) for q, p in zip(write_queries, write_params)
+            if "MATCH (n:Role)" in q and "DETACH DELETE n" in q
+        ]
+        assert len(role_prunes) == 1, "Must execute Role node reconciliation query"
+        query, params = role_prunes[0]
+        assert params["valid_ids"] == ["aws:role:ActiveRole"]
+        assert "WHERE NOT n.id IN $valid_ids" in query
+        assert "DETACH DELETE n" in query
+
+        # Ensure :ActivityEvent nodes are NEVER deleted by configuration node reconciliation
+        activity_deletes = [
+            q for q in write_queries
+            if "ActivityEvent" in q and "DELETE" in q
+        ]
+        assert len(activity_deletes) == 0, "Configuration reconciliation must NEVER delete ActivityEvent nodes"

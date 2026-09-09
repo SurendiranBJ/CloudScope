@@ -168,10 +168,12 @@ export const AttackPaths: FC = () => {
       const effectiveSharedChain = isDirectRoleTarget ? [path.nodes[1]] : intermediateNodes;
       const effectiveTargetNode = isDirectRoleTarget ? null : targetNode;
 
-      // Grouping key: string of ordered shared privilege nodes
-      const chainKey = effectiveSharedChain.length > 0
+      // Grouping key: string of ordered shared privilege nodes + ordered relationships
+      const relsKey = (path.orderedRelationships || []).join('=>');
+      const chainNodesKey = effectiveSharedChain.length > 0
         ? effectiveSharedChain.map(n => `${n.type}:${n.id || n.name}`).join('->')
         : (effectiveTargetNode ? `target:${effectiveTargetNode.type}:${effectiveTargetNode.id || effectiveTargetNode.name}` : `source:${sourceNode.name}`);
+      const chainKey = `${chainNodesKey}|rels:${relsKey}`;
 
       const sev = (path.severity || 'low').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
       const score = typeof path.riskScore === 'number' ? path.riskScore : 0;

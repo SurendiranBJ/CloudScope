@@ -806,6 +806,7 @@ def principal_effective_allows_assume_role(
                 "organization_policy_status": "not_collected",
                 "conditions_status": "none",
                 "authorization_status": "DENIED",
+                "authorization_scope": "identity_and_resource_policy_only",
             }
         )
 
@@ -821,6 +822,7 @@ def principal_effective_allows_assume_role(
                 "conditions_status": "conditional",
                 "conditions_unresolved": ["permissions_boundary_document_unresolved"],
                 "authorization_status": "CONDITIONAL",
+                "authorization_scope": "identity_and_resource_policy_only",
             }
         )
 
@@ -835,6 +837,7 @@ def principal_effective_allows_assume_role(
                 "conditions_status": "satisfied" if satisfied_conditions else "none",
                 "conditions_satisfied": satisfied_conditions,
                 "authorization_status": "DEFINITIVE_ALLOW",
+                "authorization_scope": "identity_and_resource_policy_only",
             }
         )
 
@@ -849,6 +852,7 @@ def principal_effective_allows_assume_role(
                 "conditions_status": "conditional",
                 "conditions_unresolved": unresolved_conditions,
                 "authorization_status": "CONDITIONAL",
+                "authorization_scope": "identity_and_resource_policy_only",
             }
         )
 
@@ -861,6 +865,7 @@ def principal_effective_allows_assume_role(
             "organization_policy_status": "not_collected",
             "conditions_status": "none",
             "authorization_status": "DENIED",
+            "authorization_scope": "identity_and_resource_policy_only",
         }
     )
 
@@ -1038,6 +1043,7 @@ def evaluate_assume_role_trust_with_evidence(
                 "explicit_deny": False,
                 "boundary_status": perm_ev.get("boundary_status", "none"),
                 "organization_policy_status": "not_collected",
+                "authorization_scope": "identity_and_resource_policy_only",
                 "conditions_status": "conditional" if (all_unresolved or boundary_unresolved) else ("satisfied" if all_satisfied else "none"),
                 "conditions_evaluated": all_evaluated,
                 "conditions_satisfied": all_satisfied,
@@ -1104,6 +1110,7 @@ def evaluate_assume_role_trust_with_evidence(
                 "explicit_deny": False,
                 "boundary_status": perm_ev.get("boundary_status", "none"),
                 "organization_policy_status": "not_collected",
+                "authorization_scope": "identity_and_resource_policy_only",
                 "conditions_status": "conditional" if (all_unresolved or boundary_unresolved) else ("satisfied" if all_satisfied else "none"),
                 "conditions_evaluated": all_evaluated,
                 "conditions_satisfied": all_satisfied,

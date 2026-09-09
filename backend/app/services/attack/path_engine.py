@@ -11,6 +11,7 @@ import logging
 import networkx as nx
 from typing import List, Dict, Any, Set, Tuple, Optional
 from app.services.risk.risk_constants import get_severity_label
+from app.services.attack.constants import MAX_ROLE_HOPS
 
 logger = logging.getLogger("scanner")
 
@@ -198,7 +199,7 @@ def compute_effective_blast_radius(
             if not nx.has_path(G, source_node_id, tr):
                 continue
             try:
-                for p in nx.all_simple_paths(G, source_node_id, tr, cutoff=6):
+                for p in nx.all_simple_paths(G, source_node_id, tr, cutoff=MAX_ROLE_HOPS):
                     if _validate_path_security_semantics(p, G):
                         canonical_id = G.nodes[tr].get("arn") or G.nodes[tr].get("label") or tr
                         unique_assets.add(canonical_id)
@@ -221,7 +222,7 @@ def compute_effective_blast_radius(
 
 def find_attack_paths(
     G: nx.DiGraph,
-    max_hops: int = 6,
+    max_hops: int = MAX_ROLE_HOPS,
     inventory: Any = None,
     policy_doc_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:

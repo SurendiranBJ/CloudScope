@@ -1,5 +1,9 @@
 import type { AttackPath } from '../types';
 
+/**
+ * Isolated unit test fixture data only.
+ * NOT used in production UI or live API responses.
+ */
 export const mockAttackPaths: AttackPath[] = [
   {
     id: 'path-001',

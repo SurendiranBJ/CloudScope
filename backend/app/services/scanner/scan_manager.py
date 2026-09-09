@@ -338,18 +338,26 @@ class ScanManager:
                         "riskScore": 0
                     })
 
-            # Fetch AWS-managed policy documents for attached policies
+            # 2b. Fetch AWS-managed policy documents for attached policies + Permissions Boundaries
             aws_managed_arns: set = set()
+            boundary_arns: set = set()
+
             for u in self.inventory.users:
                 aws_managed_arns.update(
                     arn for arn in u.get('attachedPolicyArns', {}).values()
                     if '::aws:policy/' in arn
                 )
+                if u.get('permissionsBoundary'):
+                    boundary_arns.add(u['permissionsBoundary'])
+
             for r in self.inventory.roles:
                 aws_managed_arns.update(
                     arn for arn in r.get('attachedPolicyArns', {}).values()
                     if '::aws:policy/' in arn
                 )
+                if r.get('permissionsBoundary'):
+                    boundary_arns.add(r['permissionsBoundary'])
+
             for g in self.inventory.groups:
                 aws_managed_arns.update(
                     arn for arn in g.get('attachedPolicyArns', {}).values()
@@ -369,6 +377,27 @@ class ScanManager:
                             "document": doc_str,
                             "riskScore": 0
                         })
+
+            # Resolve permissions boundary documents before any authorization or risk evaluation
+            if boundary_arns:
+                logger.info(f"[INFO] Resolving {len(boundary_arns)} referenced permissions boundary policy documents")
+                for barn in boundary_arns:
+                    b_doc_obj = iam_service.fetch_policy_document_by_arn(barn)
+                    if b_doc_obj:
+                        b_name = b_doc_obj["name"]
+                        b_doc_str = b_doc_obj["document"]
+                        policy_doc_map[barn] = b_doc_str
+                        policy_doc_map[b_name] = b_doc_str
+                        if not any(p['name'] == b_name for p in self.inventory.policies):
+                            self.inventory.policies.append({
+                                "name": b_name,
+                                "arn": barn,
+                                "type": b_doc_obj.get("type", "boundary"),
+                                "document": b_doc_str,
+                                "riskScore": 0
+                            })
+                    else:
+                        logger.warning(f"Could not resolve permissions boundary document for ARN: {barn}")
 
             # 3. Calculate Deterministic Risk Assessments & Scores
             for u in self.inventory.users:

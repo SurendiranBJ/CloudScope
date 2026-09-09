@@ -24,6 +24,7 @@ from app.services.attack.policy_evaluator import (
     evaluate_assume_role_trust,
     evaluate_assume_role_trust_with_evidence,
 )
+from app.services.attack.constants import MAX_ROLE_HOPS
 
 logger = logging.getLogger("scanner")
 
@@ -138,8 +139,6 @@ def compute_effective_access(
                 continue
             trusted_role = entry["principal"]
             role_direct_roles.setdefault(trusted_role["name"], []).append(rname)
-
-    MAX_ROLE_HOPS = 5
 
     # 3a. Users assuming roles (multi-hop BFS)
     for user in inventory.users:

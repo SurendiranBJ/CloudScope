@@ -629,3 +629,171 @@ class TestAssumeRoleTrustModel:
         assert len(result["users"]) == 1
         assert result["users"][0]["evidence"]["trust_status"] == "conditional"
         assert len(result["conditional_trusts"]) == 1
+
+    # ── Test P: Boundary Allow + Identity Allow => DEFINITIVE_ALLOW ─────────
+    def test_p_identity_allow_and_boundary_allow(self):
+        user = {
+            "name": "paul",
+            "arn": "arn:aws:iam::123456789012:user/paul",
+            "policies": ["UserAllowAssume"],
+            "attachedPolicies": [],
+            "permissionsBoundary": "arn:aws:iam::123456789012:policy/BoundaryAllow"
+        }
+        policy_doc_map = {
+            "UserAllowAssume": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
+            }),
+            "arn:aws:iam::123456789012:policy/BoundaryAllow": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
+            }),
+        }
+        res = principal_effective_allows_assume_role(
+            user, "arn:aws:iam::123456789012:role/TargetRole", policy_doc_map
+        )
+        assert res.allowed is True
+        assert res.evidence["authorization_status"] == "DEFINITIVE_ALLOW"
+        assert res.evidence["boundary_status"] == "satisfied"
+
+    # ── Test Q: Boundary Deny + Identity Allow => DENIED ───────────────────
+    def test_q_identity_allow_and_boundary_deny(self):
+        user = {
+            "name": "quinn",
+            "arn": "arn:aws:iam::123456789012:user/quinn",
+            "policies": ["UserAllowAssume"],
+            "attachedPolicies": [],
+            "permissionsBoundary": "arn:aws:iam::123456789012:policy/BoundaryDeny"
+        }
+        policy_doc_map = {
+            "UserAllowAssume": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
+            }),
+            "arn:aws:iam::123456789012:policy/BoundaryDeny": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": "*"}]
+            }),
+        }
+        res = principal_effective_allows_assume_role(
+            user, "arn:aws:iam::123456789012:role/TargetRole", policy_doc_map
+        )
+        assert res.allowed is False
+        assert res.evidence["authorization_status"] == "DENIED"
+        assert res.evidence["boundary_status"] == "restricts_assume_role"
+
+    # ── Test R: Boundary excludes sts:AssumeRole => DENIED ─────────────────
+    def test_r_identity_allow_and_boundary_excludes_assume_role(self):
+        user = {
+            "name": "rachel",
+            "arn": "arn:aws:iam::123456789012:user/rachel",
+            "policies": ["UserAllowAssume"],
+            "attachedPolicies": [],
+            "permissionsBoundary": "arn:aws:iam::123456789012:policy/BoundaryS3Only"
+        }
+        policy_doc_map = {
+            "UserAllowAssume": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
+            }),
+            "arn:aws:iam::123456789012:policy/BoundaryS3Only": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Allow", "Action": "s3:*", "Resource": "*"}]
+            }),
+        }
+        res = principal_effective_allows_assume_role(
+            user, "arn:aws:iam::123456789012:role/TargetRole", policy_doc_map
+        )
+        assert res.allowed is False
+        assert res.evidence["authorization_status"] == "DENIED"
+        assert res.evidence["boundary_status"] == "restricts_assume_role"
+
+    # ── Test S: Boundary document unavailable => CONDITIONAL / UNSUPPORTED ─
+    def test_s_identity_allow_and_boundary_unavailable(self):
+        user = {
+            "name": "sam",
+            "arn": "arn:aws:iam::123456789012:user/sam",
+            "policies": ["UserAllowAssume"],
+            "attachedPolicies": [],
+            "permissionsBoundary": "arn:aws:iam::123456789012:policy/MissingBoundary"
+        }
+        policy_doc_map = {
+            "UserAllowAssume": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
+            })
+        }
+        res = principal_effective_allows_assume_role(
+            user, "arn:aws:iam::123456789012:role/TargetRole", policy_doc_map
+        )
+        assert res.allowed is False
+        assert res.is_conditional is True
+        assert res.evidence["authorization_status"] == "CONDITIONAL"
+        assert res.evidence["boundary_status"] == "unresolved"
+
+    # ── Test T: Service and Federated principals do not create user edges ───
+    def test_t_service_and_federated_principals_not_expanded_to_users(self):
+        trust_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "ec2.amazonaws.com"},
+                    "Action": "sts:AssumeRole"
+                },
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Federated": "cognito-identity.amazonaws.com"},
+                    "Action": "sts:AssumeRole"
+                }
+            ]
+        }
+        user = {
+            "name": "tina",
+            "arn": "arn:aws:iam::123456789012:user/tina",
+            "policies": [],
+            "attachedPolicies": []
+        }
+        result = evaluate_assume_role_trust_with_evidence(
+            trust_policy_input=trust_policy,
+            role_name="ServiceRole",
+            role_arn="arn:aws:iam::123456789012:role/ServiceRole",
+            all_users=[user],
+            all_roles=[],
+            account_id="123456789012",
+            policy_doc_map={},
+        )
+        assert len(result["users"]) == 0
+        assert len(result["roles"]) == 0
+
+    # ── Test U: Mixed statements (Allow unresolved + Allow satisfied) ───────
+    def test_u_mixed_statements_unresolved_plus_unconditional(self):
+        user = {
+            "name": "uma",
+            "arn": "arn:aws:iam::123456789012:user/uma",
+            "policies": ["MixedPolicy"],
+            "attachedPolicies": [],
+        }
+        policy_doc_map = {
+            "MixedPolicy": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": "sts:AssumeRole",
+                        "Resource": "arn:aws:iam::123456789012:role/TargetRole",
+                        "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": "sts:AssumeRole",
+                        "Resource": "arn:aws:iam::123456789012:role/TargetRole"
+                    }
+                ]
+            })
+        }
+        res = principal_effective_allows_assume_role(
+            user, "arn:aws:iam::123456789012:role/TargetRole", policy_doc_map
+        )
+        assert res.allowed is True
+        assert res.evidence["authorization_status"] == "DEFINITIVE_ALLOW"
