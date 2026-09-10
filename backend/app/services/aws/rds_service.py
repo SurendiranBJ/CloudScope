@@ -1,7 +1,7 @@
 import logging
 import concurrent.futures
 import time
-from app.services.aws.session import get_account_id
+from app.services.aws.session import get_account_id, get_boto_config
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
 logger = logging.getLogger("scanner")
@@ -17,7 +17,7 @@ def collect_rds_instances() -> list:
             start = time.time()
             region_db = []
             try:
-                client = region_sessions[region_name].client('rds', region_name=region_name)
+                client = region_sessions[region_name].client('rds', region_name=region_name, config=get_boto_config())
                 paginator = client.get_paginator('describe_db_instances')
                 for page in paginator.paginate():
                     for db in page.get('DBInstances', []):
@@ -56,6 +56,7 @@ def collect_rds_instances() -> list:
                 instances.extend(res)
 
         logger.info(f"RDS Collector: Discovered {len(instances)} databases across all regions")
+        return instances
     except Exception as e:
         logger.error(f"RDS Collector failed: {e}")
-    return instances
+        raise e

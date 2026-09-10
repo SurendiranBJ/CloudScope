@@ -1,4 +1,5 @@
 import time
+import uuid
 import logging
 import threading
 import concurrent.futures
@@ -182,6 +183,12 @@ def _generate_recommendation(item: dict) -> str:
     return f"Review the security configuration and apply least-privilege access to '{name}'."
 
 
+CRITICAL_COLLECTORS = {
+    "IAM_Users", "IAM_Groups", "IAM_Roles", "IAM_Policies",
+    "S3", "EC2", "Lambda", "Secrets", "RDS", "DynamoDB"
+}
+
+
 class ScanManager:
     """Central Orchestrator for the unified single continuous scanning pipeline.
 
@@ -194,7 +201,12 @@ class ScanManager:
         self.inventory = AWSInventory()
         self._lock = threading.Lock()
         self._is_running = False
+        self._scan_id: str | None = None
+        self._scan_status: str = "IDLE"  # IDLE, SCANNING, SUCCESS, FAILED, PARTIAL
         self._scan_started_at: str | None = None
+        self._last_successful_scan_at: str | None = None
+        self._last_successful_scan_id: str | None = None
+        self._last_error: str | None = None
         self._last_result: dict | None = None
         self._service_status: Dict[str, str] = {}
 
@@ -206,7 +218,12 @@ class ScanManager:
         """Return current scan status for the frontend to poll."""
         return {
             "is_scanning": self._is_running,
+            "scan_id": self._scan_id,
+            "scan_status": self._scan_status,
             "started_at": self._scan_started_at,
+            "last_successful_scan_at": self._last_successful_scan_at,
+            "last_successful_scan_id": self._last_successful_scan_id,
+            "last_error": self._last_error,
             "last_result": self._last_result,
             "service_status": self._service_status
         }
@@ -224,22 +241,31 @@ class ScanManager:
             logger.warning("Scan lock held. Skipping duplicate.")
             return {"status": "skipped", "message": "Scan already running"}
 
+        scan_id = str(uuid.uuid4())
         self._is_running = True
+        self._scan_id = scan_id
+        self._scan_status = "SCANNING"
         self._scan_started_at = datetime.utcnow().isoformat() + "Z"
+        self._last_error = None
         start_time = time.time()
         self._service_status = {}
 
-        logger.info("[INFO] SCAN START: Initializing AWS single continuous security scan")
+        logger.info(f"[INFO] SCAN START: Initializing AWS security scan (scan_id={scan_id})")
 
         try:
             # 0. AWS STS Authentication Check
             aws_diag = get_aws_diagnostic_info()
             if not aws_diag["authenticated"]:
-                logger.error(f"[ERROR] AWS Authentication failed: {aws_diag.get('error')}")
+                err_msg = f"AWS Authentication failed: {aws_diag.get('error')}"
+                logger.error(f"[ERROR] {err_msg}")
+                self._scan_status = "FAILED"
+                self._last_error = err_msg
                 self._last_result = {
                     "status": "failed",
-                    "error": f"AWS Authentication failed: {aws_diag.get('error')}",
-                    "timestamp": self._scan_started_at
+                    "scan_id": scan_id,
+                    "error": err_msg,
+                    "timestamp": self._scan_started_at,
+                    "service_status": self._service_status
                 }
                 return self._last_result
 
@@ -253,43 +279,75 @@ class ScanManager:
             scanned_regions = list(get_all_regions())
             logger.info(f"[INFO] Scan regions: {scanned_regions}")
 
-            def run_collector(name, func):
-                try:
-                    res = func()
-                    self._service_status[name] = "SUCCESS"
-                    return res
-                except Exception as err:
-                    logger.error(f"[ERROR] Collector {name} failed: {err}")
-                    self._service_status[name] = f"FAILED: {err}"
-                    return []
+            collector_funcs = {
+                "IAM_Users": iam_service.collect_users,
+                "IAM_Groups": iam_service.collect_groups,
+                "IAM_Roles": iam_service.collect_roles,
+                "IAM_Policies": iam_service.collect_policies,
+                "EC2": ec2_service.collect_ec2_instances,
+                "S3": s3_service.collect_s3_buckets,
+                "Lambda": lambda_service.collect_lambda_functions,
+                "Secrets": secrets_service.collect_secrets,
+                "RDS": rds_service.collect_rds_instances,
+                "DynamoDB": dynamodb_service.collect_dynamodb_tables,
+                "AccessAnalyzer": access_analyzer_service.collect_access_analyzer_findings,
+                "CloudTrail": cloudtrail_service.collect_recent_alerts,
+            }
+
+            collector_results: Dict[str, list] = {}
+            collector_failures: Dict[str, str] = {}
 
             # 1. AWS API Data Collection (Concurrently)
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                future_users = executor.submit(run_collector, "IAM_Users", iam_service.collect_users)
-                future_groups = executor.submit(run_collector, "IAM_Groups", iam_service.collect_groups)
-                future_roles = executor.submit(run_collector, "IAM_Roles", iam_service.collect_roles)
-                future_policies = executor.submit(run_collector, "IAM_Policies", iam_service.collect_policies)
-                future_ec2 = executor.submit(run_collector, "EC2", ec2_service.collect_ec2_instances)
-                future_s3 = executor.submit(run_collector, "S3", s3_service.collect_s3_buckets)
-                future_lambdas = executor.submit(run_collector, "Lambda", lambda_service.collect_lambda_functions)
-                future_secrets = executor.submit(run_collector, "Secrets", secrets_service.collect_secrets)
-                future_rds = executor.submit(run_collector, "RDS", rds_service.collect_rds_instances)
-                future_dynamodb = executor.submit(run_collector, "DynamoDB", dynamodb_service.collect_dynamodb_tables)
-                future_findings = executor.submit(run_collector, "AccessAnalyzer", access_analyzer_service.collect_access_analyzer_findings)
-                future_alerts = executor.submit(run_collector, "CloudTrail", cloudtrail_service.collect_recent_alerts)
+                futures = {
+                    executor.submit(func): name
+                    for name, func in collector_funcs.items()
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    name = futures[future]
+                    try:
+                        res = future.result()
+                        collector_results[name] = res
+                        if res and len(res) > 0:
+                            self._service_status[name] = "SUCCESS_WITH_DATA"
+                        else:
+                            self._service_status[name] = "SUCCESS_EMPTY"
+                    except Exception as err:
+                        logger.error(f"[ERROR] Collector {name} failed: {err}")
+                        self._service_status[name] = f"FAILED: {err}"
+                        collector_failures[name] = str(err)
+                        collector_results[name] = []
 
-                self.inventory.users = future_users.result()
-                self.inventory.groups = future_groups.result()
-                self.inventory.roles = future_roles.result()
-                self.inventory.policies = future_policies.result()
-                self.inventory.ec2 = future_ec2.result()
-                self.inventory.s3 = future_s3.result()
-                self.inventory.lambdas = future_lambdas.result()
-                self.inventory.secrets = future_secrets.result()
-                self.inventory.rds = future_rds.result()
-                self.inventory.dynamodb = future_dynamodb.result()
-                self.inventory.findings = future_findings.result()
-                self.inventory.alerts = future_alerts.result()
+            # 1b. CRITICAL FAILURE GATE: Collector failure must NEVER look like empty AWS state
+            failed_critical = [c for c in CRITICAL_COLLECTORS if c in collector_failures]
+            if failed_critical:
+                err_msg = f"Critical collector(s) failed: {', '.join(failed_critical)}"
+                logger.error(f"[ERROR] Scan {scan_id} aborted: {err_msg}")
+                self._scan_status = "FAILED"
+                self._last_error = err_msg
+                self._last_result = {
+                    "status": "failed",
+                    "scan_id": scan_id,
+                    "error": err_msg,
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "service_status": self._service_status
+                }
+                # Do NOT prune Neo4j, do NOT publish empty cache, preserve previous snapshot
+                return self._last_result
+
+            # Assign authoritative validated inventory
+            self.inventory.users = collector_results.get("IAM_Users", [])
+            self.inventory.groups = collector_results.get("IAM_Groups", [])
+            self.inventory.roles = collector_results.get("IAM_Roles", [])
+            self.inventory.policies = collector_results.get("IAM_Policies", [])
+            self.inventory.ec2 = collector_results.get("EC2", [])
+            self.inventory.s3 = collector_results.get("S3", [])
+            self.inventory.lambdas = collector_results.get("Lambda", [])
+            self.inventory.secrets = collector_results.get("Secrets", [])
+            self.inventory.rds = collector_results.get("RDS", [])
+            self.inventory.dynamodb = collector_results.get("DynamoDB", [])
+            self.inventory.findings = collector_results.get("AccessAnalyzer", [])
+            self.inventory.alerts = collector_results.get("CloudTrail", [])
 
             logger.info(
                 f"[INFO] Discovered AWS Resources: Users={len(self.inventory.users)}, "
@@ -557,21 +615,7 @@ class ScanManager:
             except Exception as hist_err:
                 logger.debug(f"Neo4j ScanHistory creation skipped: {hist_err}")
 
-            # 10. STEP 6 OF PIPELINE: Cache Updates
-            cache.set("v1:users", self.inventory.users)
-            cache.set("v1:roles", self.inventory.roles)
-            cache.set("v1:policies", self.inventory.policies)
-            cache.set("v1:resources", (
-                self.inventory.users + self.inventory.roles +
-                self.inventory.ec2 + self.inventory.s3 +
-                self.inventory.lambdas + self.inventory.secrets +
-                self.inventory.rds + self.inventory.dynamodb
-            ))
-            cache.set("v1:alerts", self.inventory.alerts)
-            cache.set("v1:correlated_risks", correlated_findings)
-            cache.set("v1:attack-paths", attack_paths)
-            cache.set("v1:global_posture", global_posture)
-
+            # 10. STEP 6 OF PIPELINE: Build Atomic Snapshot in Memory & Publish Gate
             # Cytoscape Graph Elements
             cytoscape_elements = []
             role_map = {r['name']: r for r in self.inventory.roles}
@@ -613,7 +657,6 @@ class ScanManager:
                         "sourceIp": attr.get('sourceIp', '')
                     }
                 })
-            cache.set("v1:graph", cytoscape_elements)
 
             # Critical Risks Findings list
             critical_risks = [
@@ -629,7 +672,6 @@ class ScanManager:
                 for x in all_scored_items if x.get('riskScore', 0) >= 40
             ]
             critical_risks.sort(key=lambda x: x['riskScore'], reverse=True)
-            cache.set("v1:risks", critical_risks)
 
             res_breakdown = [
                 {"type": "IAM Users", "count": len(self.inventory.users)},
@@ -694,23 +736,65 @@ class ScanManager:
                     "scanned_regions": scanned_regions
                 },
                 "topRiskyIdentities": top_identities,
-                "resourceBreakdown": res_breakdown
+                "resourceBreakdown": res_breakdown,
+                "scanId": scan_id,
+                "scanStatus": "SUCCESS",
+                "lastSuccessfulScanAt": scan_timestamp,
+                "lastSuccessfulScanId": scan_id,
+                "lastError": None,
+                "serviceStatus": self._service_status
             }
-            cache.set("v1:dashboard", dashboard_summary)
 
-            # Policy catalog cache — build from discovered policies (metadata level)
-            # This enables /api/v1/policies to serve results without a separate AWS call
-            try:
-                from app.services.aws.iam_service import fetch_policy_catalog
-                policy_catalog = fetch_policy_catalog()
-                cache.set("v1:policy_catalog", policy_catalog)
-                logger.info(f"[INFO] Policy catalog cached: {len(policy_catalog)} entries")
-            except Exception as cat_err:
-                logger.warning(f"Policy catalog fetch failed (non-fatal): {cat_err}")
+            scan_metadata = {
+                "scanId": scan_id,
+                "scanTimestamp": scan_timestamp,
+                "scanStatus": "SUCCESS",
+                "lastSuccessfulScanAt": scan_timestamp,
+                "lastSuccessfulScanId": scan_id,
+                "lastError": None,
+                "serviceStatus": self._service_status,
+                "durationSeconds": duration,
+                "resourcesFound": resources_count,
+                "risksFound": total_findings_count
+            }
+
+            new_snapshot = {
+                "v1:users": self.inventory.users,
+                "v1:roles": self.inventory.roles,
+                "v1:groups": self.inventory.groups,
+                "v1:policies": self.inventory.policies,
+                "v1:resources": (
+                    self.inventory.users + self.inventory.roles +
+                    self.inventory.ec2 + self.inventory.s3 +
+                    self.inventory.lambdas + self.inventory.secrets +
+                    self.inventory.rds + self.inventory.dynamodb
+                ),
+                "v1:alerts": self.inventory.alerts,
+                "v1:correlated_risks": correlated_findings,
+                "v1:attack-paths": attack_paths,
+                "v1:global_posture": global_posture,
+                "v1:graph": cytoscape_elements,
+                "v1:risks": critical_risks,
+                "v1:dashboard": dashboard_summary,
+                "v1:scan_metadata": scan_metadata,
+            }
+
+            # Atomic publication under single lock
+            cache.set_many(new_snapshot)
+            logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id})")
+
+            self._last_successful_scan_at = scan_timestamp
+            self._last_successful_scan_id = scan_id
+            self._scan_status = "SUCCESS"
+            self._last_error = None
 
             self._last_result = {
                 "status": "success",
+                "scan_id": scan_id,
+                "scan_status": "SUCCESS",
                 "timestamp": scan_timestamp,
+                "last_successful_scan_at": scan_timestamp,
+                "last_successful_scan_id": scan_id,
                 "duration_seconds": duration,
                 "nodes_count": nodes_count,
                 "edges_count": edges_count,
@@ -730,10 +814,15 @@ class ScanManager:
 
         except Exception as e:
             logger.error(f"[ERROR] Scan execution encountered an unexpected failure: {e}", exc_info=True)
+            self._scan_status = "FAILED"
+            self._last_error = str(e)
             self._last_result = {
-                "status": "error",
+                "status": "failed",
+                "scan_id": scan_id,
+                "scan_status": "FAILED",
                 "error": str(e),
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "service_status": self._service_status
             }
             return self._last_result
         finally:

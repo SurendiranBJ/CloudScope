@@ -11,7 +11,8 @@ router = APIRouter(tags=["AWS Resources"])
 def get_iam_roles():
     data = cache.get("v1:roles")
     if not data:
-        scan_manager.run_scan()
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
         data = cache.get("v1:roles") or []
         
     return APIResponse(

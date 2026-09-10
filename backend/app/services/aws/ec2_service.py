@@ -1,7 +1,7 @@
 import logging
 import concurrent.futures
 import time
-from app.services.aws.session import get_aws_session, get_account_id
+from app.services.aws.session import get_aws_session, get_account_id, get_boto_config
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
 logger = logging.getLogger("scanner")
@@ -17,7 +17,7 @@ def collect_ec2_instances() -> list:
             start = time.time()
             region_instances = []
             try:
-                client = region_sessions[region_name].client('ec2', region_name=region_name)
+                client = region_sessions[region_name].client('ec2', region_name=region_name, config=get_boto_config())
                 paginator = client.get_paginator('describe_instances')
                 for page in paginator.paginate():
                     for reservation in page.get('Reservations', []):
@@ -72,6 +72,7 @@ def collect_ec2_instances() -> list:
                 instances.extend(res)
 
         logger.info(f"EC2 Collector: Discovered {len(instances)} instances across all regions")
+        return instances
     except Exception as e:
         logger.error(f"EC2 Collector failed: {e}")
-    return instances
+        raise e

@@ -108,6 +108,12 @@ export interface DashboardData {
   topRiskyIdentities?: { name: string; type: 'User' | 'Role'; riskScore: number }[];
   resourceBreakdown?: { type: string; count: number }[];
   scannedRegions?: string[];
+  scanId?: string;
+  scanStatus?: 'NO_SCAN' | 'SCANNING' | 'SUCCESS' | 'FAILED' | 'PARTIAL';
+  lastSuccessfulScanAt?: string | null;
+  lastSuccessfulScanId?: string | null;
+  lastError?: string | null;
+  serviceStatus?: Record<string, string>;
 }
 
 // ─── Policy Catalog ──────────────────────────────────────────────────────────

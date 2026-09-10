@@ -2,7 +2,7 @@ import logging
 import json
 import concurrent.futures
 from datetime import datetime, timezone
-from app.services.aws.session import get_aws_session, get_account_id
+from app.services.aws.session import get_aws_session, get_account_id, get_boto_config
 
 logger = logging.getLogger("scanner")
 
@@ -67,7 +67,7 @@ def collect_users() -> list:
     users_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_users')
 
         for page in paginator.paginate():
@@ -148,16 +148,17 @@ def collect_users() -> list:
                     "owner": get_account_id()
                 })
         logger.info(f"IAM Collector: Discovered {len(users_data)} users")
+        return users_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list users: {str(e)}")
-    return users_data
+        raise e
 
 
 def collect_groups() -> list:
     groups_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_groups')
 
         for page in paginator.paginate():
@@ -202,16 +203,17 @@ def collect_groups() -> list:
                     "inlinePolicyDocuments": group_inline_docs
                 })
         logger.info(f"IAM Collector: Discovered {len(groups_data)} groups")
+        return groups_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list groups: {str(e)}")
-    return groups_data
+        raise e
 
 
 def collect_roles() -> list:
     roles_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_roles')
 
         for page in paginator.paginate():
@@ -274,9 +276,10 @@ def collect_roles() -> list:
                     "owner": get_account_id()
                 })
         logger.info(f"IAM Collector: Discovered {len(roles_data)} roles")
+        return roles_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list roles: {str(e)}")
-    return roles_data
+        raise e
 
 
 def collect_policies() -> list:
@@ -285,7 +288,7 @@ def collect_policies() -> list:
     policies_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_policies')
 
         for page in paginator.paginate(Scope='Local'):
@@ -310,9 +313,10 @@ def collect_policies() -> list:
                     "riskScore": 0  # Calculated downstream
                 })
         logger.info(f"IAM Collector: Discovered {len(policies_data)} custom policies")
+        return policies_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list policies: {str(e)}")
-    return policies_data
+        raise e
 
 
 def fetch_policy_catalog() -> list:
@@ -402,7 +406,7 @@ def fetch_policy_document_by_arn(policy_arn: str) -> dict | None:
         return None
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         pol = client.get_policy(PolicyArn=policy_arn)
         default_ver = pol['Policy']['DefaultVersionId']
         pol_ver = client.get_policy_version(PolicyArn=policy_arn, VersionId=default_ver)
@@ -455,7 +459,7 @@ def fetch_managed_policy_documents(policy_arns: set) -> dict:
     def fetch_single_policy(arn):
         try:
             session = get_aws_session()
-            client = session.client('iam')
+            client = session.client('iam', config=get_boto_config())
             pol = client.get_policy(PolicyArn=arn)
             default_ver = pol['Policy']['DefaultVersionId']
             pol_ver = client.get_policy_version(PolicyArn=arn, VersionId=default_ver)

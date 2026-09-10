@@ -159,6 +159,7 @@ def compute_effective_blast_radius(
     G: nx.DiGraph,
     inventory: Any = None,
     policy_doc_map: Optional[Dict[str, str]] = None,
+    precomputed_records: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, int]:
     """Calculate the authoritative blast radius for an identity based on actual effective access.
 
@@ -168,16 +169,20 @@ def compute_effective_blast_radius(
     """
     unique_assets: Set[str] = set()
 
-    # 1. Authoritative effective access engine if inventory is available
-    if inventory and policy_doc_map:
+    # 1. Authoritative effective access engine if records or inventory available
+    if precomputed_records is not None or (inventory and policy_doc_map):
         try:
-            from app.services.simulation.effective_access import compute_effective_access
-            all_res = (
-                getattr(inventory, "s3", []) + getattr(inventory, "secrets", []) +
-                getattr(inventory, "rds", []) + getattr(inventory, "dynamodb", []) +
-                getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", [])
-            )
-            records = compute_effective_access(inventory, policy_doc_map, all_res)
+            if precomputed_records is not None:
+                records = precomputed_records
+            else:
+                from app.services.simulation.effective_access import compute_effective_access
+                all_res = (
+                    getattr(inventory, "s3", []) + getattr(inventory, "secrets", []) +
+                    getattr(inventory, "rds", []) + getattr(inventory, "dynamodb", []) +
+                    getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", [])
+                )
+                records = compute_effective_access(inventory, policy_doc_map, all_res)
+
             s_name = G.nodes[source_node_id].get("label", source_node_id) if G.has_node(source_node_id) else source_node_id
             for rec in records:
                 ident_name = rec.get("identity_name", "")
@@ -268,6 +273,18 @@ def find_attack_paths(
 
     # Pre-cache effective blast radius per source node
     blast_cache: Dict[str, str] = {}
+    precomputed_records = None
+    if inventory and policy_doc_map:
+        try:
+            from app.services.simulation.effective_access import compute_effective_access
+            all_res = (
+                getattr(inventory, "s3", []) + getattr(inventory, "secrets", []) +
+                getattr(inventory, "rds", []) + getattr(inventory, "dynamodb", []) +
+                getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", [])
+            )
+            precomputed_records = compute_effective_access(inventory, policy_doc_map, all_res)
+        except Exception as e:
+            logger.debug(f"Precomputing effective access for blast radius failed: {e}")
 
     evaluated_paths = []
     for path in candidate_paths:
@@ -302,7 +319,9 @@ def find_attack_paths(
 
         # Authoritative effective-access blast radius
         if source not in blast_cache:
-            desc, _ = compute_effective_blast_radius(source, G, inventory, policy_doc_map)
+            desc, _ = compute_effective_blast_radius(
+                source, G, inventory, policy_doc_map, precomputed_records=precomputed_records
+            )
             blast_cache[source] = desc
         blast_radius_desc = blast_cache[source]
 

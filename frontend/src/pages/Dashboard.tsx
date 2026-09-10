@@ -157,6 +157,34 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Scan Status Diagnostic Banners */}
+      {data?.scanStatus === 'FAILED' && (
+        <div className="p-3 bg-red-950/40 border border-red-500/40 rounded-xl flex items-center justify-between gap-3 text-xs text-red-300">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            <span className="font-semibold">Scan Failed:</span>
+            <span>{data?.lastError || 'One or more critical AWS collectors failed.'}</span>
+          </div>
+          {data?.lastSuccessfulScanAt && (
+            <span className="text-gray-400 text-[11px]">
+              Displaying last verified snapshot from {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      )}
+      {data?.scanStatus === 'SCANNING' && data?.lastSuccessfulScanAt && (
+        <div className="p-2.5 bg-blue-950/40 border border-blue-500/30 rounded-xl flex items-center justify-between gap-3 text-xs text-blue-300">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
+            <span className="font-semibold">Scan in progress:</span>
+            <span>Refreshing AWS cloud inventory... Showing previous completed snapshot.</span>
+          </div>
+          <span className="text-gray-400 text-[11px]">
+            Last verified: {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()}
+          </span>
+        </div>
+      )}
+
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {kpis.map((kpi, idx) => {

@@ -2,7 +2,7 @@ import logging
 import concurrent.futures
 import time
 from datetime import datetime
-from app.services.aws.session import get_account_id
+from app.services.aws.session import get_account_id, get_boto_config
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
 logger = logging.getLogger("scanner")
@@ -24,7 +24,7 @@ def collect_secrets() -> list:
             start = time.time()
             region_secrets = []
             try:
-                client = region_sessions[region_name].client('secretsmanager', region_name=region_name)
+                client = region_sessions[region_name].client('secretsmanager', region_name=region_name, config=get_boto_config())
                 paginator = client.get_paginator('list_secrets')
                 for page in paginator.paginate():
                     for sec in page.get('SecretList', []):
@@ -69,6 +69,7 @@ def collect_secrets() -> list:
                 secrets.extend(res)
 
         logger.info(f"Secrets Collector: Discovered {len(secrets)} secrets across all regions")
+        return secrets
     except Exception as e:
         logger.error(f"Secrets Collector failed: {e}")
-    return secrets
+        raise e

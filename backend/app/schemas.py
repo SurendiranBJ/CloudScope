@@ -150,6 +150,11 @@ class DashboardData(BaseModel):
     scannedRegions: Optional[List[str]] = None
     correlatedRisks: Optional[List[CorrelatedRiskFinding]] = None
     serviceStatus: Optional[dict] = None
+    scanId: Optional[str] = None
+    scanStatus: Optional[str] = "NO_SCAN"
+    lastSuccessfulScanAt: Optional[str] = None
+    lastSuccessfulScanId: Optional[str] = None
+    lastError: Optional[str] = None
 
 # Copilot Request/Response
 class CopilotRequest(BaseModel):

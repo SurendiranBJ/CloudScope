@@ -3,9 +3,24 @@ import logging
 from typing import Dict, Any, Optional
 from app.config import settings
 
+from botocore.config import Config
+
 logger = logging.getLogger("backend")
 
 _cached_account_id: Optional[str] = None
+
+DEFAULT_BOTO_CONFIG = Config(
+    connect_timeout=5,
+    read_timeout=15,
+    retries={'max_attempts': 2}
+)
+
+def get_boto_config(connect_timeout: int = 5, read_timeout: int = 15, max_attempts: int = 2) -> Config:
+    return Config(
+        connect_timeout=connect_timeout,
+        read_timeout=read_timeout,
+        retries={'max_attempts': max_attempts}
+    )
 
 
 def get_aws_session(region_name: Optional[str] = None) -> boto3.Session:

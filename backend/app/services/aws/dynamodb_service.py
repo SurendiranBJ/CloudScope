@@ -1,7 +1,7 @@
 import logging
 import concurrent.futures
 import time
-from app.services.aws.session import get_account_id
+from app.services.aws.session import get_account_id, get_boto_config
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
 logger = logging.getLogger("scanner")
@@ -17,7 +17,7 @@ def collect_dynamodb_tables() -> list:
             start = time.time()
             region_tables = []
             try:
-                client = region_sessions[region_name].client('dynamodb', region_name=region_name)
+                client = region_sessions[region_name].client('dynamodb', region_name=region_name, config=get_boto_config())
                 paginator = client.get_paginator('list_tables')
                 for page in paginator.paginate():
                     for table_name in page.get('TableNames', []):
@@ -66,6 +66,7 @@ def collect_dynamodb_tables() -> list:
                 tables.extend(res)
 
         logger.info(f"DynamoDB Collector: Discovered {len(tables)} tables across all regions")
+        return tables
     except Exception as e:
         logger.error(f"DynamoDB Collector failed: {e}")
-    return tables
+        raise e

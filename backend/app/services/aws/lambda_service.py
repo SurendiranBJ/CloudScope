@@ -1,7 +1,7 @@
 import logging
 import concurrent.futures
 import time
-from app.services.aws.session import get_aws_session, get_account_id
+from app.services.aws.session import get_aws_session, get_account_id, get_boto_config
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
 logger = logging.getLogger("scanner")
@@ -17,7 +17,7 @@ def collect_lambda_functions() -> list:
             start = time.time()
             region_funcs = []
             try:
-                client = region_sessions[region_name].client('lambda', region_name=region_name)
+                client = region_sessions[region_name].client('lambda', region_name=region_name, config=get_boto_config())
                 paginator = client.get_paginator('list_functions')
                 for page in paginator.paginate():
                     for fn in page.get('Functions', []):
@@ -72,6 +72,7 @@ def collect_lambda_functions() -> list:
                 functions.extend(res)
 
         logger.info(f"Lambda Collector: Discovered {len(functions)} functions across all regions")
+        return functions
     except Exception as e:
         logger.error(f"Lambda Collector failed: {e}")
-    return functions
+        raise e
