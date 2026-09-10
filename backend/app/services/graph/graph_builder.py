@@ -8,7 +8,7 @@ WITHOUT performing destructive full-graph deletions.
 
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
 from app.services.attack.policy_evaluator import (
@@ -39,12 +39,14 @@ def get_node_id(res_type: str, item_id: str) -> str:
     return f"{prefix}:{item_id}"
 
 
-def build_graph_in_neo4j(inventory: AWSInventory):
+def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[List[str]] = None):
     """Build or update the Neo4j graph using idempotent MERGE operations.
     Preserves ActivityEvent nodes and dynamic CloudTrail edges.
     """
-    logger.info("Synchronizing AWS Inventory into Neo4j graph (idempotent)")
+    logger.info("Synchronizing AWS Inventory into Neo4j graph database...")
     try:
+        from app.services.aws.ec2_service import is_running_ec2
+        running_ec2 = [e for e in inventory.ec2 if is_running_ec2(e)]
         account_id = get_account_id()
 
         # 1. Write / Update Users (Idempotent MERGE)
@@ -159,8 +161,8 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 }
             )
 
-        for e in inventory.ec2:
-            e_id = get_node_id("EC2", e['name'])
+        for e in running_ec2:
+            e_id = get_node_id("EC2", e['id'])
             execute_write(
                 """
                 MERGE (n:EC2 {id: $id})
@@ -169,7 +171,9 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     n.arn = $arn,
                     n.riskScore = $riskScore,
                     n.type = 'EC2',
-                    n.region = $region
+                    n.region = $region,
+                    n.status = 'active',
+                    n.state = 'running'
                 """,
                 {
                     "id": e_id,
@@ -455,7 +459,7 @@ def build_graph_in_neo4j(inventory: AWSInventory):
 
         # 11. Relationship: Policy -> Target Resource (ALLOWS) via AST Evaluation + Reconciliation
         all_resources: List[Dict[str, Any]] = (
-            inventory.s3 + inventory.ec2 + inventory.lambdas +
+            inventory.s3 + running_ec2 + inventory.lambdas +
             inventory.secrets + inventory.rds + inventory.dynamodb
         )
         for p in inventory.policies:
@@ -464,7 +468,8 @@ def build_graph_in_neo4j(inventory: AWSInventory):
             valid_res_node_ids = []
             for res in allowed_res:
                 rtype = res.get('type', 'Resource')
-                valid_res_node_ids.append(get_node_id(rtype, res['name']))
+                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                valid_res_node_ids.append(get_node_id(rtype, item_ident))
 
             execute_write(
                 """
@@ -485,8 +490,8 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 )
 
         # 12. Relationship: EC2 -> Role (ATTACHED_TO) + Reconciliation
-        for e in inventory.ec2:
-            e_id = get_node_id("EC2", e['name'])
+        for e in running_ec2:
+            e_id = get_node_id("EC2", e['id'])
             role_name = e.get('details', {}).get('iam_role_name', 'None')
             valid_r_ids = []
             if role_name and role_name != 'None':
@@ -535,21 +540,20 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 )
 
         # 14. Configuration Node Reconciliation: prune stale AWS inventory nodes
-        # Strictly preserves historical CloudTrail (:ActivityEvent) nodes and edges
-        node_type_specs = [
+        # Strictly preserves historical CloudTrail (:ActivityEvent) nodes and edges.
+        # For regional resources (EC2, Lambda), only prune within successfully scanned regions.
+        global_node_type_specs = [
             ("User", [get_node_id("User", u['name']) for u in inventory.users]),
             ("Group", [get_node_id("Group", g['name']) for g in inventory.groups]),
             ("Role", [get_node_id("Role", r['name']) for r in inventory.roles]),
             ("Policy", [get_node_id("Policy", p['name']) for p in inventory.policies]),
             ("S3", [get_node_id("S3", s['name']) for s in inventory.s3]),
-            ("EC2", [get_node_id("EC2", e['name']) for e in inventory.ec2]),
-            ("Lambda", [get_node_id("Lambda", l['name']) for l in inventory.lambdas]),
             ("Secrets", [get_node_id("Secrets", s['name']) for s in inventory.secrets]),
             ("RDS", [get_node_id("RDS", r['name']) for r in inventory.rds]),
             ("DynamoDB", [get_node_id("DynamoDB", d['name']) for d in inventory.dynamodb]),
         ]
 
-        for label, valid_ids in node_type_specs:
+        for label, valid_ids in global_node_type_specs:
             execute_write(
                 f"""
                 MATCH (n:{label})
@@ -557,6 +561,45 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 DETACH DELETE n
                 """,
                 {"valid_ids": valid_ids}
+            )
+
+        # Region-scoped pruning for EC2 & Lambda
+        valid_ec2_ids = [get_node_id("EC2", e['id']) for e in running_ec2]
+        valid_lambda_ids = [get_node_id("Lambda", l['name']) for l in inventory.lambdas]
+
+        if successful_regions:
+            execute_write(
+                """
+                MATCH (n:EC2)
+                WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"successful_regions": successful_regions, "valid_ids": valid_ec2_ids}
+            )
+            execute_write(
+                """
+                MATCH (n:Lambda)
+                WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"successful_regions": successful_regions, "valid_ids": valid_lambda_ids}
+            )
+        else:
+            execute_write(
+                """
+                MATCH (n:EC2)
+                WHERE NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"valid_ids": valid_ec2_ids}
+            )
+            execute_write(
+                """
+                MATCH (n:Lambda)
+                WHERE NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"valid_ids": valid_lambda_ids}
             )
 
         logger.info("Neo4j idempotent synchronization completed successfully.")

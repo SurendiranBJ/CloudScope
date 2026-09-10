@@ -150,6 +150,7 @@ class DashboardData(BaseModel):
     scannedRegions: Optional[List[str]] = None
     correlatedRisks: Optional[List[CorrelatedRiskFinding]] = None
     serviceStatus: Optional[dict] = None
+    failedRegions: Optional[List[str]] = None
     scanId: Optional[str] = None
     scanStatus: Optional[str] = "NO_SCAN"
     lastSuccessfulScanAt: Optional[str] = None

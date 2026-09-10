@@ -3,7 +3,27 @@ import logging
 from app.config import settings
 from app.services.aws.session import get_aws_session
 
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+
 logger = logging.getLogger("scanner")
+
+@dataclass
+class RegionalCollectionResult:
+    """Typed result model for regional AWS resource collection with sequence compatibility."""
+    items: List[Dict[str, Any]] = field(default_factory=list)
+    regional_status: Dict[str, str] = field(default_factory=dict)
+    successful_regions: List[str] = field(default_factory=list)
+    failed_regions: List[str] = field(default_factory=list)
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, index):
+        return self.items[index]
 
 _cached_regions: list | None = None
 

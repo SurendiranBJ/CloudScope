@@ -209,6 +209,7 @@ class ScanManager:
         self._last_error: str | None = None
         self._last_result: dict | None = None
         self._service_status: Dict[str, str] = {}
+        self._failed_regions: List[str] = []
 
     @property
     def is_running(self) -> bool:
@@ -225,7 +226,8 @@ class ScanManager:
             "last_successful_scan_id": self._last_successful_scan_id,
             "last_error": self._last_error,
             "last_result": self._last_result,
-            "service_status": self._service_status
+            "service_status": self._service_status,
+            "failed_regions": self._failed_regions
         }
 
     def trigger_async_scan(self) -> dict:
@@ -270,8 +272,8 @@ class ScanManager:
                 return self._last_result
 
             logger.info(
-                f"[INFO] AWS AUTHENTICATION: Account={aws_diag['account_id']}, "
-                f"ARN={aws_diag['arn']}, Region={aws_diag['region']}"
+                f"[INFO] AWS AUTHENTICATION: Account={aws_diag.get('account_id', 'unknown')}, "
+                f"ARN={aws_diag.get('arn', 'unknown')}, Region={aws_diag.get('region', 'unknown')}"
             )
 
             self.inventory.clear()
@@ -303,20 +305,52 @@ class ScanManager:
                     executor.submit(func): name
                     for name, func in collector_funcs.items()
                 }
+                scan_failed_regions: set = set()
+                successful_regions_set: set = set()
+
                 for future in concurrent.futures.as_completed(futures):
                     name = futures[future]
                     try:
                         res = future.result()
-                        collector_results[name] = res
-                        if res and len(res) > 0:
-                            self._service_status[name] = "SUCCESS_WITH_DATA"
+                        if hasattr(res, 'items') and hasattr(res, 'regional_status'):
+                            # Typed RegionalCollectionResult
+                            collector_results[name] = list(res.items)
+                            for r_name, r_st in res.regional_status.items():
+                                self._service_status[f"{name}:{r_name}"] = r_st
+                            if getattr(res, 'successful_regions', None):
+                                successful_regions_set.update(res.successful_regions)
+                            if getattr(res, 'failed_regions', None):
+                                scan_failed_regions.update(res.failed_regions)
+                                res_type = "EC2" if name == "EC2" else "Lambda"
+                                prev_resources = (cache.get("v1:resources") or []) + (cache.get(f"v1:raw:{res_type.lower()}") or [])
+                                for f_reg in res.failed_regions:
+                                    preserved = [
+                                        x for x in prev_resources
+                                        if x.get("type") == res_type and x.get("region") == f_reg
+                                    ]
+                                    if preserved:
+                                        logger.info(f"[PRESERVED] Retained {len(preserved)} previous {name} items from failed region {f_reg}")
+                                        collector_results[name].extend(preserved)
+
+                            if len(res.items) > 0:
+                                self._service_status[name] = "SUCCESS_WITH_DATA"
+                            elif getattr(res, 'failed_regions', None) and not getattr(res, 'successful_regions', None):
+                                self._service_status[name] = "FAILED"
+                            else:
+                                self._service_status[name] = "SUCCESS_EMPTY"
                         else:
-                            self._service_status[name] = "SUCCESS_EMPTY"
+                            collector_results[name] = res
+                            if res and len(res) > 0:
+                                self._service_status[name] = "SUCCESS_WITH_DATA"
+                            else:
+                                self._service_status[name] = "SUCCESS_EMPTY"
                     except Exception as err:
                         logger.error(f"[ERROR] Collector {name} failed: {err}")
                         self._service_status[name] = f"FAILED: {err}"
                         collector_failures[name] = str(err)
                         collector_results[name] = []
+
+            self._failed_regions = list(scan_failed_regions)
 
             # 1b. CRITICAL FAILURE GATE: Collector failure must NEVER look like empty AWS state
             failed_critical = [c for c in CRITICAL_COLLECTORS if c in collector_failures]
@@ -330,7 +364,8 @@ class ScanManager:
                     "scan_id": scan_id,
                     "error": err_msg,
                     "timestamp": datetime.utcnow().isoformat() + "Z",
-                    "service_status": self._service_status
+                    "service_status": self._service_status,
+                    "failed_regions": self._failed_regions
                 }
                 # Do NOT prune Neo4j, do NOT publish empty cache, preserve previous snapshot
                 return self._last_result
@@ -496,7 +531,10 @@ class ScanManager:
             # 4. STEP 1 OF PIPELINE: Neo4j Configuration Sync (Idempotent MERGE, preserves ActivityEvent)
             neo4j_success = False
             try:
-                graph_builder.build_graph_in_neo4j(self.inventory)
+                graph_builder.build_graph_in_neo4j(
+                    self.inventory,
+                    successful_regions=list(successful_regions_set) if successful_regions_set else None
+                )
                 neo4j_success = True
             except Exception as db_err:
                 logger.warning(f"Neo4j database sync skipped/failed: {db_err}")
@@ -567,10 +605,13 @@ class ScanManager:
             security_score = global_posture["overall_score"]
             recommendations = _generate_recommendations(self.inventory, attack_paths)
 
+            from app.services.aws.ec2_service import is_running_ec2
+            running_ec2 = [e for e in self.inventory.ec2 if is_running_ec2(e)]
+
             # 9. Record ScanHistory (Accurate Severity Metrics)
             scan_timestamp = datetime.utcnow().isoformat() + "Z"
             resources_count = (
-                len(self.inventory.ec2) + len(self.inventory.s3) +
+                len(running_ec2) + len(self.inventory.s3) +
                 len(self.inventory.lambdas) + len(self.inventory.secrets) +
                 len(self.inventory.rds) + len(self.inventory.dynamodb)
             )
@@ -616,12 +657,29 @@ class ScanManager:
                 logger.debug(f"Neo4j ScanHistory creation skipped: {hist_err}")
 
             # 10. STEP 6 OF PIPELINE: Build Atomic Snapshot in Memory & Publish Gate
-            # Cytoscape Graph Elements
+            # Cytoscape Graph Elements with Deliberate Relevance Filtering:
+            # - Core identity nodes (User, Group, Role, Policy) are ALWAYS included.
+            # - Cloud resource nodes (S3, EC2, Lambda, Secrets, RDS, DynamoDB) are included
+            #   when connected (ALLOWS, ATTACHED_TO, EXECUTES_WITH) or participating in attack paths.
+            attack_path_node_ids = set()
+            for p in attack_paths:
+                for n in p.get("nodes", []):
+                    attack_path_node_ids.add(n.get("id"))
+
+            relevant_node_ids = set()
+            for nid, attr in G.nodes(data=True):
+                ntype = attr.get('type', 'Resource')
+                if ntype in ('User', 'Group', 'Role', 'Policy'):
+                    relevant_node_ids.add(nid)
+                elif G.in_degree(nid) > 0 or G.out_degree(nid) > 0 or nid in attack_path_node_ids:
+                    relevant_node_ids.add(nid)
+
             cytoscape_elements = []
             role_map = {r['name']: r for r in self.inventory.roles}
             user_map = {u['name']: u for u in self.inventory.users}
 
-            for nid, attr in G.nodes(data=True):
+            for nid in relevant_node_ids:
+                attr = G.nodes[nid]
                 node_type = attr.get('type', 'Resource')
                 label = attr.get('label', nid)
                 extra: dict = {}
@@ -646,17 +704,18 @@ class ScanManager:
                     }
                 })
             for s, t, attr in G.edges(data=True):
-                cytoscape_elements.append({
-                    "data": {
-                        "id": f"e-{s}-{t}",
-                        "source": s,
-                        "target": t,
-                        "label": attr.get('label', ''),
-                        "isActivity": attr.get('is_activity', False),
-                        "timestamp": attr.get('timestamp', ''),
-                        "sourceIp": attr.get('sourceIp', '')
-                    }
-                })
+                if s in relevant_node_ids and t in relevant_node_ids:
+                    cytoscape_elements.append({
+                        "data": {
+                            "id": f"e-{s}-{t}",
+                            "source": s,
+                            "target": t,
+                            "label": attr.get('label', ''),
+                            "isActivity": attr.get('is_activity', False),
+                            "timestamp": attr.get('timestamp', ''),
+                            "sourceIp": attr.get('sourceIp', '')
+                        }
+                    })
 
             # Critical Risks Findings list
             critical_risks = [
@@ -678,7 +737,7 @@ class ScanManager:
                 {"type": "IAM Roles", "count": len(self.inventory.roles)},
                 {"type": "IAM Policies", "count": len(self.inventory.policies)},
                 {"type": "S3 Buckets", "count": len(self.inventory.s3)},
-                {"type": "EC2 Instances", "count": len(self.inventory.ec2)},
+                {"type": "EC2 Instances", "count": len(running_ec2)},
                 {"type": "Lambda Functions", "count": len(self.inventory.lambdas)},
                 {"type": "Secrets", "count": len(self.inventory.secrets)},
                 {"type": "RDS Databases", "count": len(self.inventory.rds)},
@@ -700,6 +759,9 @@ class ScanManager:
             ]
 
             critical_paths_list = [p for p in attack_paths if p.get('severity') in ['critical', 'high']][:5]
+
+            final_scan_status = "PARTIAL" if scan_failed_regions else "SUCCESS"
+
             dashboard_summary = {
                 "securityScore": f"{security_score} / 100",
                 "stats": {
@@ -738,21 +800,23 @@ class ScanManager:
                 "topRiskyIdentities": top_identities,
                 "resourceBreakdown": res_breakdown,
                 "scanId": scan_id,
-                "scanStatus": "SUCCESS",
+                "scanStatus": final_scan_status,
                 "lastSuccessfulScanAt": scan_timestamp,
                 "lastSuccessfulScanId": scan_id,
                 "lastError": None,
-                "serviceStatus": self._service_status
+                "serviceStatus": self._service_status,
+                "failedRegions": self._failed_regions
             }
 
             scan_metadata = {
                 "scanId": scan_id,
                 "scanTimestamp": scan_timestamp,
-                "scanStatus": "SUCCESS",
+                "scanStatus": final_scan_status,
                 "lastSuccessfulScanAt": scan_timestamp,
                 "lastSuccessfulScanId": scan_id,
                 "lastError": None,
                 "serviceStatus": self._service_status,
+                "failedRegions": self._failed_regions,
                 "durationSeconds": duration,
                 "resourcesFound": resources_count,
                 "risksFound": total_findings_count
@@ -765,7 +829,7 @@ class ScanManager:
                 "v1:policies": self.inventory.policies,
                 "v1:resources": (
                     self.inventory.users + self.inventory.roles +
-                    self.inventory.ec2 + self.inventory.s3 +
+                    running_ec2 + self.inventory.s3 +
                     self.inventory.lambdas + self.inventory.secrets +
                     self.inventory.rds + self.inventory.dynamodb
                 ),
@@ -781,17 +845,17 @@ class ScanManager:
 
             # Atomic publication under single lock
             cache.set_many(new_snapshot)
-            logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id})")
+            logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id}, status={final_scan_status})")
 
+            self._scan_status = final_scan_status
             self._last_successful_scan_at = scan_timestamp
             self._last_successful_scan_id = scan_id
-            self._scan_status = "SUCCESS"
             self._last_error = None
 
             self._last_result = {
-                "status": "success",
+                "status": "partial" if scan_failed_regions else "success",
                 "scan_id": scan_id,
-                "scan_status": "SUCCESS",
+                "scan_status": final_scan_status,
                 "timestamp": scan_timestamp,
                 "last_successful_scan_at": scan_timestamp,
                 "last_successful_scan_id": scan_id,
@@ -802,13 +866,10 @@ class ScanManager:
                 "security_score": security_score,
                 "total_findings": total_findings_count,
                 "critical_findings": len(critical_items),
-                "service_status": self._service_status
+                "service_status": self._service_status,
+                "failed_regions": self._failed_regions,
+                "scanned_regions": scanned_regions
             }
-
-            logger.info(
-                f"[INFO] SCAN COMPLETE: Duration={duration}s, Nodes={nodes_count}, Edges={edges_count}, "
-                f"AttackPaths={len(attack_paths)}, TotalFindings={total_findings_count}, SecurityScore={security_score}/100"
-            )
 
             return self._last_result
 

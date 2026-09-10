@@ -141,8 +141,10 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             description=f"S3 Bucket: {s['name']}"
         )
 
-    # 6. Add EC2 nodes
-    for e in inventory.ec2:
+    # 6. Add EC2 nodes (RUNNING instances only)
+    from app.services.aws.ec2_service import is_running_ec2
+    running_ec2 = [e for e in inventory.ec2 if is_running_ec2(e)]
+    for e in running_ec2:
         e_id = get_node_id("EC2", e['id'])
         G.add_node(
             e_id,
@@ -150,7 +152,10 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             label=e['name'],
             riskScore=e.get('riskScore', 0),
             arn=e['arn'],
-            description=f"EC2 Instance: {e['name']}"
+            description=f"EC2 Instance: {e['name']}",
+            region=e.get('region', 'unknown'),
+            state='running',
+            status='active'
         )
 
     # 7. Add Lambda nodes
@@ -214,7 +219,10 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
     # 2. Users -> Policies
     for u in inventory.users:
         u_id = get_node_id("User", u['name'])
-        for p_name in u.get('policies', []):
+        raw_policies = u.get('policies') or []
+        if not raw_policies:
+            raw_policies = [p['name'] if isinstance(p, dict) else p for p in (u.get('attached_policies') or u.get('attachedPolicies') or [])]
+        for p_name in raw_policies:
             clean_name = p_name.replace('[inline] ', '')
             p_id = get_node_id("Policy", clean_name)
             if G.has_node(u_id) and G.has_node(p_id):
@@ -223,7 +231,9 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
     # 3. Groups -> Policies
     for g in inventory.groups:
         g_id = get_node_id("Group", g['name'])
-        for p_name in g.get('attachedPolicies', []):
+        raw_policies = g.get('attachedPolicies') or g.get('attached_policies') or g.get('policies') or []
+        clean_policies = [p['name'] if isinstance(p, dict) else p for p in raw_policies]
+        for p_name in clean_policies:
             clean_name = p_name.replace('[inline] ', '')
             p_id = get_node_id("Policy", clean_name)
             if G.has_node(g_id) and G.has_node(p_id):
@@ -232,15 +242,17 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
     # 4. Roles -> Policies
     for r in inventory.roles:
         r_id = get_node_id("Role", r['name'])
-        for p_name in r.get('attachedPolicies', []):
+        raw_policies = r.get('attachedPolicies') or r.get('attached_policies') or r.get('policies') or []
+        clean_policies = [p['name'] if isinstance(p, dict) else p for p in raw_policies]
+        for p_name in clean_policies:
             clean_name = p_name.replace('[inline] ', '')
             p_id = get_node_id("Policy", clean_name)
             if G.has_node(r_id) and G.has_node(p_id):
                 G.add_edge(r_id, p_id, label='HAS_POLICY')
 
-    # 5. EC2 -> Roles (instance profile)
-    for e in inventory.ec2:
-        role_name = e.get('details', {}).get('iam_role_name', 'None')
+    # 5. EC2 -> Roles (instance profile for running instances)
+    for e in running_ec2:
+        role_name = e.get('details', {}).get('iam_role_name') or e.get('role')
         if role_name and role_name != 'None':
             e_id = get_node_id("EC2", e['id'])
             r_id = get_node_id("Role", role_name)
@@ -249,7 +261,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
 
     # 6. Lambda -> Roles (execution role)
     for l in inventory.lambdas:
-        role_name = l.get('details', {}).get('execution_role', 'None')
+        role_name = l.get('details', {}).get('execution_role') or l.get('role')
         if role_name and role_name != 'None':
             l_id = get_node_id("Lambda", l['name'])
             r_id = get_node_id("Role", role_name)
@@ -322,7 +334,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
     # 8. Policy -> ALLOWS -> Resource via policy_evaluator
     all_resources = (
         inventory.s3 + inventory.secrets + inventory.rds +
-        inventory.dynamodb + inventory.ec2 + inventory.lambdas
+        inventory.dynamodb + running_ec2 + inventory.lambdas
     )
 
     for p in inventory.policies:

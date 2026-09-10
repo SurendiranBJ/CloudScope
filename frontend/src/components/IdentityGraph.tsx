@@ -140,7 +140,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
 
           if (!userToGroups[src]) userToGroups[src] = [];
           if (!userToGroups[src].includes(tgt)) userToGroups[src].push(tgt);
-        } else if (lbl === 'HAS_POLICY' || lbl === 'ATTACHED_TO') {
+        } else if (lbl === 'HAS_POLICY') {
           allAttachedPolicies.add(tgt);
           if (src.includes(':group:')) {
             if (!groupToPolicies[src]) groupToPolicies[src] = [];
@@ -152,6 +152,10 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             if (!roleToPolicies[src]) roleToPolicies[src] = [];
             if (!roleToPolicies[src].includes(tgt)) roleToPolicies[src].push(tgt);
           }
+        } else if (lbl === 'ATTACHED_TO' || lbl === 'EXECUTES_WITH') {
+          // Resource execution attachment to Role: EC2 -[ATTACHED_TO]-> Role, Lambda -[EXECUTES_WITH]-> Role
+          if (!roleToResources[tgt]) roleToResources[tgt] = [];
+          if (!roleToResources[tgt].includes(src)) roleToResources[tgt].push(src);
         } else if (lbl === 'ALLOWS' || lbl === 'CAN_ACCESS') {
           if (!policyToResources[src]) policyToResources[src] = [];
           if (!policyToResources[src].includes(tgt)) policyToResources[src].push(tgt);
@@ -749,6 +753,61 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'line-style': 'solid',
             'width': 2,
             'curve-style': 'straight',
+            'opacity': 0.85
+          }
+        },
+        // Policy attachment edges (User/Group/Role -> Policy)
+        {
+          selector: 'edge[label = "HAS_POLICY"]',
+          style: {
+            'line-color': '#14B8A6',
+            'target-arrow-color': '#14B8A6',
+            'line-style': 'solid',
+            'width': 2,
+            'opacity': 0.85
+          }
+        },
+        // Role assumption edges (User/Role -> Role)
+        {
+          selector: 'edge[label = "CAN_ASSUME"]',
+          style: {
+            'line-color': '#A78BFA',
+            'target-arrow-color': '#A78BFA',
+            'line-style': 'dashed',
+            'width': 2,
+            'opacity': 0.85
+          }
+        },
+        // Policy allows resource access (Policy -> S3/EC2/Lambda/Secrets/RDS/DynamoDB)
+        {
+          selector: 'edge[label = "ALLOWS"]',
+          style: {
+            'line-color': '#10B981',
+            'target-arrow-color': '#10B981',
+            'line-style': 'solid',
+            'width': 2.5,
+            'opacity': 0.9
+          }
+        },
+        // EC2 instance profile attachment (EC2 -> Role)
+        {
+          selector: 'edge[label = "ATTACHED_TO"]',
+          style: {
+            'line-color': '#06B6D4',
+            'target-arrow-color': '#06B6D4',
+            'line-style': 'dashed',
+            'width': 2,
+            'opacity': 0.85
+          }
+        },
+        // Lambda execution role (Lambda -> Role)
+        {
+          selector: 'edge[label = "EXECUTES_WITH"]',
+          style: {
+            'line-color': '#F472B6',
+            'target-arrow-color': '#F472B6',
+            'line-style': 'dashed',
+            'width': 2,
             'opacity': 0.85
           }
         },

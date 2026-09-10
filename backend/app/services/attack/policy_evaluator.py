@@ -166,12 +166,16 @@ def _matches_single_resource_pattern(pattern: str, target_res: Dict[str, Any]) -
 
     # EC2 specific matching: arn:aws:ec2:...:instance/i-xxx
     if res_type == "EC2":
-        if f":instance/{res_name}" in p_clean:
+        res_id = target_res.get("id", "").strip()
+        if f":instance/{res_name}" in p_clean or (res_id and f":instance/{res_id}" in p_clean):
             return True
 
     # Lambda specific matching: arn:aws:lambda:...:function:FuncName
     if res_type == "Lambda":
-        if f":function:{res_name}" in p_clean:
+        res_id = target_res.get("id", "").strip()
+        if f":function:{res_name}" in p_clean or f":function/{res_name}" in p_clean:
+            return True
+        if res_id and (f":function:{res_id}" in p_clean or f":function/{res_id}" in p_clean):
             return True
 
     return False

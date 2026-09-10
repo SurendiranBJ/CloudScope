@@ -35,6 +35,7 @@ export interface ScanStatus {
     error?: string;
   } | null;
   service_status?: Record<string, string>;
+  failed_regions?: string[];
 }
 
 export const getGraphElements = async (): Promise<CytoscapeElement[]> => {

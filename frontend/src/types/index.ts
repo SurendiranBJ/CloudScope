@@ -35,6 +35,9 @@ export interface CloudResource {
   owner: string;
   arn: string;
   riskScore: number;
+  state?: string;
+  instance_state?: string;
+  details?: Record<string, any>;
 }
 
 export interface SecurityAlert {
@@ -114,6 +117,7 @@ export interface DashboardData {
   lastSuccessfulScanId?: string | null;
   lastError?: string | null;
   serviceStatus?: Record<string, string>;
+  failedRegions?: string[];
 }
 
 // ─── Policy Catalog ──────────────────────────────────────────────────────────
