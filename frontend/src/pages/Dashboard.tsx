@@ -16,7 +16,8 @@ import {
   Cloud,
   FileText,
   Key,
-  ShieldCheck
+  ShieldCheck,
+  AlertTriangle
 } from 'lucide-react';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { RegionSelector } from '../components/RegionSelector';
@@ -168,6 +169,26 @@ export const Dashboard: React.FC = () => {
           {data?.lastSuccessfulScanAt && (
             <span className="text-gray-400 text-[11px]">
               Displaying last verified snapshot from {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      )}
+      {data?.scanStatus === 'PARTIAL' && (
+        <div className="p-3 bg-amber-950/40 border border-amber-500/40 rounded-xl flex items-center justify-between gap-3 text-xs text-amber-300">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="font-semibold">Partial Regional Scan:</span>
+            <span>
+              AWS collection failed for region(s):{' '}
+              <span className="font-mono font-bold text-white bg-amber-900/60 px-1.5 py-0.5 rounded border border-amber-500/30">
+                {(data.failedRegions || []).join(', ') || 'N/A'}
+              </span>
+              . Cached inventory for failed regions was preserved.
+            </span>
+          </div>
+          {data?.lastSuccessfulScanAt && (
+            <span className="text-gray-400 text-[11px]">
+              Last completed: {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()}
             </span>
           )}
         </div>

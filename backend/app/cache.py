@@ -1,3 +1,4 @@
+import socket
 import logging
 import json
 import threading
@@ -12,11 +13,16 @@ class CacheManager:
         self.local_cache = {}
         self._lock = threading.Lock()
         try:
+            # Fast socket pre-check to avoid multi-second DNS/IPv6 connection timeout on Windows
+            with socket.create_connection((settings.REDIS_HOST, settings.REDIS_PORT), timeout=0.3):
+                pass
             self.redis_client = redis.Redis(
                 host=settings.REDIS_HOST,
                 port=settings.REDIS_PORT,
                 decode_responses=True,
-                socket_connect_timeout=2
+                socket_connect_timeout=1,
+                socket_timeout=1,
+                retry_on_timeout=False
             )
             self.redis_client.ping()
             logger.info(f"Connected to Redis cache at {settings.REDIS_HOST}:{settings.REDIS_PORT}")

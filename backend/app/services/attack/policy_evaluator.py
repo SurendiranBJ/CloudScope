@@ -9,6 +9,7 @@ WITHOUT relying on heuristic policy/role/resource name matching.
 import json
 import logging
 import re
+from enum import Enum
 from fnmatch import fnmatchcase
 from typing import Any, Dict, List, Set, Tuple, Optional
 from app.services.risk.risk_constants import (
@@ -18,6 +19,41 @@ from app.services.risk.risk_constants import (
 )
 
 logger = logging.getLogger("scanner")
+
+
+class PolicyDecision(str, Enum):
+    """Explicit IAM evaluation decision states."""
+    ALLOWED = "ALLOWED"
+    DENIED = "DENIED"
+    CONDITIONAL = "CONDITIONAL"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+DECISION_ALLOWED = PolicyDecision.ALLOWED.value
+DECISION_DENIED = PolicyDecision.DENIED.value
+DECISION_CONDITIONAL = PolicyDecision.CONDITIONAL.value
+DECISION_NOT_APPLICABLE = PolicyDecision.NOT_APPLICABLE.value
+
+RDS_MANAGEMENT_ACTIONS = {
+    "rds:describedbinstances",
+    "rds:describedbclusters",
+    "rds:modifydbinstance",
+    "rds:modifydbcluster",
+    "rds:createdbinstance",
+    "rds:createdbcluster",
+    "rds:deletedbinstance",
+    "rds:deletedbcluster",
+    "rds:startdbcluster",
+    "rds:stopdbcluster",
+    "rds:rebootdbinstance",
+}
+
+RDS_DB_CONNECT_ACTION = "rds-db:connect"
+
+
+class PolicyEvaluator:
+    """Wrapper class providing policy evaluation helpers."""
+    pass
 
 
 def parse_policy_document(doc_input: Any) -> List[Dict[str, Any]]:
@@ -79,6 +115,7 @@ def parse_policy_document(doc_input: Any) -> List[Dict[str, Any]]:
             not_resources = []
 
         normalized.append({
+            "Sid": stmt.get("Sid") or stmt.get("sid", ""),
             "Effect": effect,
             "Action": actions,
             "NotAction": not_actions,
@@ -100,16 +137,28 @@ def match_action(action_pattern: str, target_action: str) -> bool:
     return fnmatchcase(target, pattern)
 
 
+def match_statement_action(actions: List[str], not_actions: List[str], target_action: str) -> bool:
+    """Check if an IAM statement's Action / NotAction matches target_action.
+
+    - If Action is specified: True if ANY pattern in Action matches target_action.
+    - If NotAction is specified: True if NO pattern in NotAction matches target_action.
+    - If neither is specified: False.
+    """
+    if actions:
+        return any(match_action(a, target_action) for a in actions)
+    if not_actions:
+        return not any(match_action(na, target_action) for na in not_actions)
+    return False
+
+
 def has_service_action(stmt_actions: List[str], not_actions: List[str], service_prefix: str) -> bool:
     """Check if actions grant access to the specified AWS service (taking NotAction into account)."""
     service = service_prefix.lower().rstrip(":")
 
     # If NotAction is used
     if not_actions:
-        # If the target service is entirely excluded by NotAction (e.g. "s3:*" or "*"), it is NOT permitted
         if any(na.lower().strip() in (f"{service}:*", "*", "*:*") for na in not_actions):
             return False
-        # If NotAction excludes other services (e.g. "iam:*"), this service is permitted
         return True
 
     for action in stmt_actions:
@@ -121,69 +170,90 @@ def has_service_action(stmt_actions: List[str], not_actions: List[str], service_
     return False
 
 
-def _matches_single_resource_pattern(pattern: str, target_res: Dict[str, Any]) -> bool:
-    """Match a single pattern string against an inventory resource object."""
+def _matches_single_resource_pattern(pattern: str, target_res: Any) -> bool:
+    """Match a single pattern string against an inventory resource object or ARN string."""
     p_clean = pattern.strip()
     if not p_clean or p_clean == "*":
         return True
 
-    res_arn = target_res.get("arn", "").strip()
-    res_name = target_res.get("name", "").strip()
-    res_type = target_res.get("type", "").strip()
+    if isinstance(target_res, str):
+        res_arn = target_res.strip()
+        res_name = res_arn.split(":")[-1].split("/")[-1]
+        res_type = ""
+        res_id = res_name
+    elif isinstance(target_res, dict):
+        res_arn = target_res.get("arn", "").strip()
+        res_name = target_res.get("name", "").strip()
+        res_type = target_res.get("type", "").strip()
+        res_id = target_res.get("id", "").strip()
+    else:
+        return False
+
+    p_clean_lower = p_clean.lower()
+    res_arn_lower = res_arn.lower()
 
     # Exact or glob pattern match on full ARN
-    if res_arn and fnmatchcase(res_arn.lower(), p_clean.lower()):
+    if res_arn and fnmatchcase(res_arn_lower, p_clean_lower):
         return True
 
     # S3 specific matching: arn:aws:s3:::bucket-name or arn:aws:s3:::bucket-name/*
-    if res_type == "S3":
+    if res_type == "S3" or res_arn_lower.startswith("arn:aws:s3:::"):
         clean_pattern = p_clean.rstrip("/*").rstrip("/")
-        if res_arn and fnmatchcase(res_arn.lower(), clean_pattern.lower()):
+        if res_arn and fnmatchcase(res_arn_lower, clean_pattern.lower()):
             return True
-        if clean_pattern.lower() == f"arn:aws:s3:::{res_name}".lower():
+        if res_name:
+            if clean_pattern.lower() == f"arn:aws:s3:::{res_name}".lower():
+                return True
+            if fnmatchcase(f"arn:aws:s3:::{res_name}".lower(), clean_pattern.lower()):
+                return True
+
+    # Aurora / RDS IAM DB User specific matching: arn:aws:rds-db:<region>:<account>:dbuser:<db-id>/<username>
+    if "arn:aws:rds-db:" in res_arn_lower or "arn:aws:rds-db:" in p_clean_lower:
+        if res_arn and fnmatchcase(res_arn_lower, p_clean_lower):
             return True
-        if fnmatchcase(f"arn:aws:s3:::{res_name}".lower(), clean_pattern.lower()):
-            return True
+        return False
 
     # Secrets Manager specific matching: arn contains secret name prefix
-    if res_type == "Secrets":
+    if res_type in ("Secrets", "Secret") or ":secretsmanager:" in res_arn_lower:
         if p_clean.endswith("*"):
             prefix = p_clean.rstrip("*")
-            if res_arn.lower().startswith(prefix.lower()):
+            if res_arn and res_arn_lower.startswith(prefix.lower()):
                 return True
-        if f":secret:{res_name}" in p_clean:
+        if res_name and f":secret:{res_name.lower()}" in p_clean_lower:
             return True
 
     # DynamoDB specific matching: arn:aws:dynamodb:...:table/TableName
-    if res_type == "DynamoDB":
-        if f":table/{res_name}" in p_clean:
+    if res_type == "DynamoDB" or ":dynamodb:" in res_arn_lower:
+        if res_name and f":table/{res_name.lower()}" in p_clean_lower:
             return True
 
-    # RDS specific matching: arn:aws:rds:...:db:DbInstanceIdentifier
-    if res_type == "RDS":
-        if f":db:{res_name}" in p_clean:
+    # RDS specific matching: arn:aws:rds:...:db:DbInstanceIdentifier or :cluster:DbClusterIdentifier
+    if res_type == "RDS" or (":rds:" in res_arn_lower and "arn:aws:rds-db:" not in res_arn_lower):
+        if res_name and (f":db:{res_name.lower()}" in p_clean_lower or f":cluster:{res_name.lower()}" in p_clean_lower):
             return True
 
     # EC2 specific matching: arn:aws:ec2:...:instance/i-xxx
-    if res_type == "EC2":
-        res_id = target_res.get("id", "").strip()
-        if f":instance/{res_name}" in p_clean or (res_id and f":instance/{res_id}" in p_clean):
+    if res_type == "EC2" or ":ec2:" in res_arn_lower:
+        if res_name and f":instance/{res_name.lower()}" in p_clean_lower:
+            return True
+        if res_id and f":instance/{res_id.lower()}" in p_clean_lower:
             return True
 
     # Lambda specific matching: arn:aws:lambda:...:function:FuncName
-    if res_type == "Lambda":
-        res_id = target_res.get("id", "").strip()
-        if f":function:{res_name}" in p_clean or f":function/{res_name}" in p_clean:
+    if res_type == "Lambda" or ":lambda:" in res_arn_lower:
+        if res_name and (f":function:{res_name.lower()}" in p_clean_lower or f":function/{res_name.lower()}" in p_clean_lower):
             return True
-        if res_id and (f":function:{res_id}" in p_clean or f":function/{res_id}" in p_clean):
+        if res_id and (f":function:{res_id.lower()}" in p_clean_lower or f":function/{res_id.lower()}" in p_clean_lower):
             return True
 
     return False
 
 
-def match_resource_arn(resource_pattern: str, not_resources: List[str], target_res: Dict[str, Any]) -> bool:
-    """Match a policy resource ARN pattern against an inventory resource object."""
-    # Check NotResource exclusions
+def match_resource_arn(resource_pattern: str, not_resources: List[str], target_res: Any) -> bool:
+    """Match a policy resource ARN pattern against an inventory resource object or ARN.
+
+    If not_resources is specified, returns False if target_res matches ANY not_resources pattern.
+    """
     if not_resources:
         for nr in not_resources:
             if _matches_single_resource_pattern(nr, target_res):
@@ -194,6 +264,390 @@ def match_resource_arn(resource_pattern: str, not_resources: List[str], target_r
 
     return _matches_single_resource_pattern(resource_pattern, target_res)
 
+
+def match_statement_resource(resources: List[str], not_resources: List[str], target_res: Any) -> bool:
+    """Check if an IAM statement's Resource / NotResource matches target_res.
+
+    If not_resources is specified and target_res matches ANY pattern in not_resources -> False.
+    If resources is specified, returns True if target_res matches ANY pattern in resources.
+    If resources is empty/not specified, default is ["*"] -> True.
+    """
+    if not_resources:
+        for nr in not_resources:
+            if _matches_single_resource_pattern(nr, target_res):
+                return False
+
+    res_patterns = resources or ["*"]
+    return any(_matches_single_resource_pattern(rp, target_res) for rp in res_patterns)
+
+
+def match_principal(statement_principal: Any, target_principal: Any, account_id: str = "") -> bool:
+    """Check if an IAM statement's Principal matches target_principal.
+
+    target_principal can be:
+      - dict with keys 'arn', 'name', 'type'
+      - or an ARN string (e.g. 'arn:aws:iam::123456789012:user/alice')
+    """
+    if not statement_principal:
+        return False
+
+    if isinstance(target_principal, str):
+        target_arn = target_principal.strip().lower()
+        target_name = target_arn.split("/")[-1]
+    elif isinstance(target_principal, dict):
+        target_arn = str(target_principal.get("arn") or "").strip().lower()
+        target_name = str(target_principal.get("name") or "").strip().lower()
+    else:
+        return False
+
+    # Wildcard principal: "*" or {"AWS": "*"}
+    if statement_principal == "*":
+        return True
+
+    if isinstance(statement_principal, dict):
+        if statement_principal.get("AWS") == "*":
+            return True
+
+        aws_p = statement_principal.get("AWS", [])
+        if isinstance(aws_p, str):
+            aws_p = [aws_p]
+        elif not isinstance(aws_p, list):
+            aws_p = []
+
+        for p_val in aws_p:
+            p_str = str(p_val).strip().lower()
+            if p_str == "*":
+                return True
+            if target_arn and p_str == target_arn:
+                return True
+            if target_arn and fnmatchcase(target_arn, p_str):
+                return True
+            if target_name and p_str.endswith(f"/{target_name}"):
+                return True
+            if p_str.endswith(":root"):
+                root_account = p_str.split(":")[4] if len(p_str.split(":")) >= 5 else ""
+                target_account = target_arn.split(":")[4] if len(target_arn.split(":")) >= 5 else account_id
+                if root_account and root_account == target_account:
+                    return True
+            elif account_id and p_str == account_id.lower():
+                return True
+
+        # Service Principal check (e.g. {"Service": "ec2.amazonaws.com"})
+        srv_p = statement_principal.get("Service", [])
+        if isinstance(srv_p, str):
+            srv_p = [srv_p]
+        elif not isinstance(srv_p, list):
+            srv_p = []
+        for s_val in srv_p:
+            s_str = str(s_val).strip().lower()
+            if s_str == "*":
+                return True
+            if target_arn and (s_str == target_arn or fnmatchcase(target_arn, s_str)):
+                return True
+
+    return False
+
+
+def _build_evidence(
+    principal: Optional[Dict[str, Any]],
+    policy_name: str,
+    policy_arn: str,
+    stmt: Dict[str, Any],
+    target_action: str,
+    target_resource: Any,
+    decision: PolicyDecision,
+    reason: str,
+    condition_status: str = "none",
+    cond_eval: Optional[Dict[str, Any]] = None,
+    source: str = "direct_policy",
+) -> Dict[str, Any]:
+    """Construct a structured, explainable authorization evidence object."""
+    p_name = ""
+    p_type = "User"
+    if principal:
+        p_name = principal.get("name") or principal.get("username") or principal.get("id") or ""
+        p_type = principal.get("type", "User")
+
+    res_arn = ""
+    res_region = ""
+    if isinstance(target_resource, dict):
+        res_arn = target_resource.get("arn", "")
+        res_region = target_resource.get("region", "")
+    elif isinstance(target_resource, str):
+        res_arn = target_resource
+        parts = target_resource.split(":")
+        if len(parts) >= 4:
+            res_region = parts[3]
+
+    ce = cond_eval or {}
+
+    return {
+        "principal": p_name,
+        "principal_type": p_type,
+        "policy_arn": policy_arn,
+        "policy_name": policy_name,
+        "statement_sid": stmt.get("Sid") or stmt.get("sid") or "",
+        "effect": stmt.get("Effect", "Deny"),
+        "action": stmt.get("Action", []),
+        "not_action": stmt.get("NotAction", []),
+        "resource": stmt.get("Resource", []),
+        "not_resource": stmt.get("NotResource", []),
+        "matched_action": target_action,
+        "matched_resource": res_arn or (target_resource.get("id", "") if isinstance(target_resource, dict) else ""),
+        "condition_status": condition_status,
+        "conditions_evaluated": ce.get("conditions_evaluated", []),
+        "conditions_satisfied": ce.get("conditions_satisfied", []),
+        "conditions_unresolved": ce.get("conditions_unresolved", []),
+        "decision": decision.value,
+        "source": source,
+        "region": res_region,
+        "resource_arn": res_arn,
+        "reason": reason,
+    }
+
+
+def evaluate_statement(
+    stmt: Dict[str, Any],
+    target_action: str,
+    target_resource: Any,
+    principal: Optional[Dict[str, Any]] = None,
+    account_id: str = "",
+    policy_name: str = "",
+    policy_arn: str = "",
+    source: str = "direct_policy",
+) -> Tuple[PolicyDecision, Dict[str, Any]]:
+    """Authoritative single IAM statement evaluator.
+
+    Evaluates:
+      - Action / NotAction
+      - Resource / NotResource
+      - Principal (if present in resource/trust policy)
+      - Condition block (satisfiable vs unresolved vs violated)
+      - Effect (Allow vs Deny)
+
+    Returns:
+      (PolicyDecision, evidence_dict)
+    """
+    effect = stmt.get("Effect", "Deny")
+    actions = stmt.get("Action", [])
+    if isinstance(actions, str):
+        actions = [actions]
+    not_actions = stmt.get("NotAction", [])
+    if isinstance(not_actions, str):
+        not_actions = [not_actions]
+    resources = stmt.get("Resource", [])
+    if isinstance(resources, str):
+        resources = [resources]
+    not_resources = stmt.get("NotResource", [])
+    if isinstance(not_resources, str):
+        not_resources = [not_resources]
+    stmt_principal = stmt.get("Principal")
+
+    # 1. Action / NotAction matching
+    if not match_statement_action(actions, not_actions, target_action):
+        ev = _build_evidence(
+            principal, policy_name, policy_arn, stmt, target_action, target_resource,
+            PolicyDecision.NOT_APPLICABLE,
+            f"Action '{target_action}' does not match statement Action/NotAction",
+            condition_status="none", source=source
+        )
+        return PolicyDecision.NOT_APPLICABLE, ev
+
+    # 2. Resource / NotResource matching
+    if not match_statement_resource(resources, not_resources, target_resource):
+        res_repr = target_resource.get("arn") if isinstance(target_resource, dict) else str(target_resource)
+        ev = _build_evidence(
+            principal, policy_name, policy_arn, stmt, target_action, target_resource,
+            PolicyDecision.NOT_APPLICABLE,
+            f"Resource '{res_repr}' does not match statement Resource/NotResource",
+            condition_status="none", source=source
+        )
+        return PolicyDecision.NOT_APPLICABLE, ev
+
+    # 3. Principal matching (if statement defines a Principal)
+    if stmt_principal:
+        if not match_principal(stmt_principal, principal or {}, account_id):
+            p_repr = principal.get("arn") if principal else "unspecified"
+            ev = _build_evidence(
+                principal, policy_name, policy_arn, stmt, target_action, target_resource,
+                PolicyDecision.NOT_APPLICABLE,
+                f"Principal '{p_repr}' does not match statement Principal",
+                condition_status="none", source=source
+            )
+            return PolicyDecision.NOT_APPLICABLE, ev
+
+    # 4. Condition evaluation
+    cond = stmt.get("Condition")
+    cond_status = "none"
+    c_eval: Dict[str, Any] = {}
+    if cond:
+        c_eval = evaluate_condition_block(cond, principal or {}, account_id)
+        if c_eval["is_violated"]:
+            ev = _build_evidence(
+                principal, policy_name, policy_arn, stmt, target_action, target_resource,
+                PolicyDecision.NOT_APPLICABLE,
+                f"Statement condition deterministically violated: {c_eval.get('conditions_evaluated', [])}",
+                condition_status="violated", cond_eval=c_eval, source=source
+            )
+            return PolicyDecision.NOT_APPLICABLE, ev
+
+        if c_eval["conditions_unresolved"]:
+            ev = _build_evidence(
+                principal, policy_name, policy_arn, stmt, target_action, target_resource,
+                PolicyDecision.CONDITIONAL,
+                f"Condition requires unavailable runtime context: {', '.join(c_eval['conditions_unresolved'])}",
+                condition_status="unresolved", cond_eval=c_eval, source=source
+            )
+            return PolicyDecision.CONDITIONAL, ev
+
+        if c_eval.get("is_fully_satisfied"):
+            cond_status = "satisfied"
+
+    # 5. Effect evaluation
+    if effect == "Deny":
+        ev = _build_evidence(
+            principal, policy_name, policy_arn, stmt, target_action, target_resource,
+            PolicyDecision.DENIED,
+            "Explicit Deny statement matched",
+            condition_status=cond_status, cond_eval=c_eval, source=source
+        )
+        return PolicyDecision.DENIED, ev
+
+    ev = _build_evidence(
+        principal, policy_name, policy_arn, stmt, target_action, target_resource,
+        PolicyDecision.ALLOWED,
+        "Allow statement matched",
+        condition_status=cond_status, cond_eval=c_eval, source=source
+    )
+    return PolicyDecision.ALLOWED, ev
+
+
+def evaluate_authorization_decision(
+    policy_docs: List[Any],
+    target_action: str,
+    target_resource: Any,
+    principal: Optional[Dict[str, Any]] = None,
+    account_id: str = "",
+    policy_names: Optional[List[str]] = None,
+    policy_arns: Optional[List[str]] = None,
+    source: str = "direct_policy",
+) -> Tuple[PolicyDecision, Dict[str, Any]]:
+    """Authoritative multi-policy evaluation adhering to AWS evaluation logic:
+
+    1. EXPLICIT DENY: Any matching Deny statement with satisfied conditions immediately returns DENIED.
+    2. ALLOW: If at least one matching Allow statement is satisfied and no Deny matches -> ALLOWED.
+    3. CONDITIONAL: If an Allow or Deny matches but conditions cannot be proven from scanner context -> CONDITIONAL.
+    4. DEFAULT DENY: If no Allow statement matches -> DENIED (implicit deny).
+    """
+    has_allow = False
+    has_conditional = False
+    allow_ev: Optional[Dict[str, Any]] = None
+    conditional_ev: Optional[Dict[str, Any]] = None
+
+    p_names = policy_names or []
+    p_arns = policy_arns or []
+
+    for idx, doc in enumerate(policy_docs):
+        pol_name = p_names[idx] if idx < len(p_names) else f"Policy_{idx+1}"
+        pol_arn = p_arns[idx] if idx < len(p_arns) else ""
+        stmts = parse_policy_document(doc)
+
+        for stmt in stmts:
+            dec, ev = evaluate_statement(
+                stmt=stmt,
+                target_action=target_action,
+                target_resource=target_resource,
+                principal=principal,
+                account_id=account_id,
+                policy_name=pol_name,
+                policy_arn=pol_arn,
+                source=source,
+            )
+
+            if dec == PolicyDecision.DENIED:
+                # Explicit Deny wins immediately across all statements and policies!
+                return PolicyDecision.DENIED, ev
+
+            if dec == PolicyDecision.ALLOWED:
+                has_allow = True
+                if allow_ev is None:
+                    allow_ev = ev
+
+            elif dec == PolicyDecision.CONDITIONAL:
+                has_conditional = True
+                if conditional_ev is None:
+                    conditional_ev = ev
+
+    if has_allow:
+        return PolicyDecision.ALLOWED, (allow_ev or {})
+
+    if has_conditional:
+        return PolicyDecision.CONDITIONAL, (conditional_ev or {})
+
+    default_deny_ev = _build_evidence(
+        principal=principal,
+        policy_name=p_names[0] if p_names else "ImplicitDeny",
+        policy_arn=p_arns[0] if p_arns else "",
+        stmt={"Effect": "Deny", "Action": [], "Resource": []},
+        target_action=target_action,
+        target_resource=target_resource,
+        decision=PolicyDecision.DENIED,
+        reason="No matching Allow statement found (default implicit deny)",
+        condition_status="none",
+        source=source,
+    )
+    return PolicyDecision.DENIED, default_deny_ev
+
+
+def evaluate_rds_db_connect(
+    policy_doc_input: Any,
+    db_resource_id: str,
+    db_username: str,
+    principal: Optional[Dict[str, Any]] = None,
+    account_id: str = "",
+    region: str = "us-east-1",
+    policy_name: str = "",
+    policy_arn: str = "",
+) -> Tuple[PolicyDecision, Dict[str, Any]]:
+    """Evaluate whether an IAM policy grants database authentication via rds-db:connect.
+
+    Resource ARN format for RDS/Aurora IAM database authentication:
+        arn:aws:rds-db:<region>:<account-id>:dbuser:<db-cluster-resource-id-or-dbi-resource-id>/<db-username>
+
+    Rules:
+    - Normal RDS management permissions (rds:Describe*, rds:Modify*, etc.) NEVER grant DB connect.
+    - An incorrect DB user ARN does not match.
+    - Explicit Deny overrides rds-db:connect.
+    - Unresolved conditions remain CONDITIONAL.
+    - Returns (decision, evidence).
+    """
+    target_arn = f"arn:aws:rds-db:{region}:{account_id}:dbuser:{db_resource_id}/{db_username}"
+    target_res = {
+        "id": f"{db_resource_id}/{db_username}",
+        "name": f"{db_resource_id}/{db_username}",
+        "arn": target_arn,
+        "type": "RDS_DB_USER",
+        "region": region,
+    }
+
+    docs = policy_doc_input if isinstance(policy_doc_input, list) else [policy_doc_input]
+    p_names = [policy_name] if policy_name else ["Policy"]
+    p_arns = [policy_arn] if policy_arn else [""]
+
+    dec, ev = evaluate_authorization_decision(
+        policy_docs=docs,
+        target_action="rds-db:connect",
+        target_resource=target_res,
+        principal=principal,
+        account_id=account_id,
+        policy_names=p_names,
+        policy_arns=p_arns,
+        source="database_authentication",
+    )
+
+    ev["db_resource_id"] = db_resource_id
+    ev["db_username"] = db_username
+    return dec, ev
 
 
 def evaluate_policy_allows_resources(
@@ -276,6 +730,175 @@ def evaluate_policy_allows_resources(
             matched_resources.append(res)
 
     return matched_resources
+
+
+def evaluate_policy_allows_resources_with_provenance(
+    policy_name: str = "",
+    policy_arn: str = "",
+    document: Any = None,
+    resources: Any = None,
+    principal: Optional[Dict[str, Any]] = None,
+    account_id: str = "",
+    **kwargs
+) -> Tuple[Any, Any, Any]:
+    """Evaluate which resources this policy allows, capturing rich provenance metadata and explicit deny records.
+
+    Returns:
+        (matched_resources, provenance_map, deny_map)
+        where provenance_map maps resource canonical key -> provenance dict
+        and deny_map maps resource canonical key -> explicit deny evidence dict
+    """
+    if "policy_doc" in kwargs:
+        document = kwargs["policy_doc"]
+    is_dict_call = False
+    if "known_resources" in kwargs:
+        kr = kwargs["known_resources"]
+        if isinstance(kr, dict):
+            res_list = []
+            for r_arn, r_info in kr.items():
+                r_type = r_info.get("type", "Resource")
+                r_name = r_arn.split(":")[-1]
+                res_list.append({
+                    "id": r_arn,
+                    "name": r_name,
+                    "arn": r_arn,
+                    "type": r_type,
+                    "region": r_info.get("region", kwargs.get("default_region", "us-east-1"))
+                })
+            resources = res_list
+            is_dict_call = True
+        else:
+            resources = kr
+
+    statements = parse_policy_document(document)
+    matched_resources: List[Dict[str, Any]] = []
+    provenance_map: Dict[str, Dict[str, Any]] = {}
+    deny_map: Dict[str, Dict[str, Any]] = {}
+
+    service_prefix_map = {
+        "S3": "s3",
+        "Secrets": "secretsmanager",
+        "Secret": "secretsmanager",
+        "RDS": "rds",
+        "DynamoDB": "dynamodb",
+        "EC2": "ec2",
+        "Lambda": "lambda",
+    }
+
+    for res in resources:
+        res_type = res.get("type")
+        if not res_type:
+            continue
+
+        service_prefix = service_prefix_map.get(res_type)
+        if not service_prefix:
+            continue
+
+        res_ident = res.get("id") if res_type == "EC2" else (res.get("name") or res.get("id") or "")
+        res_arn = res.get("arn") or f"arn:aws:{service_prefix}:::{res_ident}"
+        res_key = str(res_ident)
+
+        is_allowed = False
+        is_denied = False
+        allow_stmt_evidence: Optional[Dict[str, Any]] = None
+        deny_stmt_evidence: Optional[Dict[str, Any]] = None
+
+        for stmt in statements:
+            effect = stmt.get("Effect", "")
+            actions = stmt.get("Action", [])
+            not_actions = stmt.get("NotAction", [])
+            resources_pat = stmt.get("Resource", [])
+            not_resources = stmt.get("NotResource", [])
+            sid = stmt.get("Sid") or "Statement"
+
+            # Check if this statement applies to this resource's service
+            service_matches = has_service_action(actions, not_actions, service_prefix)
+            if not service_matches:
+                continue
+
+            # Check if this statement applies to this resource's ARN
+            resource_matches = False
+            matched_pat = ""
+            for res_pattern in (resources_pat or ["*"]):
+                if match_resource_arn(res_pattern, not_resources, res):
+                    resource_matches = True
+                    matched_pat = res_pattern
+                    break
+
+            if resource_matches:
+                # Find the matched action
+                actions_list = actions if isinstance(actions, list) else [actions]
+                matched_action = actions_list[0] if actions_list else "*"
+
+                # Evaluate Condition block
+                condition_status = "NONE"
+                cond = stmt.get("Condition")
+                if cond:
+                    c_eval = evaluate_condition_block(cond, principal or {}, account_id)
+                    if c_eval["is_violated"]:
+                        continue
+                    if c_eval["conditions_unresolved"]:
+                        # Cannot provide unconditional Allow or unconditional Deny
+                        continue
+                    condition_status = "SATISFIED"
+
+                if effect == "Deny":
+                    is_denied = True
+                    deny_stmt_evidence = {
+                        "policy_name": policy_name,
+                        "policy_arn": policy_arn,
+                        "statement_sid": sid,
+                        "effect": "Deny",
+                        "action": matched_action,
+                        "resource": res_ident,
+                        "resource_arn": res_arn,
+                        "decision": "DENIED",
+                        "why": f"Explicit Deny in statement '{sid}' on action '{matched_action}' overrides access",
+                    }
+                    break  # Explicit Deny wins immediately
+                elif effect == "Allow":
+                    is_allowed = True
+                    allow_stmt_evidence = {
+                        "edge_type": "ALLOWS",
+                        "source": "IAM",
+                        "principal": principal.get("arn") or principal.get("name") if principal else policy_arn,
+                        "principal_type": principal.get("type", "Policy") if principal else "Policy",
+                        "policy_name": policy_name,
+                        "policy_arn": policy_arn,
+                        "statement_sid": sid,
+                        "effect": "Allow",
+                        "action": matched_action,
+                        "resource": res_ident,
+                        "resource_arn": res_arn,
+                        "condition_status": condition_status,
+                        "decision": "ALLOWED",
+                        "region": res.get("region", "global"),
+                        "why": f"Matched IAM policy statement '{sid}' allowing '{matched_action}' on resource '{res_arn}'",
+                        "evidence": {
+                            "statement_sid": sid,
+                            "effect": "Allow",
+                            "action": matched_action,
+                            "resource_pattern": matched_pat,
+                            "condition_status": condition_status,
+                        }
+                    }
+
+        if is_denied and deny_stmt_evidence:
+            deny_map[res_key] = deny_stmt_evidence
+
+        if is_allowed and not is_denied and allow_stmt_evidence:
+            matched_resources.append(res)
+            allow_stmt_evidence["decision"] = "ALLOW"
+            allow_stmt_evidence["action"] = allow_stmt_evidence.get("action", "*")
+            sid_val = allow_stmt_evidence.get("statement_sid", "Statement")
+            allow_stmt_evidence["why"] = f"Statement '{sid_val}' in policy '{policy_name}' allows access"
+            provenance_map[res_key] = allow_stmt_evidence
+
+    if is_dict_call:
+        allowed_arns = [r["arn"] for r in matched_resources]
+        return allowed_arns, list(provenance_map.values()), list(deny_map.values())
+
+    return matched_resources, provenance_map, deny_map
 
 
 def check_resource_explicitly_denied(
@@ -1121,7 +1744,7 @@ def evaluate_assume_role_trust_with_evidence(
                         return True
         return False
 
-    def _process_user(u_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool):
+    def _process_user(u_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool, stmt_sid: str = ""):
         uid = u_obj.get("id") or u_obj.get("name")
 
         # 1. Check trust-policy explicit deny
@@ -1174,6 +1797,8 @@ def evaluate_assume_role_trust_with_evidence(
                 "conditions_satisfied": all_satisfied,
                 "conditions_unresolved": all_unresolved,
                 "call_permission_verified": call_verified,
+                "statement_sid": stmt_sid or "TrustStatement",
+                "action": "sts:AssumeRole",
             },
         }
 
@@ -1191,7 +1816,7 @@ def evaluate_assume_role_trust_with_evidence(
             result["conditional_trusts"].append(entry)
         added_user_ids[uid] = entry
 
-    def _process_role(r_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool):
+    def _process_role(r_obj: Dict[str, Any], trust_type: str, cond_eval: Dict[str, Any], requires_call_perm_check: bool, stmt_sid: str = ""):
         rn = r_obj["name"]
 
         if _is_denied_by_trust_policy(r_obj):
@@ -1241,6 +1866,8 @@ def evaluate_assume_role_trust_with_evidence(
                 "conditions_satisfied": all_satisfied,
                 "conditions_unresolved": all_unresolved,
                 "call_permission_verified": call_verified,
+                "statement_sid": stmt_sid or "TrustStatement",
+                "action": "sts:AssumeRole",
             },
         }
 
@@ -1269,6 +1896,7 @@ def evaluate_assume_role_trust_with_evidence(
             continue
 
         stmt_condition = stmt.get("Condition")
+        current_sid = stmt.get("Sid") or "TrustStatement"
 
         # ── Wildcard principal ("*" at top level or AWS: "*") ────────────────
         is_wildcard = (
@@ -1281,13 +1909,13 @@ def evaluate_assume_role_trust_with_evidence(
             for u in all_users:
                 c_eval = evaluate_trust_statement_condition(stmt_condition, u, account_id)
                 if not c_eval["is_violated"]:
-                    _process_user(u, "wildcard", c_eval, requires_call_perm_check=True)
+                    _process_user(u, "wildcard", c_eval, requires_call_perm_check=True, stmt_sid=current_sid)
             for r in all_roles:
                 if r["name"] == role_name:
                     continue
                 c_eval = evaluate_trust_statement_condition(stmt_condition, r, account_id)
                 if not c_eval["is_violated"]:
-                    _process_role(r, "wildcard", c_eval, requires_call_perm_check=True)
+                    _process_role(r, "wildcard", c_eval, requires_call_perm_check=True, stmt_sid=current_sid)
             continue
 
         aws_principals = principal.get("AWS", []) if isinstance(principal, dict) else []
@@ -1306,13 +1934,13 @@ def evaluate_assume_role_trust_with_evidence(
                 for u in all_users:
                     c_eval = evaluate_trust_statement_condition(stmt_condition, u, account_id)
                     if not c_eval["is_violated"]:
-                        _process_user(u, "wildcard", c_eval, requires_call_perm_check=True)
+                        _process_user(u, "wildcard", c_eval, requires_call_perm_check=True, stmt_sid=current_sid)
                 for r in all_roles:
                     if r["name"] == role_name:
                         continue
                     c_eval = evaluate_trust_statement_condition(stmt_condition, r, account_id)
                     if not c_eval["is_violated"]:
-                        _process_role(r, "wildcard", c_eval, requires_call_perm_check=True)
+                        _process_role(r, "wildcard", c_eval, requires_call_perm_check=True, stmt_sid=current_sid)
                 continue
 
             # ── Account root ARN or bare account ID ──────────────────────────
@@ -1322,13 +1950,13 @@ def evaluate_assume_role_trust_with_evidence(
                 for u in all_users:
                     c_eval = evaluate_trust_statement_condition(stmt_condition, u, account_id)
                     if not c_eval["is_violated"]:
-                        _process_user(u, "account_root", c_eval, requires_call_perm_check=True)
+                        _process_user(u, "account_root", c_eval, requires_call_perm_check=True, stmt_sid=current_sid)
                 for r in all_roles:
                     if r["name"] == role_name:
                         continue
                     c_eval = evaluate_trust_statement_condition(stmt_condition, r, account_id)
                     if not c_eval["is_violated"]:
-                        _process_role(r, "account_root", c_eval, requires_call_perm_check=True)
+                        _process_role(r, "account_root", c_eval, requires_call_perm_check=True, stmt_sid=current_sid)
                 continue
 
             # ── Specific Role ARN ─────────────────────────────────────────────
@@ -1339,7 +1967,7 @@ def evaluate_assume_role_trust_with_evidence(
                     c_eval = evaluate_trust_statement_condition(stmt_condition, r_obj, account_id)
                     if not c_eval["is_violated"]:
                         result["trust_principal_types"].add("exact_arn")
-                        _process_role(r_obj, "exact_arn", c_eval, requires_call_perm_check=False)
+                        _process_role(r_obj, "exact_arn", c_eval, requires_call_perm_check=False, stmt_sid=current_sid)
                 continue
 
             # ── Specific User ARN ─────────────────────────────────────────────
@@ -1350,7 +1978,7 @@ def evaluate_assume_role_trust_with_evidence(
                     c_eval = evaluate_trust_statement_condition(stmt_condition, u_obj, account_id)
                     if not c_eval["is_violated"]:
                         result["trust_principal_types"].add("exact_arn")
-                        _process_user(u_obj, "exact_arn", c_eval, requires_call_perm_check=False)
+                        _process_user(u_obj, "exact_arn", c_eval, requires_call_perm_check=False, stmt_sid=current_sid)
                 continue
 
     return result

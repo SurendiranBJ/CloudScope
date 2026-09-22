@@ -24,7 +24,11 @@ import {
   SlidersHorizontal,
   FolderGit2,
   Share2,
-  Users
+  Users,
+  Activity,
+  FileText,
+  Key,
+  ShieldCheck
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getAttackPaths } from '../api/attack';
@@ -65,6 +69,7 @@ export const AttackPaths: FC = () => {
   const [resourceTypeFilter, setResourceTypeFilter] = useState<string>('all');
   const [aiExpanded, setAiExpanded] = useState<Record<string, { loading: boolean; text: string; codeBlock?: string } | null>>({});
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
+  const [evidenceExpanded, setEvidenceExpanded] = useState<Record<string, boolean>>({});
 
   // Simulation View Controls
   const [simViewMode, setSimViewMode] = useState<'current' | 'desired' | 'diff'>('diff');
@@ -1121,6 +1126,17 @@ Explain why this shared privilege path introduces high blast radius across multi
             const isAIExpanded = !!aiState && !aiState.loading;
             const isAILoading = !!aiState?.loading;
 
+            const correlationStatus = group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY')?.correlationStatus ||
+              group.originalPaths.find(p => p.correlationStatus === 'CORRELATED_ACTIVITY' || (p as any).correlation_status === 'CORRELATED_ACTIVITY')?.correlationStatus ||
+              group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ACTIVITY')?.correlationStatus ||
+              'POSSIBLE_CAPABILITY';
+
+            const privEsc = group.originalPaths.find(p => (p.privilegeEscalationDetails || (p as any).privilege_escalation_details)?.is_passrole)?.privilegeEscalationDetails ||
+              (group.originalPaths.find(p => (p.privilegeEscalationDetails || (p as any).privilege_escalation_details)?.is_passrole) as any)?.privilege_escalation_details;
+
+            const representativeEvidence = group.originalPaths.find(p => (p.evidence || []).length > 0)?.evidence || [];
+            const isEvidenceOpen = Boolean(evidenceExpanded[group.groupId]);
+
             return (
               <div
                 key={group.groupId}
@@ -1165,6 +1181,27 @@ Explain why this shared privilege path introduces high blast radius across multi
                             </span>
                           )}
                           {group.diffStatus === 'UNCHANGED' && 'UNCHANGED'}
+                        </span>
+                      )}
+                      {correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' ? (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-red-500/20 text-red-400 border border-red-500/50 flex items-center gap-1">
+                          <Activity className="w-3 h-3 text-red-400 animate-pulse" />
+                          <span>Observed Attack Activity</span>
+                        </span>
+                      ) : correlationStatus === 'CORRELATED_ACTIVITY' ? (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-blue-500/20 text-blue-300 border border-blue-500/50 flex items-center gap-1">
+                          <Activity className="w-3 h-3 text-blue-400" />
+                          <span>Correlated Activity</span>
+                        </span>
+                      ) : correlationStatus === 'OBSERVED_ACTIVITY' ? (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 flex items-center gap-1">
+                          <Activity className="w-3 h-3 text-cyan-400" />
+                          <span>Observed Activity</span>
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-gray-800/80 text-gray-400 border border-gray-700 flex items-center gap-1">
+                          <ShieldCheck className="w-3 h-3 text-gray-400" />
+                          <span>Possible Capability (Static)</span>
                         </span>
                       )}
                       <span
@@ -1218,6 +1255,33 @@ Explain why this shared privilege path introduces high blast radius across multi
                     </button>
                   </div>
                 </div>
+
+                {/* Privilege Escalation Callout Banner */}
+                {privEsc && (
+                  <div className="bg-purple-950/40 border border-purple-500/50 rounded-xl p-3.5 flex items-start gap-3 text-xs shadow-lg">
+                    <div className="p-2 bg-purple-500/20 rounded-lg text-purple-400 shrink-0 mt-0.5">
+                      <Key className="w-4 h-4" />
+                    </div>
+                    <div className="space-y-1.5 w-full">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <span className="font-bold text-purple-200 text-xs">
+                          Privilege Escalation Vector: {privEsc.trigger_permission || 'iam:PassRole'}
+                        </span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 bg-purple-900/60 rounded text-purple-300 border border-purple-500/30 font-bold">
+                          Target Role: {privEsc.target_role || 'Target Role'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-300">
+                        <strong className="text-purple-300">Service Trust:</strong> {privEsc.target_role_trust_evidence || 'Trust policy allows service execution'}
+                      </p>
+                      {privEsc.risk_elevation && (
+                        <p className="text-[11px] text-amber-300/90 font-medium">
+                          <strong>Risk Elevation:</strong> {privEsc.risk_elevation}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* EXACT REFERENCE DESIGN: VERTICAL HIERARCHICAL BRANCHING DIAGRAM */}
                 <div className="bg-[#0B1120]/80 rounded-xl p-5 border border-enterprise-border/80 flex flex-col items-center select-none shadow-inner">
@@ -1410,6 +1474,46 @@ Explain why this shared privilege path introduces high blast radius across multi
                     </div>
                   </div>
                 </div>
+
+                {/* Step-by-step Transition Evidence Accordion */}
+                {representativeEvidence.length > 0 && (
+                  <div className="border border-enterprise-border/80 bg-[#0B1120]/60 rounded-xl p-4">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEvidenceExpanded(prev => ({ ...prev, [group.groupId]: !prev[group.groupId] }));
+                      }}
+                      className="flex items-center justify-between w-full text-xs font-semibold text-gray-300 hover:text-white transition-colors"
+                    >
+                      <span className="flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-blue-400" />
+                        <span>Step-by-Step Transition Provenance & Authorization Evidence ({representativeEvidence.length} hops)</span>
+                      </span>
+                      {isEvidenceOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                    </button>
+                    {isEvidenceOpen && (
+                      <div className="mt-3 space-y-2">
+                        {representativeEvidence.map((ev, i) => (
+                          <div key={i} className="bg-gray-900/90 border border-gray-800 rounded-lg p-3 text-xs flex flex-col gap-1.5 font-mono">
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <span className="text-blue-400 font-bold text-xs">{ev.from_node || (ev as any).fromNode || `Step ${i + 1}`} → {ev.to_node || (ev as any).toNode}</span>
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-blue-950 border border-blue-500/30 text-blue-300 font-bold">
+                                {ev.relationship || ev.action || 'TRANSITION'}
+                              </span>
+                            </div>
+                            {ev.why && <p className="text-[11px] text-gray-300 font-sans">{ev.why}</p>}
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-[10px] text-gray-400 pt-1 border-t border-gray-800/60">
+                              <div><span className="text-gray-500 font-sans">Policy:</span> <span className="text-gray-300">{ev.policy_name || (ev as any).policyName || 'Implicit / Attached'}</span></div>
+                              <div><span className="text-gray-500 font-sans">Statement:</span> <span className="text-gray-300">{ev.statement_sid || (ev as any).statementSid || 'Allow'}</span></div>
+                              <div><span className="text-gray-500 font-sans">Decision:</span> <span className="text-emerald-400 font-bold">{ev.decision || 'ALLOW'}</span></div>
+                              <div><span className="text-gray-500 font-sans">Conditions:</span> <span className="text-gray-300">{ev.condition_status || (ev as any).conditionStatus || 'Unconditional'}</span></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* AI Explanation Card */}
                 {isAIExpanded && aiState && (

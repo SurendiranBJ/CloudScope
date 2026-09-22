@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Generic, TypeVar, Optional, List, Dict, Any
 from datetime import datetime
 
@@ -18,16 +18,15 @@ class IAMUser(BaseModel):
     status: str  # 'active' | 'inactive'
     policies: List[str]  # list of policy names
     groups: List[str]
-    riskScore: int
     mfaEnabled: bool
-    lastActive: str
+    riskScore: int
 
 class IAMRole(BaseModel):
+    id: str
     name: str
     arn: str
     trustPolicy: str
-    description: str
-    activeSessions: int
+    policies: List[str]
     riskScore: int
 
 class IAMPolicy(BaseModel):
@@ -37,17 +36,19 @@ class IAMPolicy(BaseModel):
     document: str
     riskScore: int
 
-# Cloud Resource Schemas
+# Cloud Resources Schemas
 class CloudResource(BaseModel):
+    id: str
     name: str
-    type: str  # 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy'
+    type: str  # 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy' | 'DynamoDB'
     region: str
-    status: str  # 'active' | 'stopped' | 'configured' | 'warning' | 'critical'
+    status: str
     owner: str
     arn: str
     riskScore: int
+    details: Optional[dict] = None
 
-# Alerts Schema
+# Alert Schemas
 class SecurityAlert(BaseModel):
     id: str
     timestamp: str
@@ -66,6 +67,7 @@ class AttackPathNode(BaseModel):
     riskScore: Optional[int] = None
 
 class AttackPath(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     nodes: List[AttackPathNode]
@@ -78,9 +80,22 @@ class AttackPath(BaseModel):
     description: str
     source: Optional[str] = None
     destination: Optional[str] = None
+    target: Optional[str] = None
     pathType: Optional[str] = None
+    attack_type: Optional[str] = None
     orderedRelationships: Optional[List[str]] = None
+    ordered_relationships: Optional[List[str]] = None
+    ordered_nodes: Optional[List[AttackPathNode]] = None
     hopCount: Optional[int] = None
+    risk_score: Optional[int] = None
+    reason: Optional[str] = None
+    region: Optional[str] = None
+    evidence: Optional[List[Dict[str, Any]]] = None
+    privilege_escalation_details: Optional[Dict[str, Any]] = None
+    lateral_movement_details: Optional[Dict[str, Any]] = None
+    risk_factors: Optional[Dict[str, Any]] = None
+    correlation_status: Optional[str] = None
+    observed_activity: Optional[List[Dict[str, Any]]] = None
 
 class RiskFinding(BaseModel):
     id: str
@@ -92,6 +107,7 @@ class RiskFinding(BaseModel):
     recommendation: str
 
 class CytoscapeElementData(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     label: Optional[str] = None
     type: Optional[str] = None
@@ -104,6 +120,26 @@ class CytoscapeElementData(BaseModel):
     # Additional fields for NodeDetailsPanel real-data rendering
     trustPolicy: Optional[str] = None   # Role nodes: raw trust policy JSON string
     policies: Optional[List[str]] = None  # User nodes: list of attached policy names
+    # Edge Provenance fields
+    edge_type: Optional[str] = None
+    provenance_source: Optional[str] = None
+    principal: Optional[str] = None
+    principal_type: Optional[str] = None
+    policy_arn: Optional[str] = None
+    policy_name: Optional[str] = None
+    statement_sid: Optional[str] = None
+    effect: Optional[str] = None
+    action: Optional[str] = None
+    resource: Optional[str] = None
+    resource_arn: Optional[str] = None
+    condition_status: Optional[str] = None
+    decision: Optional[str] = None
+    region: Optional[str] = None
+    why: Optional[str] = None
+    evidence: Optional[Dict[str, Any]] = None
+    isActivity: Optional[bool] = None
+    timestamp: Optional[str] = None
+    sourceIp: Optional[str] = None
 
 class CytoscapeElement(BaseModel):
     data: CytoscapeElementData
@@ -116,6 +152,9 @@ class ScanHistoryItem(BaseModel):
     graph_nodes_count: int
     graph_edges_count: int
     scanned_regions: Optional[List[str]] = None
+    scan_mode: Optional[str] = None
+    successful_regions: Optional[List[str]] = None
+    failed_regions: Optional[List[str]] = None
 
 class CorrelatedRiskFinding(BaseModel):
     id: str
@@ -140,6 +179,7 @@ class CorrelatedRiskFinding(BaseModel):
 class DashboardData(BaseModel):
     securityScore: str
     stats: dict
+    activityMetrics: Optional[dict] = None
     riskDistribution: List[dict]
     recentAlerts: List[SecurityAlert]
     criticalPaths: List[AttackPath]
@@ -148,6 +188,9 @@ class DashboardData(BaseModel):
     topRiskyIdentities: Optional[List[dict]] = None
     resourceBreakdown: Optional[List[dict]] = None
     scannedRegions: Optional[List[str]] = None
+    resolvedRegions: Optional[List[str]] = None
+    scanMode: Optional[str] = None
+    successfulRegions: Optional[List[str]] = None
     correlatedRisks: Optional[List[CorrelatedRiskFinding]] = None
     serviceStatus: Optional[dict] = None
     failedRegions: Optional[List[str]] = None
@@ -333,3 +376,4 @@ class EffectiveAccess(BaseModel):
     through_relationship: List[str]  # e.g. ["MEMBER_OF", "HAS_POLICY", "ALLOWS"]
     policy_names: List[str] = []
     policy_arns: List[str] = []
+    evidence: Optional[Dict[str, Any]] = None

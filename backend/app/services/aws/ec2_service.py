@@ -8,13 +8,24 @@ from app.services.aws.region_cache import get_all_regions, make_region_sessions,
 logger = logging.getLogger("scanner")
 
 def is_running_ec2(inst: Dict[str, Any]) -> bool:
-    """Determine whether an EC2 instance dictionary represents an active running instance."""
-    raw_state = (
-        inst.get("state")
-        or inst.get("instance_state")
-        or inst.get("details", {}).get("state")
-        or ""
-    ).lower().strip()
+    """Determine whether an EC2 instance dictionary represents an active running instance.
+    Security view must contain ONLY instances where state == 'running'.
+    Explicitly excludes stopped, stopping, shutting-down, terminated.
+    """
+    state_val = inst.get("State") or inst.get("state")
+    if isinstance(state_val, dict):
+        raw_state = (state_val.get("Name") or "").lower().strip()
+    else:
+        raw_state = (
+            state_val
+            or inst.get("instance_state")
+            or inst.get("details", {}).get("state")
+            or inst.get("details", {}).get("instance_state")
+            or ""
+        )
+        if isinstance(raw_state, dict):
+            raw_state = raw_state.get("Name", "")
+        raw_state = str(raw_state).lower().strip()
     if raw_state:
         return raw_state == "running"
     status = (inst.get("status") or "").lower().strip()
@@ -41,7 +52,7 @@ def collect_ec2_instances() -> RegionalCollectionResult:
                     for reservation in page.get('Reservations', []):
                         for inst in reservation.get('Instances', []):
                             inst_id = inst['InstanceId']
-                            state = inst['State']['Name']
+                            state = inst.get('State', {}).get('Name', 'unknown')
                             public_ip = inst.get('PublicIpAddress', 'None')
                             private_ip = inst.get('PrivateIpAddress', 'None')
                             inst_type = inst.get('InstanceType', 'unknown')
@@ -51,19 +62,23 @@ def collect_ec2_instances() -> RegionalCollectionResult:
                             if iam_profile_arn != 'None':
                                 iam_role_name = iam_profile_arn.split('/')[-1]
 
+                            # Name tag can be used for display label, but instance_id is stable conceptual ID
                             name = inst_id
                             owner = account_id
                             tags = inst.get('Tags', [])
                             for t in tags:
-                                if t['Key'] == 'Name':
-                                    name = t['Value']
-                                elif t['Key'] == 'Owner':
-                                    owner = t['Value']
+                                if t.get('Key') == 'Name':
+                                    name = t.get('Value') or inst_id
+                                elif t.get('Key') == 'Owner':
+                                    owner = t.get('Value') or account_id
 
-                            sg_names = [sg['GroupName'] for sg in inst.get('SecurityGroups', [])]
+                            sg_names = [sg.get('GroupName', '') for sg in inst.get('SecurityGroups', []) if sg.get('GroupName')]
+
+                            inst_arn = f"arn:aws:ec2:{region_name}:{account_id}:instance/{inst_id}"
 
                             region_instances.append({
                                 "id": inst_id,
+                                "instance_id": inst_id,
                                 "name": name,
                                 "type": "EC2",
                                 "region": region_name,
@@ -72,13 +87,20 @@ def collect_ec2_instances() -> RegionalCollectionResult:
                                 "instance_state": state,
                                 "status": "active" if state == "running" else "stopped",
                                 "owner": owner,
-                                "arn": f"arn:aws:ec2:{region_name}:{account_id}:instance/{inst_id}",
+                                "arn": inst_arn,
+                                "instance_type": inst_type,
+                                "private_ip": private_ip,
+                                "public_ip": public_ip,
+                                "security_groups": sg_names,
+                                "iam_role_name": iam_role_name,
+                                "iam_profile_arn": iam_profile_arn,
                                 "details": {
                                     "state": state,
                                     "instance_state": state,
                                     "public_ip": public_ip,
                                     "private_ip": private_ip,
                                     "iam_role_name": iam_role_name,
+                                    "iam_profile_arn": iam_profile_arn,
                                     "instance_type": inst_type,
                                     "security_groups": sg_names
                                 }
@@ -116,4 +138,3 @@ def collect_ec2_instances() -> RegionalCollectionResult:
     except Exception as e:
         logger.error(f"EC2 Collector top-level failed: {e}")
         raise e
-

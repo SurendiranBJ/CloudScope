@@ -114,6 +114,43 @@ def get_policy_catalog(
     )
 
 
+@router.get("/policies/explain", response_model=APIResponse[dict])
+def explain_access(
+    principal: str = Query(..., description="Principal username or role name"),
+    resource: str = Query(..., description="Resource ID, name, or ARN"),
+    action: Optional[str] = Query(None, description="Optional IAM action to evaluate"),
+):
+    """Explain WHY a principal has access to a target resource based on actual policy evidence.
+
+    Uses real scanned policy documents and effective-access calculations without faking values.
+    """
+    from app.services.scanner.scan_manager import scan_manager
+    from app.services.simulation.effective_access import explain_principal_access
+
+    inv = scan_manager.inventory
+    policies = cache.get("v1:policies") or []
+    policy_doc_map = {}
+    for p in policies:
+        doc = p.get("document")
+        if doc and doc != "{}":
+            policy_doc_map[p["name"]] = doc
+
+    explanation = explain_principal_access(
+        principal_name=principal,
+        target_resource_id_or_arn=resource,
+        inventory=inv,
+        policy_doc_map=policy_doc_map,
+        target_action=action,
+    )
+
+    return APIResponse(
+        success=True,
+        message=f"Access explanation for '{principal}' targeting '{resource}'",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data=explanation,
+    )
+
+
 @router.get("/policies/{policy_id}", response_model=APIResponse[dict])
 def get_policy_detail(policy_id: str):
     """Return rich policy details including document and risk analysis (Level 2).

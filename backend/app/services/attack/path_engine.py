@@ -19,22 +19,32 @@ MAX_ATTACK_PATHS = 200
 
 # Security-Semantic Path Allowed Transitions
 # Paths traversing relationships outside this table are rejected — graph connectivity is not authorization.
-# Cloud resources can ONLY be reached through Policy ALLOWS (no fake direct Role->Resource edges).
-RESOURCE_TYPES = {"S3", "EC2", "Lambda", "RDS", "DynamoDB", "Secrets", "Secret"}
+# Cloud resources can ONLY be reached through Policy ALLOWS or DB_CONNECT (no fake direct Role->Resource edges).
+RESOURCE_TYPES = {"S3", "EC2", "Lambda", "RDS", "DynamoDB", "Secrets", "Secret", "AuroraDBUser"}
 
 VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
     ("User", "Group"): {"MEMBER_OF"},
     ("User", "Policy"): {"HAS_POLICY"},
     ("User", "Role"): {"CAN_ASSUME", "ASSUMED_ROLE"},
+    ("User", "RDS"): {"DB_CONNECT"},
+    ("User", "AuroraDBUser"): {"DB_CONNECT"},
     ("Group", "Policy"): {"HAS_POLICY"},
     ("Role", "Policy"): {"HAS_POLICY"},
     ("Role", "Role"): {"CAN_ASSUME", "ASSUMED_ROLE"},
-    ("EC2", "Role"): {"ATTACHED_TO"},
+    ("Role", "RDS"): {"DB_CONNECT"},
+    ("Role", "AuroraDBUser"): {"DB_CONNECT"},
+    ("EC2", "Role"): {"ATTACHED_TO", "EXECUTES_WITH"},
     ("Lambda", "Role"): {"EXECUTES_WITH"},
+    ("Policy", "AuroraDBUser"): {"DB_CONNECT"},
+    ("Policy", "RDS"): {"DB_CONNECT"},
+    ("AuroraDBUser", "RDS"): {"BELONGS_TO"},
 }
 
 for _res in RESOURCE_TYPES:
-    VALID_TRANSITIONS[("Policy", _res)] = {"ALLOWS"}
+    if _res != "AuroraDBUser":
+        VALID_TRANSITIONS[("Policy", _res)] = {"ALLOWS"}
+        VALID_TRANSITIONS[("Role", _res)] = {"ALLOWS", "CAN_ACCESS"}
+        VALID_TRANSITIONS[("User", _res)] = {"ALLOWS", "CAN_ACCESS"}
 
 
 def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
@@ -51,13 +61,24 @@ def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
         v_type = G.nodes[v].get("type", "")
 
         edge_data = G.get_edge_data(u, v, default={})
-        rel_label = edge_data.get("label") or edge_data.get("type") or ""
+        rel_label = (
+            edge_data.get("relationship")
+            or edge_data.get("label")
+            or edge_data.get("type")
+            or ""
+        )
 
         allowed_rels = VALID_TRANSITIONS.get((u_type, v_type))
         if not allowed_rels or rel_label not in allowed_rels:
             return False
 
     return True
+
+
+class PathEngine:
+    """Wrapper class providing attack path search and evaluation helpers."""
+    def find_attack_paths(self, G: nx.DiGraph, *args, **kwargs) -> List[Dict[str, Any]]:
+        return find_attack_paths(G, *args, **kwargs)
 
 
 def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) -> str:
@@ -97,7 +118,7 @@ def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) 
             return "privilege_escalation"
         return "lateral_movement"
 
-    if target_type in ['Secrets', 'Secret', 'RDS']:
+    if target_type in ['Secrets', 'Secret', 'RDS', 'AuroraDBUser']:
         return "sensitive_resource_access"
 
     if target_type == 'S3':
@@ -124,12 +145,14 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
         escalation_bonus += 30  # Active observed event
     if 'ALLOWS' in ordered_rels:
         escalation_bonus += 15
+    if 'DB_CONNECT' in ordered_rels:
+        escalation_bonus += 20
 
     target_sensitivity_bonus = 0
     t_type = target_attr.get('type', '')
     if t_type in ['Secrets', 'Secret']:
         target_sensitivity_bonus += 35
-    elif t_type == 'RDS':
+    elif t_type in ['RDS', 'AuroraDBUser']:
         target_sensitivity_bonus += 30
     elif t_type == 'S3':
         target_sensitivity_bonus += 25
@@ -147,10 +170,204 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
     severity = get_severity_label(path_score)
     confidence = 95 if len(ordered_rels) > 0 else 80
 
+    factors = {
+        "source_risk": int(source_risk * 0.25),
+        "target_risk": int(target_risk * 0.35),
+        "privilege_escalation_factor": escalation_bonus,
+        "sensitive_resource_factor": target_sensitivity_bonus,
+        "path_length_factor": max(0, 10 - len(ordered_rels) * 2)
+    }
+
     return {
         "score": path_score,
         "severity": severity,
-        "confidence": confidence
+        "confidence": confidence,
+        "factors": factors
+    }
+
+
+def _eval_passrole_for_permissions(
+    G: nx.DiGraph,
+    user_id: str,
+    user_permissions: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    import json
+    from app.services.attack.policy_evaluator import match_action, parse_policy_document
+
+    has_passrole = False
+    target_resource_specs = []
+    for p in user_permissions:
+        act = p.get("Action", [])
+        if isinstance(act, str):
+            act = [act]
+        if any(match_action(a, "iam:PassRole") or match_action(a, "iam:*") or a == "*" for a in act):
+            has_passrole = True
+            res = p.get("Resource", "*")
+            if isinstance(res, list):
+                target_resource_specs.extend(res)
+            else:
+                target_resource_specs.append(res)
+
+    if not has_passrole:
+        return None
+
+    for node_id, attrs in G.nodes(data=True):
+        if attrs.get("type") != "Role":
+            continue
+
+        role_arn = attrs.get("arn") or node_id
+        role_name = attrs.get("name") or attrs.get("label") or node_id
+
+        matches = False
+        for spec in target_resource_specs:
+            if spec == "*" or spec == node_id or spec == role_arn or spec.endswith(f"/{role_name}"):
+                matches = True
+                break
+        if not matches:
+            continue
+
+        target_risk = attrs.get("riskScore", 0)
+        if target_risk < 60:
+            continue
+
+        trust_doc = attrs.get("assume_role_policy") or attrs.get("trustPolicy") or {}
+        if isinstance(trust_doc, str) and trust_doc.startswith("{"):
+            try:
+                trust_doc = json.loads(trust_doc)
+            except Exception:
+                pass
+
+        service_principal = None
+        for stmt in parse_policy_document(trust_doc):
+            if stmt.get("Effect") == "Allow":
+                princ = stmt.get("Principal", {})
+                if isinstance(princ, dict) and "Service" in princ:
+                    svc = princ["Service"]
+                    service_principal = svc if isinstance(svc, str) else svc[0]
+                    break
+                elif princ == "*":
+                    service_principal = "*"
+                    break
+
+        if not service_principal:
+            continue
+
+        return {
+            "is_passrole": True,
+            "target_role": node_id,
+            "target_role_trust_evidence": f"Target role trusts service principal '{service_principal}' (lambda.amazonaws.com / ec2.amazonaws.com)",
+            "risk_elevation": f"Target role risk score: {target_risk} (elevated context >= 60)",
+            "trigger_permission": "iam:PassRole",
+            "service_principal": service_principal,
+            "impact": f"Target role has elevated privileges (risk score: {target_risk})",
+            "reason": f"Principal has iam:PassRole permission to pass role '{role_name}' to AWS service '{service_principal}'."
+        }
+
+    return None
+
+
+def check_passrole_escalation(*args, **kwargs) -> Any:
+    """Check whether a principal has iam:PassRole capability to an elevated target role
+    that can be assumed/used by an AWS service (e.g. lambda.amazonaws.com, ec2.amazonaws.com).
+    
+    Supports two calling signatures:
+    1. check_passrole_escalation(G, user_id, user_permissions) -> Optional[Dict]
+    2. check_passrole_escalation(source_node_id, target_role_id, G, inventory=None) -> Tuple[bool, Optional[Dict]]
+    """
+    if len(args) >= 1 and isinstance(args[0], nx.DiGraph):
+        G = args[0]
+        user_id = args[1] if len(args) > 1 else kwargs.get("user_id", "")
+        user_permissions = args[2] if len(args) > 2 else kwargs.get("user_permissions", [])
+        return _eval_passrole_for_permissions(G, user_id, user_permissions)
+    if "G" in kwargs and isinstance(kwargs["G"], nx.DiGraph) and "user_permissions" in kwargs:
+        return _eval_passrole_for_permissions(kwargs["G"], kwargs.get("user_id", ""), kwargs.get("user_permissions", []))
+
+    source_node_id = args[0] if len(args) > 0 else kwargs.get("source_node_id", "")
+    target_role_id = args[1] if len(args) > 1 else kwargs.get("target_role_id", "")
+    G = args[2] if len(args) > 2 else kwargs.get("G")
+    inventory = args[3] if len(args) > 3 else kwargs.get("inventory")
+
+    if not G or not (G.has_node(source_node_id) and G.has_node(target_role_id)):
+        return False, None
+
+    target_node = G.nodes[target_role_id]
+    if target_node.get('type') != 'Role':
+        return False, None
+
+    target_risk = target_node.get('riskScore', 0)
+    source_node = G.nodes[source_node_id]
+    source_risk = source_node.get('riskScore', 0)
+
+    # Target role must be elevated
+    if target_risk < 60 and (target_risk - source_risk) < 20:
+        return False, None
+
+    # Check if principal has iam:PassRole in their attached policies
+    has_passrole = False
+    passrole_policy = None
+    passrole_statement = None
+
+    for _, pol_node_id in G.out_edges(source_node_id):
+        if G.nodes[pol_node_id].get('type') == 'Policy':
+            pol_doc_str = G.nodes[pol_node_id].get('description') or ''
+            try:
+                import json
+                pol_doc = json.loads(pol_doc_str) if isinstance(pol_doc_str, str) and pol_doc_str.startswith('{') else {}
+                from app.services.attack.policy_evaluator import parse_policy_document, match_action
+                for stmt in parse_policy_document(pol_doc):
+                    if stmt.get('Effect') == 'Allow':
+                        actions = stmt.get('Action', [])
+                        if any(match_action(a, 'iam:PassRole') or match_action(a, 'iam:*') or a == '*' for a in actions):
+                            has_passrole = True
+                            passrole_policy = G.nodes[pol_node_id].get('label', pol_node_id)
+                            passrole_statement = stmt.get('Sid', 'PassRoleStatement')
+                            break
+            except Exception:
+                pass
+        if has_passrole:
+            break
+
+    if not has_passrole:
+        return False, None
+
+    # Target role must be assumable by / usable with a relevant AWS service
+    target_trust = target_node.get('trustPolicy') or target_node.get('assume_role_policy') or ''
+    usable_by_service = False
+    service_principal = None
+    if target_trust:
+        try:
+            import json
+            trust_doc = json.loads(target_trust) if isinstance(target_trust, str) and target_trust.startswith('{') else target_trust
+            from app.services.attack.policy_evaluator import parse_policy_document
+            for stmt in parse_policy_document(trust_doc):
+                if stmt.get('Effect') == 'Allow':
+                    p_obj = stmt.get('Principal', {})
+                    if isinstance(p_obj, dict):
+                        svc = p_obj.get('Service')
+                        if svc:
+                            usable_by_service = True
+                            service_principal = svc if isinstance(svc, str) else svc[0]
+                            break
+                    elif p_obj == '*':
+                        usable_by_service = True
+                        service_principal = '*'
+                        break
+        except Exception:
+            pass
+
+    if not usable_by_service:
+        return False, None
+
+    return True, {
+        "trigger_permission": "iam:PassRole",
+        "policy": passrole_policy,
+        "statement_sid": passrole_statement,
+        "target_role": target_node.get('label', target_role_id),
+        "target_role_arn": target_node.get('arn', ''),
+        "service_principal": service_principal,
+        "target_risk": target_risk,
+        "impact": f"Target role has administrator/elevated permissions (risk score: {target_risk})",
+        "reason": f"Principal has iam:PassRole permission to pass role '{target_node.get('label')}' to AWS service '{service_principal}', granting elevated execution context."
     }
 
 
@@ -310,7 +527,12 @@ def find_attack_paths(
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
             edge_data = G.get_edge_data(u, v, default={})
-            rel_label = edge_data.get('label') or edge_data.get('type') or ''
+            rel_label = (
+                edge_data.get('relationship')
+                or edge_data.get('label')
+                or edge_data.get('type')
+                or ''
+            )
             ordered_relationships.append(rel_label)
 
         # Compute deterministic path score & severity
@@ -342,7 +564,9 @@ def find_attack_paths(
             mitre.append("T1530 - Data from Cloud Storage Object")
         if target_type in ['Secrets', 'Secret'] and 'ALLOWS' in ordered_relationships:
             mitre.append("T1552.004 - Credentials in Cloud Secrets")
-        if target_type in ['RDS', 'DynamoDB'] and 'ALLOWS' in ordered_relationships:
+        if 'DB_CONNECT' in ordered_relationships:
+            mitre.append("T1078 - Valid Accounts: Database IAM Authentication")
+        if target_type in ['RDS', 'DynamoDB', 'AuroraDBUser'] and ('ALLOWS' in ordered_relationships or 'DB_CONNECT' in ordered_relationships or 'BELONGS_TO' in ordered_relationships):
             mitre.append("T1530 - Data from Cloud Database")
 
         source_label = source_attr.get('label', source)
@@ -368,22 +592,124 @@ def find_attack_paths(
         if target_attr.get('type') in ['Secrets', 'Secret']:
             recommendations.append(f"Enable automatic secret rotation and restrict access to '{target_label}'")
 
-        recommendation = ". ".join(recommendations) + "." if recommendations else "Review IAM permissions and restrict access paths."
+        # Step-by-step transition evidence
+        transition_evidence: List[Dict[str, Any]] = []
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i + 1]
+            rel_label = ordered_relationships[i]
+            edge_data = G.get_edge_data(u, v, default={})
+            u_node = G.nodes[u]
+            v_node = G.nodes[v]
+            u_lbl = u_node.get('label', u)
+            v_lbl = v_node.get('label', v)
+            u_t = u_node.get('type', 'Resource')
+            v_t = v_node.get('type', 'Resource')
+
+            prov = edge_data.get('provenance') or {}
+            why = edge_data.get('why') or prov.get('why')
+            if not why:
+                if rel_label == 'MEMBER_OF':
+                    why = f"IAM user '{u_lbl}' is a member of group '{v_lbl}'"
+                elif rel_label == 'HAS_POLICY':
+                    why = f"Identity '{u_lbl}' has policy '{v_lbl}' attached"
+                elif rel_label == 'CAN_ASSUME':
+                    why = f"Role '{v_lbl}' trust policy permits assumption by '{u_lbl}'"
+                elif rel_label == 'ASSUMED_ROLE':
+                    why = f"Observed CloudTrail activity: '{u_lbl}' assumed role '{v_lbl}'"
+                elif rel_label == 'ATTACHED_TO':
+                    why = f"EC2 instance '{u_lbl}' uses IAM instance profile role '{v_lbl}'"
+                elif rel_label == 'EXECUTES_WITH':
+                    why = f"Lambda function '{u_lbl}' executes with IAM role '{v_lbl}'"
+                elif rel_label == 'ALLOWS':
+                    act = edge_data.get('action') or prov.get('action', '*')
+                    why = f"Policy '{u_lbl}' allows action '{act}' on {v_t} '{v_lbl}'"
+                elif rel_label == 'DB_CONNECT':
+                    why = f"Policy '{u_lbl}' grants rds-db:connect to DB user '{v_lbl}'"
+                elif rel_label == 'BELONGS_TO':
+                    why = f"DB user '{u_lbl}' belongs to database '{v_lbl}'"
+                else:
+                    why = f"Transition '{rel_label}' from '{u_lbl}' to '{v_lbl}'"
+
+            transition_evidence.append({
+                "from_node": u,
+                "from_name": u_lbl,
+                "from_type": u_t,
+                "to_node": v,
+                "to_name": v_lbl,
+                "to_type": v_t,
+                "relationship": rel_label,
+                "why": why,
+                "policy_name": edge_data.get('policy_name') or prov.get('policy_name', ''),
+                "statement_sid": edge_data.get('statement_sid') or prov.get('statement_sid', ''),
+                "action": edge_data.get('action') or prov.get('action', ''),
+                "resource_arn": edge_data.get('resource_arn') or prov.get('resource_arn', ''),
+                "decision": edge_data.get('decision') or prov.get('decision', 'ALLOWED'),
+                "condition_status": edge_data.get('condition_status') or prov.get('condition_status', 'NONE'),
+                "region": edge_data.get('region') or prov.get('region') or v_node.get('region', ''),
+                "evidence": edge_data.get('evidence') or prov.get('evidence', {})
+            })
+
+        # Check PassRole escalation candidate
+        is_passrole, passrole_ev = check_passrole_escalation(source, target, G, inventory)
+        if is_passrole and passrole_ev:
+            path_type = "privilege_escalation"
+
+        priv_details = None
+        lat_details = None
+
+        if path_type == "privilege_escalation":
+            trig_perm = passrole_ev["trigger_permission"] if is_passrole and passrole_ev else ("sts:AssumeRole" if 'CAN_ASSUME' in ordered_relationships or 'ASSUMED_ROLE' in ordered_relationships else "iam:AttachPolicy")
+            priv_details = {
+                "title": f"Potential Privilege Escalation via {trig_perm.split(':')[-1]}",
+                "summary": f"Identity '{source_label}' can transition privileges to reach elevated target '{target_label}'.",
+                "source_identity": source_label,
+                "target_identity": target_label,
+                "trigger_permission": trig_perm,
+                "supporting_evidence": passrole_ev if is_passrole and passrole_ev else {
+                    "ordered_relationships": ordered_relationships,
+                    "source_risk": source_attr.get('riskScore', 0),
+                    "target_risk": target_attr.get('riskScore', 0),
+                    "target_type": target_attr.get('type', ''),
+                },
+                "impact": f"Target entity '{target_label}' possesses elevated privileges or high-value resource access (risk score: {target_attr.get('riskScore', 0)}).",
+                "reason": f"Principal possesses {trig_perm} capability enabling privilege expansion to target.",
+                "limitations": "Static configuration analysis; CloudTrail evidence is not implied."
+            }
+        else:
+            lat_details = {
+                "origin": source_label,
+                "transition": " → ".join(ordered_relationships),
+                "destination": target_label,
+                "authorization_evidence": f"Path traverses verified IAM trust and authorization boundaries ({len(ordered_relationships)} transitions).",
+                "impact": f"Identity moves laterally across account boundaries to access '{target_label}'."
+            }
 
         evaluated_paths.append({
             "source": source,
             "destination": target,
+            "target": target,
             "pathType": path_type,
+            "attack_type": path_type,
             "nodes": nodes_details,
+            "ordered_nodes": nodes_details,
             "orderedRelationships": ordered_relationships,
+            "ordered_relationships": ordered_relationships,
             "hopCount": hop_count,
             "riskScore": path_eval["score"],
+            "risk_score": path_eval["score"],
             "severity": path_eval["severity"],
             "confidence": path_eval["confidence"],
             "blastRadius": blast_radius_desc,
             "mitreTechniques": mitre,
             "description": description,
-            "recommendation": recommendation,
+            "reason": description,
+            "recommendation": recommendations[0] if recommendations else "Enforce principle of least privilege.",
+            "recommendations": recommendations,
+            "evidence": transition_evidence,
+            "risk_factors": path_eval.get("factors", {}),
+            "privilege_escalation_details": priv_details,
+            "lateral_movement_details": lat_details,
+            "region": target_attr.get("region") or source_attr.get("region") or "global",
         })
 
     # Deterministic sort: descending by riskScore, ascending by hopCount, then by source and destination

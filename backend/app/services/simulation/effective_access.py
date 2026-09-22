@@ -17,7 +17,7 @@ Supported access chains:
 """
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
@@ -309,20 +309,130 @@ def _build_record(
     rel_chain: List[str],
     policy_names: List[str],
     policy_arns: List[str],
+    evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     rname = resource.get("name") or resource.get("id", "")
     rid = resource.get("id") or resource.get("name", "")
+    r_arn = resource.get("arn", rid)
+    r_type = resource.get("type", "")
+
+    ev = evidence or {
+        "principal": identity_name,
+        "principal_type": identity_type,
+        "policy_arn": policy_arns[0] if policy_arns else "",
+        "policy_name": policy_names[0] if policy_names else "",
+        "statement_sid": "",
+        "effect": "Allow",
+        "action": [f"{r_type.lower()}:*"],
+        "resource": [r_arn],
+        "matched_action": f"{r_type.lower()}:*",
+        "matched_resource": r_arn,
+        "condition_status": "satisfied",
+        "decision": "ALLOWED",
+        "source": " -> ".join(rel_chain),
+        "region": resource.get("region", ""),
+        "resource_arn": r_arn,
+        "reason": f"Matched Allow statement in policy '{policy_names[0] if policy_names else 'unknown'}'",
+    }
+
     return {
         "identity_id": identity_id,
         "identity_name": identity_name,
         "identity_type": identity_type,
         "target_resource_id": rid,
         "target_resource_name": rname,
-        "target_resource_type": resource.get("type", ""),
+        "target_resource_type": r_type,
         "access_path": chain,
         "through_relationship": rel_chain,
         "policy_names": policy_names,
         "policy_arns": policy_arns,
+        "evidence": ev,
+    }
+
+
+def explain_principal_access(
+    principal_name: str,
+    target_resource_id_or_arn: str,
+    inventory: Any,
+    policy_doc_map: Dict[str, str],
+    target_action: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Authoritatively explain why an IAM principal has or does not have access.
+
+    Returns structured evidence answering:
+        "WHY DOES THIS PRINCIPAL HAVE ACCESS?"
+    """
+    all_res = list(
+        getattr(inventory, "s3", []) + getattr(inventory, "secrets", []) +
+        getattr(inventory, "rds", []) + getattr(inventory, "dynamodb", []) +
+        getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", [])
+    )
+    target_clean = str(target_resource_id_or_arn).strip().lower()
+    known_ids = {
+        str(r.get("id", "")).lower() for r in all_res
+    } | {
+        str(r.get("name", "")).lower() for r in all_res
+    } | {
+        str(r.get("arn", "")).lower() for r in all_res
+    }
+
+    if target_clean and target_clean not in known_ids:
+        res_type = "S3"
+        if ":ec2:" in target_clean or target_clean.startswith("i-"):
+            res_type = "EC2"
+        elif ":lambda:" in target_clean:
+            res_type = "Lambda"
+        elif ":rds:" in target_clean or ":cluster:" in target_clean or ":db:" in target_clean:
+            res_type = "RDS"
+        elif ":dynamodb:" in target_clean:
+            res_type = "DynamoDB"
+        elif ":secretsmanager:" in target_clean:
+            res_type = "Secrets"
+        all_res.append({
+            "id": target_resource_id_or_arn,
+            "name": target_resource_id_or_arn.split(":")[-1].split("/")[-1],
+            "arn": target_resource_id_or_arn,
+            "type": res_type
+        })
+
+    records = compute_effective_access(inventory, policy_doc_map, all_res)
+
+    target_clean = str(target_resource_id_or_arn).strip().lower()
+    for rec in records:
+        if rec["identity_name"].lower() == principal_name.lower():
+            rid = str(rec["target_resource_id"]).lower()
+            rname = str(rec["target_resource_name"]).lower()
+            rarn = str(rec.get("evidence", {}).get("resource_arn", "")).lower()
+            if target_clean in (rid, rname, rarn) or (rarn and target_clean == rarn):
+                ev = rec.get("evidence", {})
+                return {
+                    "principal": rec["identity_name"],
+                    "principal_type": rec["identity_type"],
+                    "policy": rec["policy_names"][0] if rec["policy_names"] else "",
+                    "policy_arn": rec["policy_arns"][0] if rec["policy_arns"] else "",
+                    "statement_sid": ev.get("statement_sid", ""),
+                    "action": target_action or ev.get("matched_action", "*"),
+                    "resource": ev.get("matched_resource") or target_resource_id_or_arn,
+                    "decision": "ALLOWED",
+                    "reason": ev.get("reason", "Matched Allow statement"),
+                    "access_path": rec["access_path"],
+                    "through_relationship": rec["through_relationship"],
+                    "evidence": ev,
+                }
+
+    # If no effective access found, determine why (e.g. denied or not applicable)
+    return {
+        "principal": principal_name,
+        "policy": "",
+        "action": target_action or "*",
+        "resource": target_resource_id_or_arn,
+        "decision": "DENIED",
+        "reason": "No effective Allow statement grants access (implicit deny or blocked by boundary/explicit deny)",
+        "evidence": {
+            "principal": principal_name,
+            "decision": "DENIED",
+            "reason": "No matching Allow statement found across applicable policies",
+        }
     }
 
 

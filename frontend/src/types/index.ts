@@ -57,22 +57,83 @@ export interface AttackPathNode {
   riskScore?: number;
 }
 
+export interface TransitionEvidence {
+  from_node: string;
+  from_name?: string;
+  from_type?: string;
+  to_node: string;
+  to_name?: string;
+  to_type?: string;
+  relationship: string;
+  why: string;
+  policy_name?: string;
+  statement_sid?: string;
+  action?: string;
+  resource_arn?: string;
+  decision?: string;
+  condition_status?: string;
+  region?: string;
+  evidence?: Record<string, any>;
+}
+
+export interface PrivilegeEscalationDetails {
+  title?: string;
+  summary?: string;
+  source_identity?: string;
+  target_identity?: string;
+  trigger_permission: string;
+  supporting_evidence?: Record<string, any>;
+  impact?: string;
+  reason?: string;
+  limitations?: string;
+  is_passrole?: boolean;
+  target_role?: string;
+  target_role_trust_evidence?: string;
+  risk_elevation?: string;
+}
+
+export interface LateralMovementDetails {
+  origin?: string;
+  transition?: string;
+  destination?: string;
+  authorization_evidence?: string;
+  impact?: string;
+  service_trust?: string;
+  is_lateral?: boolean;
+}
+
 export interface AttackPath {
   id: string;
   name: string;
   nodes: AttackPathNode[];
+  ordered_nodes?: AttackPathNode[];
   severity: 'critical' | 'high' | 'medium' | 'low';
   riskScore?: number;
+  risk_score?: number;
   confidence?: number;
   pathType?: string;
+  attack_type?: string;
   orderedRelationships?: string[];
+  ordered_relationships?: string[];
   blastRadius: string;
   mitreTechniques: string[];
   recommendation: string;
   description: string;
+  reason?: string;
   source?: string;
   destination?: string;
+  target?: string;
   diffStatus?: 'new' | 'removed' | 'changed' | 'unchanged' | string;
+  region?: string;
+  evidence?: TransitionEvidence[];
+  privilege_escalation_details?: PrivilegeEscalationDetails;
+  privilegeEscalationDetails?: PrivilegeEscalationDetails;
+  lateral_movement_details?: LateralMovementDetails;
+  lateralMovementDetails?: LateralMovementDetails;
+  risk_factors?: Record<string, any>;
+  correlation_status?: 'POSSIBLE_CAPABILITY' | 'OBSERVED_ACTIVITY' | 'CORRELATED_ACTIVITY' | 'OBSERVED_ATTACK_ACTIVITY' | string;
+  correlationStatus?: 'POSSIBLE_CAPABILITY' | 'OBSERVED_ATTACK_ACTIVITY' | 'CORRELATED_ACTIVITY' | 'OBSERVED_ACTIVITY' | string;
+  observed_activity?: any[];
 }
 
 export interface RiskFinding {
@@ -94,6 +155,12 @@ export interface DashboardData {
     risks: number;
     paths: number;
     resources: number;
+  };
+  activityMetrics?: {
+    staticAttackPaths: number;
+    observedSecurityEvents: number;
+    correlatedFindings: number;
+    observedAttackActivity: number;
   };
   riskDistribution: { name: string; value: number; color: string }[];
   recentAlerts: SecurityAlert[];

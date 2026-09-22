@@ -33,14 +33,20 @@ def get_dashboard_summary():
         elif current_scan_status == "FAILED":
             data["scanStatus"] = "FAILED"
             data["lastError"] = last_error
+        elif current_scan_status == "PARTIAL":
+            data["scanStatus"] = "PARTIAL"
         else:
-            data["scanStatus"] = "SUCCESS"
+            data["scanStatus"] = cached_dashboard.get("scanStatus", "SUCCESS")
 
         data["scanId"] = scan_id or data.get("scanId")
         data["lastSuccessfulScanAt"] = last_successful_at or data.get("lastSuccessfulScanAt")
         data["lastSuccessfulScanId"] = last_successful_id or data.get("lastSuccessfulScanId")
         data["lastError"] = last_error if current_scan_status == "FAILED" else data.get("lastError")
         data["serviceStatus"] = service_status or data.get("serviceStatus")
+        data["failedRegions"] = status_info.get("failed_regions") or data.get("failedRegions") or []
+        data["successfulRegions"] = status_info.get("successful_regions") or data.get("successfulRegions") or []
+        data["scanMode"] = status_info.get("scan_mode") or data.get("scanMode")
+        data["resolvedRegions"] = status_info.get("resolved_regions") or data.get("resolvedRegions") or data.get("scannedRegions") or []
 
         return APIResponse(
             success=True,

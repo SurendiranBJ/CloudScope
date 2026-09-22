@@ -50,20 +50,35 @@ def collect_lambda_functions() -> RegionalCollectionResult:
                         region_funcs.append({
                             "id": name,
                             "name": name,
+                            "function_name": name,
+                            "arn": arn,
+                            "function_arn": arn,
                             "type": "Lambda",
                             "region": region_name,
+                            "execution_role_name": role_name,
+                            "execution_role_arn": role_arn,
+                            "runtime": runtime,
+                            "memory_size": memory,
+                            "timeout": timeout,
+                            "handler": handler,
+                            "code_size": code_size,
+                            "last_modified": last_modified,
                             "riskScore": 0,
                             "status": "configured",
                             "owner": owner,
-                            "arn": arn,
                             "details": {
                                 "runtime": runtime,
                                 "execution_role": role_name,
+                                "execution_role_name": role_name,
                                 "role_arn": role_arn,
+                                "execution_role_arn": role_arn,
                                 "memory_mb": memory,
+                                "memory_size": memory,
                                 "timeout_seconds": timeout,
+                                "timeout": timeout,
                                 "handler": handler,
                                 "code_size_bytes": code_size,
+                                "code_size": code_size,
                                 "last_modified": last_modified
                             }
                         })
@@ -100,4 +115,3 @@ def collect_lambda_functions() -> RegionalCollectionResult:
     except Exception as e:
         logger.error(f"Lambda Collector top-level failed: {e}")
         raise e
-

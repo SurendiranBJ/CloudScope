@@ -13,6 +13,7 @@ from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
 from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
+    evaluate_policy_allows_resources_with_provenance,
     evaluate_assume_role_trust,
     evaluate_assume_role_trust_with_evidence,
 )
@@ -33,7 +34,9 @@ def get_node_id(res_type: str, item_id: str) -> str:
         "Lambda": "aws:lambda",
         "RDS": "aws:rds",
         "DynamoDB": "aws:dynamodb",
-        "Secrets": "aws:secret"
+        "Secrets": "aws:secret",
+        "AuroraDBUser": "aws:dbuser",
+        "DBUser": "aws:dbuser"
     }
     prefix = type_map.get(res_type, f"aws:{res_type.lower()}")
     return f"{prefix}:{item_id}"
@@ -464,7 +467,9 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
         )
         for p in inventory.policies:
             p_id = get_node_id("Policy", p['name'])
-            allowed_res = evaluate_policy_allows_resources(p.get('document', '{}'), all_resources)
+            allowed_res, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
+                p['name'], p.get('arn', ''), p.get('document', '{}'), all_resources, account_id=account_id
+            )
             valid_res_node_ids = []
             for res in allowed_res:
                 rtype = res.get('type', 'Resource')
@@ -480,13 +485,44 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 {"p_id": p_id, "valid_res_node_ids": valid_res_node_ids}
             )
 
-            for res_node_id in valid_res_node_ids:
+            for res in allowed_res:
+                rtype = res.get('type', 'Resource')
+                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                res_node_id = get_node_id(rtype, item_ident)
+                prov = prov_map.get(str(item_ident), {})
                 execute_write(
                     """
                     MATCH (p:Policy {id: $p_id}), (res {id: $res_id})
-                    MERGE (p)-[:ALLOWS]->(res)
+                    MERGE (p)-[rel:ALLOWS]->(res)
+                    SET rel.edge_type = 'ALLOWS',
+                        rel.source = 'IAM',
+                        rel.policy_name = $policy_name,
+                        rel.policy_arn = $policy_arn,
+                        rel.statement_sid = $statement_sid,
+                        rel.effect = $effect,
+                        rel.action = $action,
+                        rel.resource = $resource,
+                        rel.resource_arn = $resource_arn,
+                        rel.decision = $decision,
+                        rel.condition_status = $condition_status,
+                        rel.region = $region,
+                        rel.why = $why
                     """,
-                    {"p_id": p_id, "res_id": res_node_id}
+                    {
+                        "p_id": p_id,
+                        "res_id": res_node_id,
+                        "policy_name": p['name'],
+                        "policy_arn": p.get('arn', ''),
+                        "statement_sid": prov.get('statement_sid', 'Statement-1'),
+                        "effect": prov.get('effect', 'Allow'),
+                        "action": prov.get('action', '*'),
+                        "resource": str(item_ident),
+                        "resource_arn": prov.get('resource_arn', ''),
+                        "decision": prov.get('decision', 'ALLOWED'),
+                        "condition_status": prov.get('condition_status', 'NONE'),
+                        "region": prov.get('region', 'global'),
+                        "why": prov.get('why', f"Policy '{p['name']}' allows access to {rtype} '{item_ident}'")
+                    }
                 )
 
         # 12. Relationship: EC2 -> Role (ATTACHED_TO) + Reconciliation
@@ -567,23 +603,26 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
         valid_ec2_ids = [get_node_id("EC2", e['id']) for e in running_ec2]
         valid_lambda_ids = [get_node_id("Lambda", l['name']) for l in inventory.lambdas]
 
-        if successful_regions:
-            execute_write(
-                """
-                MATCH (n:EC2)
-                WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
-                DETACH DELETE n
-                """,
-                {"successful_regions": successful_regions, "valid_ids": valid_ec2_ids}
-            )
-            execute_write(
-                """
-                MATCH (n:Lambda)
-                WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
-                DETACH DELETE n
-                """,
-                {"successful_regions": successful_regions, "valid_ids": valid_lambda_ids}
-            )
+        if successful_regions is not None:
+            if len(successful_regions) > 0:
+                execute_write(
+                    """
+                    MATCH (n:EC2)
+                    WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
+                    DETACH DELETE n
+                    """,
+                    {"successful_regions": successful_regions, "valid_ids": valid_ec2_ids}
+                )
+                execute_write(
+                    """
+                    MATCH (n:Lambda)
+                    WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
+                    DETACH DELETE n
+                    """,
+                    {"successful_regions": successful_regions, "valid_ids": valid_lambda_ids}
+                )
+            else:
+                logger.info("No successful regions available for regional node pruning; preserving all existing EC2 and Lambda nodes.")
         else:
             execute_write(
                 """

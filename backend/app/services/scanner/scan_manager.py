@@ -210,6 +210,7 @@ class ScanManager:
         self._last_result: dict | None = None
         self._service_status: Dict[str, str] = {}
         self._failed_regions: List[str] = []
+        self._successful_regions: List[str] = []
 
     @property
     def is_running(self) -> bool:
@@ -217,6 +218,8 @@ class ScanManager:
 
     def get_status(self) -> dict:
         """Return current scan status for the frontend to poll."""
+        from app.services.aws.region_cache import get_scan_mode_state
+        mode_state = get_scan_mode_state()
         return {
             "is_scanning": self._is_running,
             "scan_id": self._scan_id,
@@ -227,7 +230,10 @@ class ScanManager:
             "last_error": self._last_error,
             "last_result": self._last_result,
             "service_status": self._service_status,
-            "failed_regions": self._failed_regions
+            "failed_regions": self._failed_regions,
+            "successful_regions": self._successful_regions,
+            "scan_mode": mode_state.get("mode"),
+            "resolved_regions": mode_state.get("resolved_regions", []),
         }
 
     def trigger_async_scan(self) -> dict:
@@ -276,10 +282,16 @@ class ScanManager:
                 f"ARN={aws_diag.get('arn', 'unknown')}, Region={aws_diag.get('region', 'unknown')}"
             )
 
+            # Cache previous inventory for regional resource preservation across partial scans
+            prev_ec2 = list(self.inventory.ec2) if self.inventory.ec2 else (cache.get("v1:inventory:ec2") or [])
+            prev_lambdas = list(self.inventory.lambdas) if self.inventory.lambdas else (cache.get("v1:inventory:lambda") or [])
+
             self.inventory.clear()
             clear_region_cache()
+            from app.services.aws.region_cache import get_resolved_scan_mode
             scanned_regions = list(get_all_regions())
-            logger.info(f"[INFO] Scan regions: {scanned_regions}")
+            resolved_scan_mode = get_resolved_scan_mode()
+            logger.info(f"[INFO] Scan mode: {resolved_scan_mode}, regions: {scanned_regions}")
 
             collector_funcs = {
                 "IAM_Users": iam_service.collect_users,
@@ -321,16 +333,41 @@ class ScanManager:
                                 successful_regions_set.update(res.successful_regions)
                             if getattr(res, 'failed_regions', None):
                                 scan_failed_regions.update(res.failed_regions)
-                                res_type = "EC2" if name == "EC2" else "Lambda"
-                                prev_resources = (cache.get("v1:resources") or []) + (cache.get(f"v1:raw:{res_type.lower()}") or [])
-                                for f_reg in res.failed_regions:
-                                    preserved = [
-                                        x for x in prev_resources
-                                        if x.get("type") == res_type and x.get("region") == f_reg
-                                    ]
-                                    if preserved:
-                                        logger.info(f"[PRESERVED] Retained {len(preserved)} previous {name} items from failed region {f_reg}")
-                                        collector_results[name].extend(preserved)
+                                # PRESERVATION GATE: Failed regions must NOT have their resources purged
+                                if name == "EC2":
+                                    existing_ids = {x.get("id") or x.get("instance_id") for x in collector_results[name]}
+                                    for f_reg in res.failed_regions:
+                                        preserved = [
+                                            x for x in prev_ec2
+                                            if x.get("region") == f_reg and (x.get("id") or x.get("instance_id")) not in existing_ids
+                                        ]
+                                        if not preserved:
+                                            cached_res = cache.get("v1:resources") or []
+                                            preserved = [
+                                                x for x in cached_res
+                                                if x.get("type") == "EC2" and x.get("region") == f_reg and (x.get("id") or x.get("name")) not in existing_ids
+                                            ]
+                                        if preserved:
+                                            logger.info(f"[PRESERVED] Retained {len(preserved)} previous EC2 items from failed region {f_reg}")
+                                            collector_results[name].extend(preserved)
+                                            existing_ids.update(x.get("id") or x.get("instance_id") for x in preserved)
+                                elif name == "Lambda":
+                                    existing_names = {x.get("name") or x.get("function_name") for x in collector_results[name]}
+                                    for f_reg in res.failed_regions:
+                                        preserved = [
+                                            x for x in prev_lambdas
+                                            if x.get("region") == f_reg and (x.get("name") or x.get("function_name")) not in existing_names
+                                        ]
+                                        if not preserved:
+                                            cached_res = cache.get("v1:resources") or []
+                                            preserved = [
+                                                x for x in cached_res
+                                                if x.get("type") == "Lambda" and x.get("region") == f_reg and (x.get("name") or x.get("id")) not in existing_names
+                                            ]
+                                        if preserved:
+                                            logger.info(f"[PRESERVED] Retained {len(preserved)} previous Lambda items from failed region {f_reg}")
+                                            collector_results[name].extend(preserved)
+                                            existing_names.update(x.get("name") or x.get("function_name") for x in preserved)
 
                             if len(res.items) > 0:
                                 self._service_status[name] = "SUCCESS_WITH_DATA"
@@ -350,7 +387,9 @@ class ScanManager:
                         collector_failures[name] = str(err)
                         collector_results[name] = []
 
-            self._failed_regions = list(scan_failed_regions)
+            self._failed_regions = sorted(list(scan_failed_regions))
+            reconcilable_regions = sorted(list(successful_regions_set - scan_failed_regions))
+            self._successful_regions = reconcilable_regions
 
             # 1b. CRITICAL FAILURE GATE: Collector failure must NEVER look like empty AWS state
             failed_critical = [c for c in CRITICAL_COLLECTORS if c in collector_failures]
@@ -533,7 +572,7 @@ class ScanManager:
             try:
                 graph_builder.build_graph_in_neo4j(
                     self.inventory,
-                    successful_regions=list(successful_regions_set) if successful_regions_set else None
+                    successful_regions=reconcilable_regions if reconcilable_regions else None
                 )
                 neo4j_success = True
             except Exception as db_err:
@@ -551,19 +590,7 @@ class ScanManager:
                 logger.warning(f"Neo4j loader exception: {loader_err}. Building local NetworkX model.")
                 G = graph_loader.build_local_graph(self.inventory)
 
-            # 6. STEP 3 OF PIPELINE: CloudTrail Activity Normalization & Synchronization into Graph
-            correlation_result = cloudtrail_correlator.correlate_activity_with_graph(
-                self.inventory.alerts,
-                self.inventory,
-                G  # Dynamic activity edges added directly to G
-            )
-            correlated_findings = correlation_result.get("correlated_findings", [])
-
-            nodes_count = G.number_of_nodes()
-            edges_count = G.number_of_edges()
-            logger.info(f"[INFO] Graph construction complete: {nodes_count} nodes, {edges_count} edges (with dynamic activity)")
-
-            # 7. STEP 4 OF PIPELINE: Attack Path Engine Analysis on Fully Synchronized Graph
+            # 6. STEP 3 OF PIPELINE: Attack Path Engine Analysis on Graph
             _policy_doc_map = {
                 p.get('name', ''): p.get('document', '{}')
                 for p in self.inventory.policies if p.get('name')
@@ -578,6 +605,20 @@ class ScanManager:
                 policy_doc_map=_policy_doc_map,
             )
             logger.info(f"[INFO] Attack Path Engine: {len(attack_paths)} paths detected")
+
+            # 7. STEP 4 OF PIPELINE: CloudTrail Activity Normalization & Correlation with Graph/Paths
+            correlation_result = cloudtrail_correlator.correlate_activity_with_graph(
+                self.inventory.alerts,
+                self.inventory,
+                G,
+                attack_paths=attack_paths
+            )
+            correlated_findings = correlation_result.get("correlated_findings", [])
+            activity_metrics = correlation_result.get("metrics", {})
+
+            nodes_count = G.number_of_nodes()
+            edges_count = G.number_of_edges()
+            logger.info(f"[INFO] Graph & Activity Correlation complete: {nodes_count} nodes, {edges_count} edges, {len(correlated_findings)} correlated findings")
 
             duration = round(time.time() - start_time, 2)
 
@@ -713,7 +754,23 @@ class ScanManager:
                             "label": attr.get('label', ''),
                             "isActivity": attr.get('is_activity', False),
                             "timestamp": attr.get('timestamp', ''),
-                            "sourceIp": attr.get('sourceIp', '')
+                            "sourceIp": attr.get('sourceIp', ''),
+                            "edge_type": attr.get('edge_type', attr.get('label', '')),
+                            "provenance_source": attr.get('source', ''),
+                            "principal": attr.get('principal', ''),
+                            "principal_type": attr.get('principal_type', ''),
+                            "policy_arn": attr.get('policy_arn', ''),
+                            "policy_name": attr.get('policy_name', ''),
+                            "statement_sid": attr.get('statement_sid', ''),
+                            "effect": attr.get('effect', ''),
+                            "action": attr.get('action', ''),
+                            "resource": attr.get('resource', ''),
+                            "resource_arn": attr.get('resource_arn', ''),
+                            "condition_status": attr.get('condition_status', ''),
+                            "decision": attr.get('decision', 'ALLOWED'),
+                            "region": attr.get('region', ''),
+                            "why": attr.get('why', ''),
+                            "evidence": attr.get('evidence', {})
                         }
                     })
 
@@ -772,6 +829,12 @@ class ScanManager:
                     "paths": len(attack_paths),
                     "resources": resources_count
                 },
+                "activityMetrics": {
+                    "staticAttackPaths": len(attack_paths),
+                    "observedSecurityEvents": len(self.inventory.alerts),
+                    "correlatedFindings": len(correlated_findings),
+                    "observedAttackActivity": activity_metrics.get("observed_attack_activity_count", 0)
+                },
                 "riskDistribution": [
                     {"name": "Critical", "value": len(critical_items), "color": "#EF4444"},
                     {"name": "High", "value": len(high_items), "color": "#F59E0B"},
@@ -795,12 +858,19 @@ class ScanManager:
                     "risks_found": total_findings_count,
                     "graph_nodes_count": nodes_count,
                     "graph_edges_count": edges_count,
-                    "scanned_regions": scanned_regions
+                    "scanned_regions": scanned_regions,
+                    "scan_mode": resolved_scan_mode,
+                    "successful_regions": reconcilable_regions,
+                    "failed_regions": self._failed_regions
                 },
                 "topRiskyIdentities": top_identities,
                 "resourceBreakdown": res_breakdown,
                 "scanId": scan_id,
                 "scanStatus": final_scan_status,
+                "scanMode": resolved_scan_mode,
+                "scannedRegions": scanned_regions,
+                "resolvedRegions": scanned_regions,
+                "successfulRegions": reconcilable_regions,
                 "lastSuccessfulScanAt": scan_timestamp,
                 "lastSuccessfulScanId": scan_id,
                 "lastError": None,
@@ -812,6 +882,10 @@ class ScanManager:
                 "scanId": scan_id,
                 "scanTimestamp": scan_timestamp,
                 "scanStatus": final_scan_status,
+                "scanMode": resolved_scan_mode,
+                "scannedRegions": scanned_regions,
+                "resolvedRegions": scanned_regions,
+                "successfulRegions": reconcilable_regions,
                 "lastSuccessfulScanAt": scan_timestamp,
                 "lastSuccessfulScanId": scan_id,
                 "lastError": None,
@@ -827,6 +901,8 @@ class ScanManager:
                 "v1:roles": self.inventory.roles,
                 "v1:groups": self.inventory.groups,
                 "v1:policies": self.inventory.policies,
+                "v1:inventory:ec2": self.inventory.ec2,
+                "v1:inventory:lambda": self.inventory.lambdas,
                 "v1:resources": (
                     self.inventory.users + self.inventory.roles +
                     running_ec2 + self.inventory.s3 +
@@ -856,6 +932,7 @@ class ScanManager:
                 "status": "partial" if scan_failed_regions else "success",
                 "scan_id": scan_id,
                 "scan_status": final_scan_status,
+                "scan_mode": resolved_scan_mode,
                 "timestamp": scan_timestamp,
                 "last_successful_scan_at": scan_timestamp,
                 "last_successful_scan_id": scan_id,
@@ -868,7 +945,9 @@ class ScanManager:
                 "critical_findings": len(critical_items),
                 "service_status": self._service_status,
                 "failed_regions": self._failed_regions,
-                "scanned_regions": scanned_regions
+                "successful_regions": reconcilable_regions,
+                "scanned_regions": scanned_regions,
+                "resolved_regions": scanned_regions
             }
 
             return self._last_result

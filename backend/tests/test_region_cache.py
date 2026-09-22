@@ -21,11 +21,15 @@ def _reset_state():
 
 def test_region_cache_default_behavior(monkeypatch):
     _reset_state()
-    # Mock SCAN_REGIONS to be None/empty
+    # When SCAN_REGIONS is empty and describe_regions fails, it falls back to session default
     monkeypatch.setattr(settings, "SCAN_REGIONS", None)
 
-    # When SCAN_REGIONS is empty, it should fallback to the AWS default region config or session default
-    regions = get_all_regions()
+    mock_session = MagicMock()
+    mock_session.region_name = "ap-south-1"
+    mock_session.client.side_effect = Exception("AWS STS Token Expired")
+
+    with patch("app.services.aws.region_cache.get_aws_session", return_value=mock_session):
+        regions = get_all_regions()
     assert isinstance(regions, list)
     assert len(regions) == 1
     assert regions[0] in [settings.AWS_DEFAULT_REGION, "us-east-1", "ap-south-1"]
@@ -37,7 +41,7 @@ def test_region_cache_configured_regions(monkeypatch):
     monkeypatch.setattr(settings, "SCAN_REGIONS", "us-east-1,  eu-west-1,ap-south-1 ")
 
     regions = get_all_regions()
-    assert regions == ["us-east-1", "eu-west-1", "ap-south-1"]
+    assert regions == sorted(["us-east-1", "eu-west-1", "ap-south-1"])
 
 
 def test_region_cache_is_cached(monkeypatch):

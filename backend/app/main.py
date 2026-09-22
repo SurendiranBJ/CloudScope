@@ -140,7 +140,7 @@ def get_api_v1_health():
         mode_state = get_scan_mode_state()
     except Exception:
         regions = "unavailable (check AWS credentials)"
-        mode_state = {"mode": "unknown", "selected_region": None}
+        mode_state = {"mode": "unknown", "selected_region": None, "resolved_regions": []}
 
     aws_diag = get_aws_diagnostic_info()
 
@@ -154,6 +154,7 @@ def get_api_v1_health():
             "commit": commit_hash,
             "start_time": start_time,
             "scan_regions": regions,
+            "resolved_regions": mode_state.get("resolved_regions", regions),
             "scan_mode": mode_state["mode"],
             "selected_region": mode_state["selected_region"],
             "aws_authenticated": aws_diag["authenticated"],
@@ -164,6 +165,13 @@ def get_api_v1_health():
 
 @app.get("/health", tags=["Health"], response_model=APIResponse[dict])
 def get_health():
+    try:
+        regions = get_all_regions()
+        mode_state = get_scan_mode_state()
+    except Exception:
+        regions = "unavailable (check AWS credentials)"
+        mode_state = {"mode": "unknown", "selected_region": None, "resolved_regions": []}
+
     aws_diag = get_aws_diagnostic_info()
     return APIResponse(
         success=True,
@@ -172,7 +180,11 @@ def get_health():
         data={
             "status": "healthy",
             "service": "CloudScope API",
-            "aws_authenticated": aws_diag["authenticated"]
+            "aws_authenticated": aws_diag["authenticated"],
+            "scan_mode": mode_state.get("mode"),
+            "scan_regions": regions,
+            "resolved_regions": mode_state.get("resolved_regions", regions),
+            "selected_region": mode_state.get("selected_region")
         }
     )
 

@@ -62,11 +62,17 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
         max_depth = 0
         evidence: List[str] = []
 
+        # Collect unique real cloud resources and regions
+        affected_resources: List[str] = []
+        affected_regions: Set[str] = set()
+
         for nid in descendants:
             node_data = G.nodes[nid]
             ntype = node_data.get('type', 'Resource')
             nlabel = node_data.get('label', nid)
             nrisk = node_data.get('riskScore', 0)
+            narn = node_data.get('arn', '')
+            nregion = node_data.get('region')
 
             # Measure shortest path depth
             try:
@@ -78,11 +84,16 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
 
             if ntype in IDENTITY_TYPES:
                 identities.append(nid)
-            elif ntype in PRIVILEGE_TYPES:
+            elif ntype in PRIVILEGE_TYPES or ntype == "AuroraDBUser":
                 privileges.append(nid)
-            else:
+            elif ntype in CLOUD_RESOURCE_TYPES:
                 resources.append(nid)
+                res_identifier = narn or nlabel or nid
+                if res_identifier not in affected_resources:
+                    affected_resources.append(res_identifier)
                 resource_types[ntype] = resource_types.get(ntype, 0) + 1
+                if nregion and nregion not in ['global', 'unknown']:
+                    affected_regions.add(nregion)
 
             # Critical asset identification (Secrets, RDS, S3, or role with riskScore >= 60)
             if ntype in ['Secrets', 'Secret', 'RDS', 'S3'] or (ntype == 'Role' and nrisk >= 60):
@@ -94,7 +105,7 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
                 })
 
         # Calculate blast score: based on reachable actual cloud resources and critical assets
-        res_count = len(resources)
+        res_count = len(affected_resources)
         crit_count = len(critical_assets)
         priv_count = len(privileges)
 
@@ -111,10 +122,15 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
         if priv_count > 0:
             evidence.append(f"{priv_count} intermediate IAM roles/groups traversed in lateral attack graph.")
 
+        sorted_regions = sorted(list(affected_regions))
         return {
             "node_id": node_id,
             "blast_score": blast_score,
             "severity": severity,
+            "affected_resource_count": res_count,
+            "affected_resources": affected_resources,
+            "resource_types": resource_types,
+            "regions": sorted_regions,
             "reachable_count": len(descendants),
             "reachable_resource_count": res_count,
             "reachable_identities_count": len(identities),
@@ -124,7 +140,6 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
             "max_depth": max_depth,
             "critical_assets": critical_assets,
             "reachable_nodes": descendants,
-            "resource_types": resource_types,
             "evidence": evidence,
             "breakdown": {
                 **resource_types,
