@@ -134,6 +134,7 @@ export interface AttackPath {
   correlation_status?: 'POSSIBLE_CAPABILITY' | 'OBSERVED_ACTIVITY' | 'CORRELATED_ACTIVITY' | 'OBSERVED_ATTACK_ACTIVITY' | string;
   correlationStatus?: 'POSSIBLE_CAPABILITY' | 'OBSERVED_ATTACK_ACTIVITY' | 'CORRELATED_ACTIVITY' | 'OBSERVED_ACTIVITY' | string;
   observed_activity?: any[];
+  observedActivity?: any[];
 }
 
 export interface RiskFinding {

@@ -60,13 +60,9 @@ VALID_SEMANTIC_EDGES: Set[Tuple[str, str, str]] = {
     ("ActivityEvent", "TARGETS", "DynamoDB"),
 }
 
-# Add Policy/Identity -> ALLOWS -> Resource for each cloud resource type
+# Add Policy -> ALLOWS -> Resource for each cloud resource type (canonical authorization path)
 for _res in ALLOWED_POLICY_RESOURCE_TYPES:
     VALID_SEMANTIC_EDGES.add(("Policy", "ALLOWS", _res))
-    VALID_SEMANTIC_EDGES.add(("User", "ALLOWS", _res))
-    VALID_SEMANTIC_EDGES.add(("Role", "ALLOWS", _res))
-    VALID_SEMANTIC_EDGES.add(("User", "CAN_ACCESS", _res))
-    VALID_SEMANTIC_EDGES.add(("Role", "CAN_ACCESS", _res))
 
 
 def validate_edge(source_type: str, rel_type: str, target_type: str) -> Tuple[bool, Optional[str]]:

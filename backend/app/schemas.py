@@ -22,11 +22,11 @@ class IAMUser(BaseModel):
     riskScore: int
 
 class IAMRole(BaseModel):
-    id: str
+    id: Optional[str] = ""
     name: str
     arn: str
     trustPolicy: str
-    policies: List[str]
+    policies: List[str] = []
     riskScore: int
 
 class IAMPolicy(BaseModel):
@@ -38,7 +38,7 @@ class IAMPolicy(BaseModel):
 
 # Cloud Resources Schemas
 class CloudResource(BaseModel):
-    id: str
+    id: Optional[str] = ""
     name: str
     type: str  # 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy' | 'DynamoDB'
     region: str

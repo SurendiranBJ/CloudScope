@@ -1256,6 +1256,68 @@ Explain why this shared privilege path introduces high blast radius across multi
                   </div>
                 </div>
 
+                {/* Observed Attack Activity Callout Banner */}
+                {(() => {
+                  const observedAttack = group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY')?.observedActivity?.[0] ||
+                    (group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY') as any)?.observed_activity?.[0];
+                  
+                  if (!observedAttack) return null;
+
+                  return (
+                    <div className="bg-red-950/40 border border-red-500/60 rounded-xl p-4 flex items-start gap-3.5 text-xs shadow-xl">
+                      <div className="p-2 bg-red-500/20 rounded-lg text-red-400 shrink-0 mt-0.5">
+                        <Activity className="w-5 h-5 animate-pulse text-red-400" />
+                      </div>
+                      <div className="space-y-2 w-full font-mono">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <span className="font-bold text-red-300 text-sm flex items-center gap-2">
+                            <span>🚨 Active Attack Observed in CloudTrail:</span>
+                            <span className="text-white px-2 py-0.5 bg-red-900/60 rounded border border-red-500/40 font-bold">
+                              {observedAttack.event_name || observedAttack.eventName || 'Security Event'}
+                            </span>
+                          </span>
+                          <span className="text-[10px] text-gray-300 bg-black/50 px-2.5 py-1 rounded border border-red-500/30">
+                            Event ID: {observedAttack.event_id || observedAttack.eventId || 'N/A'}
+                          </span>
+                        </div>
+                        
+                        <p className="text-[11px] text-gray-200 font-sans leading-relaxed">
+                          <strong className="text-red-300 font-bold">Reason:</strong> {observedAttack.reason || 'CloudTrail recorded runtime activity matching a specific transition in this attack path.'}
+                        </p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-[10px] pt-1.5 border-t border-red-900/40">
+                          <div>
+                            <span className="text-gray-400 font-sans block">Event Time:</span>
+                            <span className="text-white font-bold">{observedAttack.event_time || observedAttack.timestamp || 'N/A'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 font-sans block">Principal:</span>
+                            <span className="text-blue-300 font-bold">{observedAttack.principal || observedAttack.actor_name || observedAttack.actor || 'Unknown'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 font-sans block">Target:</span>
+                            <span className="text-amber-300 font-bold">{observedAttack.target_name || observedAttack.target || 'N/A'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 font-sans block">Matched Transition:</span>
+                            <span className="text-emerald-300 font-bold">
+                              {observedAttack.matched_transition?.description || observedAttack.matched_transition?.relationship || 'Path Transition'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {observedAttack.evidence && (
+                          <div className="text-[9px] text-gray-400 pt-1 font-mono">
+                            <span className="text-gray-500">Evidence Classification:</span> {observedAttack.evidence.classification || 'OBSERVED_ATTACK_ACTIVITY'} | 
+                            <span className="text-gray-500 ml-1">Source IP:</span> {observedAttack.evidence.source_ip || observedAttack.source_ip || 'N/A'} |
+                            <span className="text-gray-500 ml-1">Region:</span> {observedAttack.evidence.region || observedAttack.region || 'global'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Privilege Escalation Callout Banner */}
                 {privEsc && (
                   <div className="bg-purple-950/40 border border-purple-500/50 rounded-xl p-3.5 flex items-start gap-3 text-xs shadow-lg">

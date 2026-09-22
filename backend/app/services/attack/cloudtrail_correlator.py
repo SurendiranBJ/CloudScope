@@ -3,14 +3,15 @@ CloudScope CloudTrail Security Activity Correlator.
 
 Normalizes CloudTrail events, maps exact runtime activity types (ASSUMED_ROLE,
 MODIFIED_POLICY, CREATED_ACCESS_KEY, ACCESSED_RESOURCE, SECURITY_EVENT),
-synchronizes activity idempotently into Neo4j using eventId, and correlates
-observed runtime events with static graph capabilities and attack paths.
+synchronizes activity idempotently into Neo4j using eventId, connects ActivityEvent
+nodes into the security graph, and correlates observed runtime events with static
+graph capabilities and attack paths.
 
-Enforces clear semantic distinction:
+Enforces clear 4-state semantic distinction:
 - POSSIBLE_CAPABILITY (Static analysis: what an identity can potentially do)
 - OBSERVED_ACTIVITY (CloudTrail: what activity actually occurred)
-- CORRELATED_ACTIVITY (Observed activity matching a static capability)
-- OBSERVED_ATTACK_ACTIVITY (Observed activity consistent with an identified attack path)
+- CORRELATED_ACTIVITY (Verified static capability + matching CloudTrail event)
+- OBSERVED_ATTACK_ACTIVITY (CloudTrail event matching exact transition of an identified attack path)
 """
 
 import json
@@ -52,6 +53,10 @@ SECURITY_EVENT_TYPES = {
     "GetSecretValue": "ACCESSED_RESOURCE",
     "DescribeDBInstances": "ACCESSED_RESOURCE",
     "RunInstances": "ACCESSED_RESOURCE",
+    "StartInstances": "ACCESSED_RESOURCE",
+    "StopInstances": "ACCESSED_RESOURCE",
+    "TerminateInstances": "ACCESSED_RESOURCE",
+    "RebootInstances": "ACCESSED_RESOURCE",
     "Invoke": "ACCESSED_RESOURCE",
 }
 
@@ -61,8 +66,13 @@ def get_activity_type(event_name: str) -> str:
     return SECURITY_EVENT_TYPES.get(event_name, "SECURITY_EVENT")
 
 
-def parse_timezone_aware_timestamp(event_time_raw: Any) -> datetime:
-    """Parse raw timestamp into a standardized timezone-aware datetime object."""
+def parse_timezone_aware_timestamp(event_time_raw: Any) -> Optional[datetime]:
+    """Parse raw timestamp into a standardized timezone-aware datetime object.
+    
+    Returns None if missing, empty, or malformed.
+    Never invents current time or falls back to datetime.now().
+    Valid timestamps are guaranteed timezone-aware.
+    """
     if isinstance(event_time_raw, datetime):
         if event_time_raw.tzinfo is None:
             return event_time_raw.replace(tzinfo=timezone.utc)
@@ -76,12 +86,16 @@ def parse_timezone_aware_timestamp(event_time_raw: Any) -> datetime:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
         except Exception:
-            pass
-    return datetime.now(timezone.utc)
+            return None
+    return None
 
 
 def normalize_principal(identity_input: Any) -> Tuple[str, str, str]:
-    """Normalize principal identity to (principal_id, principal_type, principal_arn)."""
+    """Normalize principal identity to (principal_id, principal_type, principal_arn).
+    
+    Correctly distinguishes IAMUser, AssumedRole, Root, FederatedUser, and AWSService.
+    Never invents fake account IDs (e.g. 123456789012) when account ID is missing.
+    """
     if isinstance(identity_input, str):
         arn = identity_input
         if ":user/" in arn:
@@ -91,37 +105,55 @@ def normalize_principal(identity_input: Any) -> Tuple[str, str, str]:
         elif ":assumed-role/" in arn:
             parts = arn.split(":assumed-role/")[1].split("/")
             role_name = parts[0]
-            acc = arn.split(":")[4]
+            acc = arn.split(":")[4] if len(arn.split(":")) > 4 else "unknown"
             base_arn = f"arn:aws:iam::{acc}:role/{role_name}"
             return base_arn, "Role", base_arn
         elif ":root" in arn:
             return arn, "Root", arn
+        elif arn.endswith(".amazonaws.com") or ":service/" in arn:
+            return arn, "AWSService", arn
         return arn, "Principal", arn
     elif isinstance(identity_input, dict):
         p_type = identity_input.get("type", "IAMUser")
         arn = identity_input.get("arn", "")
         p_id = identity_input.get("principalId", "")
         user_name = identity_input.get("userName", "")
+        account_id = identity_input.get("accountId") or ""
 
         if p_type == "IAMUser":
-            norm_arn = arn or (f"arn:aws:iam::123456789012:user/{user_name}" if user_name else p_id)
+            if arn:
+                norm_arn = arn
+            elif account_id and user_name:
+                norm_arn = f"arn:aws:iam::{account_id}:user/{user_name}"
+            elif user_name:
+                norm_arn = f"arn:aws:iam::unknown:user/{user_name}"
+            else:
+                norm_arn = p_id or "unknown"
             return norm_arn, "User", norm_arn
         elif p_type == "AssumedRole":
             if ":assumed-role/" in arn:
                 parts = arn.split(":assumed-role/")[1].split("/")
                 role_name = parts[0]
-                acc = arn.split(":")[4]
+                acc = arn.split(":")[4] if len(arn.split(":")) > 4 else (account_id or "unknown")
                 base_arn = f"arn:aws:iam::{acc}:role/{role_name}"
                 return base_arn, "Role", base_arn
             elif ":role/" in arn:
                 return arn, "Role", arn
-            return arn or p_id, "Role", arn or p_id
+            return arn or p_id or "unknown", "Role", arn or p_id or "unknown"
         elif p_type == "Root":
-            norm_arn = arn or "arn:aws:iam::123456789012:root"
+            if arn:
+                norm_arn = arn
+            elif account_id:
+                norm_arn = f"arn:aws:iam::{account_id}:root"
+            else:
+                norm_arn = "arn:aws:iam::unknown:root"
             return norm_arn, "Root", norm_arn
         elif p_type == "FederatedUser":
-            return arn or p_id, "FederatedUser", arn or p_id
-        return arn or p_id, p_type, arn or p_id
+            return arn or p_id or "unknown", "FederatedUser", arn or p_id or "unknown"
+        elif p_type in ["AWSService", "Service"] or "invokedBy" in identity_input:
+            svc_name = identity_input.get("invokedBy") or identity_input.get("service") or arn or p_id or "AWSService"
+            return svc_name, "AWSService", svc_name
+        return arn or p_id or "unknown", p_type, arn or p_id or "unknown"
     return str(identity_input), "Unknown", str(identity_input)
 
 
@@ -131,7 +163,8 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     event_name = raw_event.get('EventName', 'Unknown') or raw_event.get('event_name', 'Unknown')
     event_time_raw = raw_event.get('EventTime') or raw_event.get('event_time')
     dt = parse_timezone_aware_timestamp(event_time_raw)
-    event_time = dt.isoformat()
+    event_time = dt.isoformat() if dt is not None else None
+    timestamp_valid = dt is not None
 
     username = raw_event.get('Username') or raw_event.get('username') or 'Unknown'
 
@@ -163,6 +196,9 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     elif ':root' in actor_arn or actor_type == 'Root':
         actor_name = 'root'
         actor_type = 'Root'
+    elif actor_type in ['AWSService', 'Service'] or user_identity.get('invokedBy'):
+        actor_name = user_identity.get('invokedBy') or actor_name
+        actor_type = 'AWSService'
 
     event_source = ct_detail.get('eventSource', raw_event.get('event_source', raw_event.get('EventSource', '')))
     account_id = user_identity.get('accountId') or ct_detail.get('recipientAccountId', raw_event.get('account_id', ''))
@@ -271,6 +307,7 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
         "activity_type": activity_type,
         "event_time": event_time,
         "timestamp": event_time,
+        "timestamp_valid": timestamp_valid,
         "aws_region": region,
         "region": region,
         "account_id": account_id,
@@ -304,10 +341,12 @@ def map_principal_to_node_id(actor_name: str, actor_arn: str, actor_type: str) -
 
 def sync_activity_into_neo4j(normalized_events: List[Dict[str, Any]]):
     """Write normalized CloudTrail events into Neo4j using idempotent MERGE on eventId.
-    Preserves historical activity nodes and dynamic edges.
+    Connects ActivityEvent node:
+    (Principal) -[:OBSERVED_ACTIVITY]-> (:ActivityEvent) -[:TARGETS]-> (Target)
+    Also preserves dynamic activity edges for graph visualization.
     """
     for ev in normalized_events:
-        event_id = ev["event_id"]
+        event_id = ev.get("event_id")
         if not event_id:
             continue
 
@@ -319,7 +358,7 @@ def sync_activity_into_neo4j(normalized_events: List[Dict[str, Any]]):
         target_node_id = get_node_id(ev["target_type"], target_name) if target_name else None
 
         try:
-            # 1. Create ActivityEvent node (Idempotent MERGE by eventId)
+            # 1. Idempotent MERGE of ActivityEvent node
             execute_write(
                 """
                 MERGE (a:ActivityEvent {eventId: $eventId})
@@ -337,9 +376,9 @@ def sync_activity_into_neo4j(normalized_events: List[Dict[str, Any]]):
                     "eventId": event_id,
                     "eventName": ev["event_name"],
                     "activityType": activity_type,
-                    "timestamp": ev["event_time"],
-                    "sourceIp": ev["source_ip"],
-                    "region": ev["region"],
+                    "timestamp": ev.get("event_time") or "",
+                    "sourceIp": ev.get("source_ip", ""),
+                    "region": ev.get("region", ""),
                     "actor": actor_name,
                     "target": target_name or "N/A",
                     "userAgent": ev.get("user_agent", ""),
@@ -347,28 +386,220 @@ def sync_activity_into_neo4j(normalized_events: List[Dict[str, Any]]):
                 }
             )
 
-            # 2. Dynamic activity edge (Idempotent MERGE by eventId)
+            # 2. Connect actor to ActivityEvent: (u)-[:OBSERVED_ACTIVITY {eventId}]->(a)
+            execute_write(
+                """
+                MATCH (u {id: $actor_id}), (a:ActivityEvent {eventId: $eventId})
+                MERGE (u)-[r:OBSERVED_ACTIVITY {eventId: $eventId}]->(a)
+                SET r.timestamp = $timestamp,
+                    r.eventName = $eventName,
+                    r.is_activity = true
+                """,
+                {
+                    "actor_id": actor_node_id,
+                    "eventId": event_id,
+                    "timestamp": ev.get("event_time") or "",
+                    "eventName": ev["event_name"]
+                }
+            )
+
+            # 3. Connect ActivityEvent to target: (a)-[:TARGETS {eventId}]->(tgt)
             if target_node_id and target_name:
                 execute_write(
-                    f"""
-                    MATCH (u {{id: $actor_id}}), (tgt {{id: $target_id}})
-                    MERGE (u)-[r:{activity_type} {{eventId: $eventId}}]->(tgt)
+                    """
+                    MATCH (a:ActivityEvent {eventId: $eventId}), (tgt {id: $target_id})
+                    MERGE (a)-[r:TARGETS {eventId: $eventId}]->(tgt)
                     SET r.timestamp = $timestamp,
-                        r.sourceIp = $sourceIp,
                         r.eventName = $eventName,
                         r.is_activity = true
                     """,
                     {
-                        "actor_id": actor_node_id,
-                        "target_id": target_node_id,
                         "eventId": event_id,
-                        "timestamp": ev["event_time"],
-                        "sourceIp": ev["source_ip"],
+                        "target_id": target_node_id,
+                        "timestamp": ev.get("event_time") or "",
                         "eventName": ev["event_name"]
                     }
                 )
+
+                # 4. Preserve dynamic activity edge for attack-path visualization
+                if not ev.get("error_code"):
+                    execute_write(
+                        f"""
+                        MATCH (u {{id: $actor_id}}), (tgt {{id: $target_id}})
+                        MERGE (u)-[r:{activity_type} {{eventId: $eventId}}]->(tgt)
+                        SET r.timestamp = $timestamp,
+                            r.sourceIp = $sourceIp,
+                            r.eventName = $eventName,
+                            r.is_activity = true
+                        """,
+                        {
+                            "actor_id": actor_node_id,
+                            "target_id": target_node_id,
+                            "eventId": event_id,
+                            "timestamp": ev.get("event_time") or "",
+                            "sourceIp": ev.get("source_ip", ""),
+                            "eventName": ev["event_name"]
+                        }
+                    )
         except Exception as e:
             logger.debug(f"Could not record activity in Neo4j for event {event_id}: {e}")
+
+
+def check_verified_static_capability(
+    G: nx.DiGraph,
+    sources: List[str],
+    targets: List[str],
+    activity_type: str,
+    event_name: str
+) -> Tuple[bool, Optional[str], Optional[str], str]:
+    """Verify if a static authorization edge or canonical authorization path exists in G.
+    Returns (has_capability, matched_src, matched_tgt, matched_rel).
+    
+    Strict rules:
+    - Never infer capability merely because target exists in inventory or is a known role.
+    - AssumeRole requires verified static CAN_ASSUME edge.
+    - Resource access requires verified static ALLOWS or DB_CONNECT edge (direct or via attached Policy).
+    """
+    if not G:
+        return False, None, None, "NONE"
+
+    for s in sources:
+        if not G.has_node(s):
+            continue
+        for t in targets:
+            if not G.has_node(t):
+                continue
+
+            # 1. Direct static authorization edge
+            if G.has_edge(s, t):
+                edge_data = G.get_edge_data(s, t)
+                rel = edge_data.get("relationship") or edge_data.get("label") or edge_data.get("type") or ""
+                # Static authorization edges
+                if activity_type == "ASSUMED_ROLE" and rel == "CAN_ASSUME":
+                    return True, s, t, "CAN_ASSUME"
+                elif activity_type in ["ACCESSED_RESOURCE", "SECURITY_EVENT"]:
+                    if rel in ["ALLOWS", "DB_CONNECT"]:
+                        return True, s, t, rel
+                elif activity_type == "MODIFIED_POLICY" and rel in ["HAS_POLICY", "ALLOWS"]:
+                    return True, s, t, rel
+
+            # 2. Canonical Policy path for resource access:
+            # (Identity) -[HAS_POLICY]-> (Policy) -[ALLOWS / DB_CONNECT]-> (Resource)
+            if activity_type in ["ACCESSED_RESOURCE", "SECURITY_EVENT"]:
+                for neighbor in G.successors(s):
+                    n_data = G.nodes.get(neighbor, {})
+                    n_type = n_data.get("type", "")
+                    s_to_n = G.get_edge_data(s, neighbor, default={})
+                    s_rel = s_to_n.get("relationship") or s_to_n.get("type") or ""
+                    
+                    if n_type == "Policy" and s_rel == "HAS_POLICY":
+                        if G.has_edge(neighbor, t):
+                            pol_to_t = G.get_edge_data(neighbor, t, default={})
+                            t_rel = pol_to_t.get("relationship") or pol_to_t.get("type") or ""
+                            if t_rel in ["ALLOWS", "DB_CONNECT"]:
+                                return True, s, t, t_rel
+                    
+                    # Or via group membership: (User) -[MEMBER_OF]-> (Group) -[HAS_POLICY]-> (Policy) -[ALLOWS]-> (Resource)
+                    elif n_type == "Group" and s_rel == "MEMBER_OF":
+                        for g_pol in G.successors(neighbor):
+                            g_data = G.nodes.get(g_pol, {})
+                            if g_data.get("type") == "Policy" and G.has_edge(g_pol, t):
+                                g_edge = G.get_edge_data(g_pol, t, default={})
+                                if g_edge.get("relationship") in ["ALLOWS", "DB_CONNECT"]:
+                                    return True, s, t, g_edge.get("relationship")
+
+    return False, None, None, "NONE"
+
+
+def match_attack_path_transition(
+    path: Dict[str, Any],
+    sources: List[str],
+    targets: List[str],
+    activity_type: str,
+    event_name: str
+) -> Optional[Dict[str, Any]]:
+    """Match a CloudTrail event against an exact transition step along the attack path.
+    
+    Must NOT match merely because actor and target appear somewhere in the path.
+    Must match the exact logical transition:
+    - AssumeRole: (u, "CAN_ASSUME", v) where u matches actor and v matches target role.
+    - Resource access: (u, "ALLOWS", v) or (u, "DB_CONNECT", v) where u is actor (or actor's attached policy in path) and v is target.
+    """
+    nodes = path.get("nodes") or path.get("ordered_nodes") or []
+    rels = path.get("ordered_relationships") or path.get("orderedRelationships") or []
+
+    if not nodes or not rels or len(nodes) < 2:
+        return None
+
+    def node_matches(node_obj: Any, id_list: List[str]) -> bool:
+        if isinstance(node_obj, str):
+            n_ids = [node_obj, node_obj.split("/")[-1]]
+        elif isinstance(node_obj, dict):
+            n_id = node_obj.get("id", "")
+            n_name = node_obj.get("name", "")
+            n_arn = node_obj.get("arn", "")
+            n_ids = [n_id, n_name, n_arn]
+            if "/" in n_id:
+                n_ids.append(n_id.split("/")[-1])
+            if "/" in n_name:
+                n_ids.append(n_name.split("/")[-1])
+            if "/" in n_arn:
+                n_ids.append(n_arn.split("/")[-1])
+        else:
+            n_ids = [str(node_obj)]
+
+        return any(x and x in id_list for x in n_ids)
+
+    num_steps = min(len(rels), len(nodes) - 1)
+    for i in range(num_steps):
+        u_node = nodes[i]
+        v_node = nodes[i + 1]
+        rel = rels[i]
+
+        u_matches_actor = node_matches(u_node, sources)
+        v_matches_target = node_matches(v_node, targets)
+
+        # 1. Direct transition match:
+        # e.g. Alice -> CAN_ASSUME -> AdminRole
+        if activity_type == "ASSUMED_ROLE":
+            if u_matches_actor and v_matches_target and rel in ["CAN_ASSUME", "ASSUMED_ROLE"]:
+                return {
+                    "step_index": i,
+                    "from_node": u_node.get("name") if isinstance(u_node, dict) else str(u_node),
+                    "to_node": v_node.get("name") if isinstance(v_node, dict) else str(v_node),
+                    "relationship": rel,
+                    "event_name": event_name,
+                    "description": f"Step {i + 1}: {rel} from {u_node} to {v_node}"
+                }
+
+        # 2. Resource access match:
+        elif activity_type == "ACCESSED_RESOURCE":
+            # Direct: Identity -> ALLOWS -> Resource
+            if u_matches_actor and v_matches_target and rel in ["ALLOWS", "DB_CONNECT"]:
+                return {
+                    "step_index": i,
+                    "from_node": u_node.get("name") if isinstance(u_node, dict) else str(u_node),
+                    "to_node": v_node.get("name") if isinstance(v_node, dict) else str(v_node),
+                    "relationship": rel,
+                    "event_name": event_name,
+                    "description": f"Step {i + 1}: {rel} to {v_node}"
+                }
+            # Canonical: Identity -> HAS_POLICY -> Policy -> ALLOWS -> Resource
+            if v_matches_target and rel in ["ALLOWS", "DB_CONNECT"]:
+                if i > 0 and node_matches(nodes[i - 1], sources):
+                    prev_rel = rels[i - 1]
+                    if prev_rel in ["HAS_POLICY", "MEMBER_OF"]:
+                        return {
+                            "step_index": i,
+                            "from_node": nodes[i - 1].get("name") if isinstance(nodes[i - 1], dict) else str(nodes[i - 1]),
+                            "via_node": u_node.get("name") if isinstance(u_node, dict) else str(u_node),
+                            "to_node": v_node.get("name") if isinstance(v_node, dict) else str(v_node),
+                            "relationship": rel,
+                            "event_name": event_name,
+                            "description": f"Step {i + 1}: {rel} via policy to {v_node}"
+                        }
+
+    return None
 
 
 def correlate_activity_with_graph(
@@ -383,7 +614,7 @@ def correlate_activity_with_graph(
     - POSSIBLE_CAPABILITY: static capability exists, no activity recorded
     - OBSERVED_ACTIVITY: event recorded, no matching static capability/path
     - CORRELATED_ACTIVITY: event matches static permission/capability
-    - OBSERVED_ATTACK_ACTIVITY: event matches an identified attack path transition
+    - OBSERVED_ATTACK_ACTIVITY: event matches an exact attack path transition
     """
     if isinstance(raw_events, nx.DiGraph):
         real_G = raw_events
@@ -397,6 +628,14 @@ def correlate_activity_with_graph(
         real_G = G if G is not None else nx.DiGraph()
         real_events = raw_events or []
         real_inventory = inventory if inventory is not None else AWSInventory()
+
+    active_attack_paths = attack_paths
+    if active_attack_paths is None and real_G and real_G.number_of_nodes() > 0:
+        try:
+            from app.services.attack.path_engine import find_attack_paths
+            active_attack_paths = find_attack_paths(real_G)
+        except Exception:
+            active_attack_paths = None
 
     # 1. Deduplicate incoming events by event_id for strict idempotency
     seen_ids: Set[str] = set()
@@ -417,34 +656,11 @@ def correlate_activity_with_graph(
     activity_edges: List[Dict[str, Any]] = []
     correlated_findings: List[Dict[str, Any]] = []
 
-    user_names = {u.get('name', '') for u in getattr(real_inventory, 'users', [])}
-    role_names = {r.get('name', '') for r in getattr(real_inventory, 'roles', [])}
     role_risk_map = {r.get('name', ''): r.get('riskScore', 0) for r in getattr(real_inventory, 'roles', [])}
-
-    # Pre-index attack paths for exact transition matching
-    attack_path_transitions: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
-    attack_path_targets: Dict[str, List[Dict[str, Any]]] = {}
-    if attack_paths:
-        for ap in attack_paths:
-            nodes = ap.get("nodes") or ap.get("ordered_nodes") or []
-            rels = ap.get("orderedRelationships") or ap.get("ordered_relationships") or []
-            tgt = ap.get("target") or ap.get("destination", "")
-            if tgt:
-                attack_path_targets.setdefault(tgt, []).append(ap)
-            for i in range(len(rels)):
-                if i + 1 < len(nodes):
-                    u_n = nodes[i].get("name") or nodes[i].get("id")
-                    v_n = nodes[i+1].get("name") or nodes[i+1].get("id")
-                    r_l = rels[i]
-                    attack_path_transitions.setdefault((u_n, v_n, r_l), []).append(ap)
-
     matched_path_ids: Set[str] = set()
 
     for ev in normalized_events:
-        # Error events (e.g., AccessDenied) must not be treated as successful transitions
-        if ev.get("error_code") in ["AccessDenied", "ClientUnauthorized", "UnauthorizedOperation"]:
-            continue
-
+        event_id = ev["event_id"]
         actor = ev["actor_name"]
         target = ev["target_name"]
         ev_name = ev["event_name"]
@@ -452,6 +668,8 @@ def correlate_activity_with_graph(
         actor_type = ev["actor_type"]
         actor_arn = ev.get("actor_arn", "")
         target_arn = ev.get("target_arn", "")
+        is_error = bool(ev.get("error_code"))
+        error_code = ev.get("error_code")
 
         if not actor or actor == "Unknown":
             continue
@@ -459,7 +677,7 @@ def correlate_activity_with_graph(
         actor_node_id = map_principal_to_node_id(actor, actor_arn, actor_type)
         target_node_id = get_node_id(ev["target_type"], target) if target else None
 
-        # Check if static graph has this edge across various ID forms (ARN, node_id, name)
+        # Build candidate identifiers for actor and target
         possible_sources = [s for s in [actor_arn, actor_node_id, actor] if s]
         if ":assumed-role/" in actor_arn:
             try:
@@ -470,110 +688,185 @@ def correlate_activity_with_graph(
                 pass
 
         possible_targets = [t for t in [target_arn, target_node_id, target] if t]
-        
-        # Also check resources in event for S3/Secrets/EC2
         for r_entry in ev.get("resources", []):
             r_arn = r_entry.get("ARN") or r_entry.get("ResourceName", "")
             if r_arn:
                 possible_targets.append(r_arn)
                 if "/" in r_arn and "arn:aws:s3:::" in r_arn:
-                    # add bucket root
                     possible_targets.append(r_arn.split("/")[0])
 
-        has_static_edge = False
-        matched_edge_src = None
-        matched_edge_tgt = None
-
+        # 3. Determine actor and target representations in real_G
+        actor_in_g = None
+        target_in_g = None
         if real_G:
             for s in possible_sources:
                 if real_G.has_node(s):
-                    for t in possible_targets:
-                        if real_G.has_node(t) and real_G.has_edge(s, t):
-                            has_static_edge = True
-                            matched_edge_src = s
-                            matched_edge_tgt = t
-                            break
-                    if has_static_edge:
-                        break
+                    actor_in_g = s
+                    break
+            for t in possible_targets:
+                if real_G.has_node(t):
+                    target_in_g = t
+                    break
+
+        # 4. ActivityEvent Node Model: User/Role ──OBSERVED_ACTIVITY──> ActivityEvent ──TARGETS──> Target
+        evt_node_id = f"event:{event_id}" if event_id else f"event:{actor}_{ev_name}"
+        if real_G is not None:
+            if not real_G.has_node(evt_node_id):
+                real_G.add_node(
+                    evt_node_id,
+                    type="ActivityEvent",
+                    eventId=event_id,
+                    eventName=ev_name,
+                    activityType=act_type,
+                    timestamp=ev.get("event_time"),
+                    source_ip=ev.get("source_ip"),
+                    region=ev.get("region"),
+                    name=ev_name,
+                    actor=actor,
+                    target=target,
+                    is_error=is_error,
+                    error_code=error_code
+                )
+
+            # Connect actor to ActivityEvent
+            src_node = actor_in_g or actor_arn or actor_node_id or actor
+            if real_G.has_node(src_node):
+                real_G.add_edge(
+                    src_node,
+                    evt_node_id,
+                    relationship="OBSERVED_ACTIVITY",
+                    type="OBSERVED_ACTIVITY",
+                    label="OBSERVED_ACTIVITY",
+                    eventId=event_id,
+                    timestamp=ev.get("event_time"),
+                    is_activity=True
+                )
+
+            # Connect ActivityEvent to Target
+            tgt_node = target_in_g or target_arn or target_node_id or target
+            if tgt_node and real_G.has_node(tgt_node):
+                real_G.add_edge(
+                    evt_node_id,
+                    tgt_node,
+                    relationship="TARGETS",
+                    type="TARGETS",
+                    label="TARGETS",
+                    eventId=event_id,
+                    timestamp=ev.get("event_time"),
+                    is_activity=True
+                )
+
+        # 5. Check Verified Static Capability
+        has_static_cap, matched_src, matched_tgt, matched_rel = check_verified_static_capability(
+            real_G, possible_sources, possible_targets, act_type, ev_name
+        )
+
+        # 6. Check Exact Attack Path Transition Match
+        matched_transition = None
+        matching_path = None
+        if active_attack_paths and not is_error:
+            for ap in active_attack_paths:
+                m = match_attack_path_transition(ap, possible_sources, possible_targets, act_type, ev_name)
+                if m:
+                    matched_transition = m
+                    matching_path = ap
+                    break
 
         target_risk = role_risk_map.get(target, 0)
 
-        # Check if matches an identified attack path transition
-        matching_paths = []
-        for s in possible_sources:
-            for t in possible_targets:
-                if (s, t, "CAN_ASSUME") in attack_path_transitions:
-                    matching_paths.extend(attack_path_transitions[(s, t, "CAN_ASSUME")])
-                elif (s, t, "ALLOWS") in attack_path_transitions:
-                    matching_paths.extend(attack_path_transitions[(s, t, "ALLOWS")])
-                if t in attack_path_targets:
-                    matching_paths.extend(attack_path_targets[t])
-
-        if attack_paths:
-            # Also check if event actor or target is in attack path nodes
-            for ap in attack_paths:
-                ap_nodes = []
-                for n in ap.get("nodes", []):
-                    nid = n.get("id") or n.get("name") or ""
-                    if nid:
-                        ap_nodes.append(nid)
-                        if "/" in nid:
-                            ap_nodes.append(nid.split("/")[-1])
-                actor_matches = any(s in ap_nodes for s in possible_sources)
-                target_matches = any(t in ap_nodes for t in possible_targets)
-                if actor_matches and target_matches:
-                    if ap not in matching_paths:
-                        matching_paths.append(ap)
-
-        if matching_paths:
-            finding_type = "OBSERVED_ATTACK_ACTIVITY"
-            matched_static_rel = "CAN_ASSUME" if act_type == "ASSUMED_ROLE" else act_type
-            static_path_id = matching_paths[0].get("id", "path-unknown")
-            matched_path_ids.add(static_path_id)
-            matching_paths[0]["correlation_status"] = "OBSERVED_ATTACK_ACTIVITY"
-            matching_paths[0].setdefault("observed_activity", []).append(ev)
-
-            reason = (
-                f"Observed activity consistent with identified attack path '{static_path_id}': "
-                f"principal '{actor}' executed '{ev_name}' against target '{target}'."
-            )
-        elif has_static_edge or (target and (target in role_names or target in user_names)):
-            finding_type = "CORRELATED_ACTIVITY"
-            matched_static_rel = "CAN_ASSUME" if has_static_edge else "MAPPED_IDENTITY"
+        # 7. Classify Finding
+        if is_error:
+            # Denied events must NEVER be treated as successful transitions or correlated authorizations
+            finding_type = "OBSERVED_ACTIVITY"
+            matched_static_rel = "NONE"
             static_path_id = None
+            reason = f"Observed CloudTrail denied/error event '{ev_name}' with error code '{error_code}' by '{actor}'."
+        elif matching_path and matched_transition:
+            finding_type = "OBSERVED_ATTACK_ACTIVITY"
+            matched_static_rel = matched_transition.get("relationship", act_type)
+            static_path_id = matching_path.get("id", "path-unknown")
+            matched_path_ids.add(static_path_id)
+            matching_path["correlation_status"] = "OBSERVED_ATTACK_ACTIVITY"
+            matching_path.setdefault("observed_activity", []).append({
+                **ev,
+                "matched_transition": matched_transition
+            })
+            if act_type == "ASSUMED_ROLE":
+                action_desc = f"principal '{actor}' actively assumed privileged role '{target}'"
+            else:
+                action_desc = f"principal '{actor}' executed '{ev_name}' against target '{target}'"
+            reason = (
+                f"Observed activity consistent with identified attack path '{static_path_id}' "
+                f"(matched transition: {matched_transition.get('description')}): {action_desc}."
+            )
+            # Annotate static edge in real_G
+            if has_static_cap and matched_src and matched_tgt and real_G.has_edge(matched_src, matched_tgt):
+                real_G[matched_src][matched_tgt]["correlation_status"] = "CORRELATED_ACTIVITY"
+                real_G[matched_src][matched_tgt]["last_observed_event_id"] = event_id
+        elif has_static_cap:
+            finding_type = "CORRELATED_ACTIVITY"
+            matched_static_rel = matched_rel
+            static_path_id = None
+            if act_type == "ASSUMED_ROLE":
+                action_desc = f"'{actor}' actively assumed privileged role '{target}'"
+            else:
+                action_desc = f"'{actor}' executed '{ev_name}' against '{target}'"
             reason = (
                 f"Observed activity matches verified static IAM authorization in the security graph: "
-                f"'{actor}' executed '{ev_name}' against '{target}'."
+                f"{action_desc} via '{matched_static_rel}'."
             )
-            # Update edge in real_G
-            if matched_edge_src and matched_edge_tgt and real_G.has_edge(matched_edge_src, matched_edge_tgt):
-                real_G[matched_edge_src][matched_edge_tgt]["correlation_status"] = "CORRELATED_ACTIVITY"
-                real_G[matched_edge_src][matched_edge_tgt]["last_observed_event_id"] = ev["event_id"]
+            # Annotate static edge in real_G
+            if matched_src and matched_tgt and real_G.has_edge(matched_src, matched_tgt):
+                real_G[matched_src][matched_tgt]["correlation_status"] = "CORRELATED_ACTIVITY"
+                real_G[matched_src][matched_tgt]["last_observed_event_id"] = event_id
         else:
             finding_type = "OBSERVED_ACTIVITY"
             matched_static_rel = "NONE"
             static_path_id = None
-            reason = f"Observed CloudTrail management event '{ev_name}' executed by '{actor}'."
+            reason = f"Observed CloudTrail management event '{ev_name}' executed by '{actor}' without verified static capability."
 
-            # If AssumeRole was observed without static permission, create anomalous edge
-            if act_type == "ASSUMED_ROLE" and real_G:
-                s_node = actor_arn if real_G.has_node(actor_arn) else (actor_node_id if real_G.has_node(actor_node_id) else actor)
-                t_node = target_arn if real_G.has_node(target_arn) else (target_node_id if real_G.has_node(target_node_id) else target)
-                if real_G.has_node(s_node) and real_G.has_node(t_node):
-                    real_G.add_edge(
-                        s_node,
-                        t_node,
-                        relationship="ASSUMED_ROLE",
-                        correlation_status="OBSERVED_ACTIVITY",
-                        is_anomalous=True,
-                        eventId=ev["event_id"],
-                        last_observed_event_id=ev["event_id"]
-                    )
+            # If AssumeRole was observed without static permission, create anomalous dynamic edge
+            if act_type == "ASSUMED_ROLE" and real_G and actor_in_g and target_in_g and not is_error:
+                real_G.add_edge(
+                    actor_in_g,
+                    target_in_g,
+                    relationship="ASSUMED_ROLE",
+                    correlation_status="OBSERVED_ACTIVITY",
+                    is_anomalous=True,
+                    eventId=event_id,
+                    last_observed_event_id=event_id
+                )
+
+        # 8. Preserve dynamic relationship for graph visualization (when successful)
+        if not is_error and actor_in_g and target_in_g and real_G is not None:
+            # Preserve dynamic edge without overwriting static authorization edges
+            if not real_G.has_edge(actor_in_g, target_in_g):
+                real_G.add_edge(
+                    actor_in_g,
+                    target_in_g,
+                    relationship=act_type,
+                    label=act_type,
+                    type=act_type,
+                    eventId=event_id,
+                    timestamp=ev.get("event_time"),
+                    is_activity=True
+                )
+            activity_edges.append({
+                "source": actor_in_g,
+                "target": target_in_g,
+                "label": act_type,
+                "type": act_type,
+                "event_id": event_id,
+                "timestamp": ev.get("event_time"),
+                "source_ip": ev.get("source_ip"),
+                "sourceIp": ev.get("source_ip"),
+                "is_active": True
+            })
 
         severity = "critical" if (target_risk >= 80 or finding_type == "OBSERVED_ATTACK_ACTIVITY") else ("high" if target_risk >= 60 else "medium")
 
         finding = {
-            "id": f"corr-{ev['event_id']}",
+            "id": f"corr-{event_id}",
             "type": finding_type,
             "finding_type": finding_type,
             "title": f"Observed {ev_name} Activity by {actor}",
@@ -583,10 +876,11 @@ def correlate_activity_with_graph(
             "target": target or "N/A",
             "target_node_id": target_node_id,
             "target_type": ev["target_type"],
-            "event_id": ev["event_id"],
+            "event_id": event_id,
             "event_name": ev_name,
             "event_time": ev["event_time"],
             "timestamp": ev["event_time"],
+            "timestamp_valid": ev.get("timestamp_valid", False),
             "activity_type": act_type,
             "source_ip": ev["source_ip"],
             "region": ev["region"],
@@ -595,22 +889,26 @@ def correlate_activity_with_graph(
             "severity": severity,
             "risk_score": max(target_risk, 30 if finding_type == "OBSERVED_ATTACK_ACTIVITY" else 15),
             "target_risk_score": target_risk,
-            "has_static_permission": has_static_edge,
+            "has_static_permission": has_static_cap,
             "matched_static_relationship": matched_static_rel,
+            "matched_transition": matched_transition,
             "static_path_id": static_path_id,
             "reason": reason,
+            "is_error": is_error,
+            "error_code": error_code,
             "recommendation": "Review session activity and verify identity authorization.",
             "description": (
                 f"Identity '{actor}' executed '{ev_name}' against '{target}' "
                 f"from IP {ev['source_ip']} (Classification: {finding_type})."
             ),
             "evidence": {
-                "event_id": ev["event_id"],
+                "event_id": event_id,
                 "event_time": ev["event_time"],
                 "source_ip": ev["source_ip"],
                 "region": ev["region"],
                 "request_parameters": ev.get("request_parameters", {}),
                 "matched_static_relationship": matched_static_rel,
+                "matched_transition": matched_transition,
                 "classification": finding_type,
                 "limitations": "Observed activity consistent with telemetry; does not represent confirmed compromise."
             },
@@ -618,33 +916,9 @@ def correlate_activity_with_graph(
         }
         correlated_findings.append(finding)
 
-        if target_node_id:
-            activity_edges.append({
-                "source": actor_node_id,
-                "target": target_node_id,
-                "label": act_type,
-                "type": act_type,
-                "event_id": ev["event_id"],
-                "timestamp": ev["event_time"],
-                "sourceIp": ev["source_ip"],
-                "source_ip": ev["source_ip"],
-                "is_active": True
-            })
-
-            if real_G and real_G.has_node(actor_node_id) and real_G.has_node(target_node_id):
-                real_G.add_edge(
-                    actor_node_id,
-                    target_node_id,
-                    label=act_type,
-                    type=act_type,
-                    eventId=ev["event_id"],
-                    timestamp=ev["event_time"],
-                    is_activity=True
-                )
-
     # For attack paths that were not matched, explicitly tag them as POSSIBLE_CAPABILITY
-    if attack_paths:
-        for ap in attack_paths:
+    if active_attack_paths:
+        for ap in active_attack_paths:
             if ap.get("id") not in matched_path_ids:
                 ap["correlation_status"] = "POSSIBLE_CAPABILITY"
 
@@ -652,7 +926,7 @@ def correlate_activity_with_graph(
     correlated_count = sum(1 for f in correlated_findings if f["is_correlated"])
 
     metrics = {
-        "static_attack_paths_count": len(attack_paths) if attack_paths else 0,
+        "static_attack_paths_count": len(active_attack_paths) if active_attack_paths else 0,
         "observed_events_count": len(normalized_events),
         "correlated_findings_count": correlated_count,
         "observed_attack_activity_count": observed_attack_count
@@ -693,4 +967,3 @@ class CloudTrailCorrelator:
     ) -> List[Dict[str, Any]]:
         correlate_activity_with_graph(events, None, nx.DiGraph(), attack_paths)
         return attack_paths
-

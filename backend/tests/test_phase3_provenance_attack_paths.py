@@ -421,26 +421,30 @@ def test_ordered_nodes_and_ordered_relationships_in_attack_paths():
     G = nx.DiGraph()
     u = "arn:aws:iam::123456789012:user/alice"
     r = "arn:aws:iam::123456789012:role/S3Admin"
+    pol = "arn:aws:iam::123456789012:policy/S3AdminPolicy"
     s = "arn:aws:s3:::confidential-vault"
 
     G.add_node(u, type="User", name="alice", riskScore=50)
     G.add_node(r, type="Role", name="S3Admin", riskScore=70)
+    G.add_node(pol, type="Policy", name="S3AdminPolicy", riskScore=60)
     G.add_node(s, type="S3", name="confidential-vault", riskScore=80, region="us-east-1")
 
     G.add_edge(u, r, relationship="CAN_ASSUME", provenance={"action": "sts:AssumeRole", "decision": "ALLOW", "why": "STS AssumeRole"})
-    G.add_edge(r, s, relationship="ALLOWS", provenance={"action": "s3:*", "decision": "ALLOW", "why": "Full S3 Access"})
+    G.add_edge(r, pol, relationship="HAS_POLICY", provenance={"action": "iam:AttachRolePolicy", "decision": "ALLOW", "why": "Attached Policy"})
+    G.add_edge(pol, s, relationship="ALLOWS", provenance={"action": "s3:*", "decision": "ALLOW", "why": "Full S3 Access"})
 
     engine = PathEngine()
     paths = engine.find_attack_paths(G)
     assert len(paths) >= 1
     p = paths[0]
-    assert len(p["nodes"]) == 3
-    assert len(p["ordered_relationships"]) == 2
-    assert p["ordered_relationships"] == ["CAN_ASSUME", "ALLOWS"]
+    assert len(p["nodes"]) == 4
+    assert len(p["ordered_relationships"]) == 3
+    assert p["ordered_relationships"] == ["CAN_ASSUME", "HAS_POLICY", "ALLOWS"]
     assert "evidence" in p
-    assert len(p["evidence"]) == 2
+    assert len(p["evidence"]) == 3
     assert p["evidence"][0]["relationship"] == "CAN_ASSUME"
-    assert p["evidence"][1]["relationship"] == "ALLOWS"
+    assert p["evidence"][1]["relationship"] == "HAS_POLICY"
+    assert p["evidence"][2]["relationship"] == "ALLOWS"
 
 
 def test_blast_radius_strict_resource_counting():
@@ -476,10 +480,13 @@ def test_blast_radius_strict_resource_counting():
 def test_region_field_preservation_across_all_findings():
     G = nx.DiGraph()
     u = "arn:aws:iam::123456789012:user/bob"
+    pol = "arn:aws:iam::123456789012:policy/BobS3Policy"
     s = "arn:aws:s3:::eu-central-vault"
     G.add_node(u, type="User", name="bob", riskScore=40)
+    G.add_node(pol, type="Policy", name="BobS3Policy", riskScore=50)
     G.add_node(s, type="S3", name="eu-central-vault", riskScore=85, region="eu-central-1")
-    G.add_edge(u, s, relationship="ALLOWS", provenance={"action": "s3:GetObject", "decision": "ALLOW", "region": "eu-central-1"})
+    G.add_edge(u, pol, relationship="HAS_POLICY", provenance={"action": "iam:AttachUserPolicy", "decision": "ALLOW"})
+    G.add_edge(pol, s, relationship="ALLOWS", provenance={"action": "s3:GetObject", "decision": "ALLOW", "region": "eu-central-1"})
 
     engine = PathEngine()
     paths = engine.find_attack_paths(G)

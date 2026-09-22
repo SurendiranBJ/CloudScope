@@ -399,3 +399,341 @@ def test_end_to_end_cloudtrail_reconciliation():
     assert metrics["observed_events_count"] == 2
     assert metrics["correlated_findings_count"] >= 1
     assert G[u][r].get("correlation_status") == "CORRELATED_ACTIVITY"
+
+
+# ==============================================================================
+# PHASE 4 CORRECTNESS HARDENING REGRESSION TESTS (12 SCENARIOS)
+# ==============================================================================
+
+def test_known_target_without_static_permission_is_observed_activity():
+    """1. Known target in inventory without static permission = OBSERVED_ACTIVITY."""
+    G = nx.DiGraph()
+    u = "arn:aws:iam::123456789012:user/alice"
+    r = "arn:aws:iam::123456789012:role/AdminRole"
+    G.add_node(u, type="User", name="alice")
+    G.add_node(r, type="Role", name="AdminRole")
+    # Alice has NO CAN_ASSUME edge to AdminRole
+
+    from app.services.scanner.inventory import AWSInventory
+    inv = AWSInventory()
+    inv.roles = [{"name": "AdminRole", "riskScore": 80}]
+
+    correlator = CloudTrailCorrelator()
+    event = {
+        "EventId": "evt-harden-1",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:00:00Z",
+        "Username": "alice",
+        "userIdentity": {"type": "IAMUser", "arn": u, "userName": "alice"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/AdminRole"}'
+    }
+    result = correlate_activity_with_graph([event], inventory=inv, G=G)
+    finding = result["correlated_findings"][0]
+    assert finding["type"] == "OBSERVED_ACTIVITY"
+    assert finding["type"] != "CORRELATED_ACTIVITY"
+    assert finding["has_static_permission"] is False
+
+
+def test_known_role_alone_does_not_produce_correlated_activity():
+    """2. Known role alone in inventory does NOT produce CORRELATED_ACTIVITY."""
+    G = nx.DiGraph()
+    u = "arn:aws:iam::123456789012:user/stranger"
+    r = "arn:aws:iam::123456789012:role/FinanceRole"
+    G.add_node(u, type="User", name="stranger")
+    G.add_node(r, type="Role", name="FinanceRole")
+
+    from app.services.scanner.inventory import AWSInventory
+    inv = AWSInventory()
+    inv.roles = [{"name": "FinanceRole", "riskScore": 70}]
+
+    event = {
+        "EventId": "evt-harden-2",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:05:00Z",
+        "userIdentity": {"type": "IAMUser", "arn": u, "userName": "stranger"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/FinanceRole"}'
+    }
+    result = correlate_activity_with_graph([event], inventory=inv, G=G)
+    assert result["correlated_findings"][0]["type"] == "OBSERVED_ACTIVITY"
+    assert result["correlated_findings_count"] == 0
+
+
+def test_exact_can_assume_transition_produces_correlated_activity():
+    """3. Exact CAN_ASSUME transition produces CORRELATED_ACTIVITY."""
+    G = nx.DiGraph()
+    u = "arn:aws:iam::123456789012:user/authorized_user"
+    r = "arn:aws:iam::123456789012:role/TargetRole"
+    G.add_node(u, type="User", name="authorized_user")
+    G.add_node(r, type="Role", name="TargetRole")
+    G.add_edge(u, r, relationship="CAN_ASSUME")
+
+    event = {
+        "EventId": "evt-harden-3",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:10:00Z",
+        "userIdentity": {"type": "IAMUser", "arn": u, "userName": "authorized_user"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/TargetRole"}'
+    }
+    result = correlate_activity_with_graph([event], G=G)
+    assert result["correlated_findings"][0]["type"] == "CORRELATED_ACTIVITY"
+    assert result["correlated_findings_count"] == 1
+    assert result["correlated_findings"][0]["matched_static_relationship"] == "CAN_ASSUME"
+
+
+def test_actor_and_target_on_same_attack_path_wrong_transition_not_observed_attack():
+    """4. Actor + target appearing on same attack path but wrong transition does NOT produce OBSERVED_ATTACK_ACTIVITY."""
+    G = nx.DiGraph()
+    alice = "arn:aws:iam::123456789012:user/alice"
+    role_jump = "arn:aws:iam::123456789012:role/JumpRole"
+    role_admin = "arn:aws:iam::123456789012:role/AdminRole"
+
+    # Multi-hop attack path: Alice -> CAN_ASSUME -> JumpRole -> CAN_ASSUME -> AdminRole
+    attack_paths = [
+        {
+            "id": "path-multihop-1",
+            "name": "Multi-hop to Admin",
+            "nodes": [
+                {"id": alice, "name": "alice"},
+                {"id": role_jump, "name": "JumpRole"},
+                {"id": role_admin, "name": "AdminRole"}
+            ],
+            "ordered_relationships": ["CAN_ASSUME", "CAN_ASSUME"]
+        }
+    ]
+
+    # CloudTrail event: Alice attempts to assume AdminRole directly (skipping JumpRole)
+    # Alice and AdminRole both appear in the path, but there is NO Alice -> CAN_ASSUME -> AdminRole transition!
+    event = {
+        "EventId": "evt-harden-4",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:15:00Z",
+        "userIdentity": {"type": "IAMUser", "arn": alice, "userName": "alice"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/AdminRole"}'
+    }
+
+    result = correlate_activity_with_graph([event], G=G, attack_paths=attack_paths)
+    finding = result["correlated_findings"][0]
+    # Must NOT classify as OBSERVED_ATTACK_ACTIVITY because it did not match any logical transition
+    assert finding["type"] != "OBSERVED_ATTACK_ACTIVITY"
+    assert attack_paths[0].get("correlation_status") != "OBSERVED_ATTACK_ACTIVITY"
+
+
+def test_correct_attack_path_transition_does_produce_observed_attack_activity():
+    """5. Correct attack-path transition DOES produce OBSERVED_ATTACK_ACTIVITY."""
+    alice = "arn:aws:iam::123456789012:user/alice"
+    role_jump = "arn:aws:iam::123456789012:role/JumpRole"
+
+    attack_paths = [
+        {
+            "id": "path-jump-1",
+            "name": "Jump Path",
+            "nodes": [
+                {"id": alice, "name": "alice"},
+                {"id": role_jump, "name": "JumpRole"}
+            ],
+            "ordered_relationships": ["CAN_ASSUME"]
+        }
+    ]
+
+    event = {
+        "EventId": "evt-harden-5",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:20:00Z",
+        "userIdentity": {"type": "IAMUser", "arn": alice, "userName": "alice"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/JumpRole"}'
+    }
+
+    result = correlate_activity_with_graph([event], G=nx.DiGraph(), attack_paths=attack_paths)
+    finding = result["correlated_findings"][0]
+    assert finding["type"] == "OBSERVED_ATTACK_ACTIVITY"
+    assert attack_paths[0]["correlation_status"] == "OBSERVED_ATTACK_ACTIVITY"
+    assert finding["matched_transition"]["from_node"] == "alice"
+    assert finding["matched_transition"]["to_node"] == "JumpRole"
+    assert finding["matched_transition"]["relationship"] == "CAN_ASSUME"
+
+
+def test_activity_event_node_connected_to_actor():
+    """6. ActivityEvent node is connected to actor with OBSERVED_ACTIVITY relationship."""
+    G = nx.DiGraph()
+    u = "arn:aws:iam::123456789012:user/actor1"
+    G.add_node(u, type="User", name="actor1")
+
+    event = {
+        "EventId": "evt-conn-actor",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:25:00Z",
+        "userIdentity": {"type": "IAMUser", "arn": u, "userName": "actor1"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/SomeRole"}'
+    }
+    correlate_activity_with_graph([event], G=G)
+
+    evt_node_id = "event:evt-conn-actor"
+    assert G.has_node(evt_node_id)
+    assert G.nodes[evt_node_id]["type"] == "ActivityEvent"
+    assert G.has_edge(u, evt_node_id)
+    edge = G[u][evt_node_id]
+    assert edge["relationship"] == "OBSERVED_ACTIVITY"
+
+
+def test_activity_event_node_connected_to_target():
+    """7. ActivityEvent node is connected to target with TARGETS relationship."""
+    G = nx.DiGraph()
+    u = "arn:aws:iam::123456789012:user/actor2"
+    r = "arn:aws:iam::123456789012:role/TargetRole2"
+    G.add_node(u, type="User", name="actor2")
+    G.add_node(r, type="Role", name="TargetRole2")
+
+    event = {
+        "EventId": "evt-conn-target",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:30:00Z",
+        "userIdentity": {"type": "IAMUser", "arn": u, "userName": "actor2"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/TargetRole2"}'
+    }
+    correlate_activity_with_graph([event], G=G)
+
+    evt_node_id = "event:evt-conn-target"
+    assert G.has_node(evt_node_id)
+    assert G.has_edge(evt_node_id, r)
+    edge = G[evt_node_id][r]
+    assert edge["relationship"] == "TARGETS"
+
+
+def test_duplicate_event_id_produces_one_event_node():
+    """8. Duplicate eventId produces exactly ONE ActivityEvent node (idempotency)."""
+    G = nx.DiGraph()
+    u = "arn:aws:iam::123456789012:user/idempotent_user"
+    G.add_node(u, type="User", name="idempotent_user")
+
+    events = [
+        {
+            "EventId": "evt-duplicate-id-123",
+            "EventName": "GetObject",
+            "EventTime": "2026-09-22T16:35:00Z",
+            "userIdentity": {"type": "IAMUser", "arn": u, "userName": "idempotent_user"},
+            "Resources": [{"ARN": "arn:aws:s3:::idempotent-bucket/file.txt"}]
+        },
+        {
+            "EventId": "evt-duplicate-id-123",
+            "EventName": "GetObject",
+            "EventTime": "2026-09-22T16:35:00Z",
+            "userIdentity": {"type": "IAMUser", "arn": u, "userName": "idempotent_user"},
+            "Resources": [{"ARN": "arn:aws:s3:::idempotent-bucket/file.txt"}]
+        },
+        {
+            "EventId": "evt-duplicate-id-123",
+            "EventName": "GetObject",
+            "EventTime": "2026-09-22T16:35:00Z",
+            "userIdentity": {"type": "IAMUser", "arn": u, "userName": "idempotent_user"},
+            "Resources": [{"ARN": "arn:aws:s3:::idempotent-bucket/file.txt"}]
+        }
+    ]
+
+    result = correlate_activity_with_graph(events, G=G)
+    assert result["observed_events_count"] == 1
+
+    event_nodes = [n for n, d in G.nodes(data=True) if d.get("eventId") == "evt-duplicate-id-123"]
+    assert len(event_nodes) == 1
+
+
+def test_malformed_timestamp_does_not_become_current_time():
+    """9. Malformed timestamp does NOT become current time; returns None."""
+    parsed = parse_timezone_aware_timestamp("completely-invalid-timestamp")
+    assert parsed is None
+
+    empty_parsed = parse_timezone_aware_timestamp("")
+    assert empty_parsed is None
+
+    none_parsed = parse_timezone_aware_timestamp(None)
+    assert none_parsed is None
+
+    event = {
+        "EventId": "evt-bad-time",
+        "EventName": "AssumeRole",
+        "EventTime": "INVALID_DATE_STRING",
+        "Username": "alice"
+    }
+    norm = normalize_cloudtrail_event(event)
+    assert norm["event_time"] is None
+    assert norm["timestamp_valid"] is False
+
+
+def test_missing_account_id_not_replaced_with_fake_account():
+    """10. Missing account ID is not replaced with fake account 123456789012."""
+    identity = {
+        "type": "IAMUser",
+        "userName": "testuser",
+        "principalId": "AIDA12345TEST"
+    }
+    p_id, p_type, p_arn = normalize_principal(identity)
+    assert "123456789012" not in p_id
+    assert "123456789012" not in p_arn
+    assert "unknown" in p_arn or "testuser" in p_arn
+
+    root_identity = {"type": "Root", "principalId": "ROOT_ID"}
+    r_id, r_type, r_arn = normalize_principal(root_identity)
+    assert "123456789012" not in r_id
+    assert "123456789012" not in r_arn
+
+
+def test_access_denied_not_successful_transition():
+    """11. AccessDenied error events are not treated as successful attack transitions."""
+    G = nx.DiGraph()
+    u = "arn:aws:iam::123456789012:user/attacker"
+    r = "arn:aws:iam::123456789012:role/Admin"
+    G.add_node(u, type="User", name="attacker")
+    G.add_node(r, type="Role", name="Admin")
+    G.add_edge(u, r, relationship="CAN_ASSUME")
+
+    attack_paths = [
+        {
+            "id": "path-test-denied",
+            "nodes": [{"id": u, "name": "attacker"}, {"id": r, "name": "Admin"}],
+            "ordered_relationships": ["CAN_ASSUME"]
+        }
+    ]
+
+    event = {
+        "EventId": "evt-denied-attack",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:45:00Z",
+        "ErrorCode": "AccessDenied",
+        "ErrorMessage": "Explicit deny in scp",
+        "userIdentity": {"type": "IAMUser", "arn": u, "userName": "attacker"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/Admin"}'
+    }
+
+    result = correlate_activity_with_graph([event], G=G, attack_paths=attack_paths)
+    finding = result["correlated_findings"][0]
+    # Denied event must NEVER be OBSERVED_ATTACK_ACTIVITY or CORRELATED_ACTIVITY
+    assert finding["type"] == "OBSERVED_ACTIVITY"
+    assert finding["type"] != "OBSERVED_ATTACK_ACTIVITY"
+    assert finding["type"] != "CORRELATED_ACTIVITY"
+    assert finding["is_error"] is True
+    assert attack_paths[0].get("correlation_status") != "OBSERVED_ATTACK_ACTIVITY"
+
+
+def test_no_name_only_correlation():
+    """12. No name-only correlation when static authorization edge is missing."""
+    G = nx.DiGraph()
+    # Principal happens to be named "Administrator" but is in an external account with no trust
+    u = "arn:aws:iam::999999999999:user/Administrator"
+    r = "arn:aws:iam::123456789012:role/Administrator"
+    G.add_node(u, type="User", name="Administrator")
+    G.add_node(r, type="Role", name="Administrator")
+    # No CAN_ASSUME edge
+
+    event = {
+        "EventId": "evt-name-only",
+        "EventName": "AssumeRole",
+        "EventTime": "2026-09-22T16:50:00Z",
+        "userIdentity": {"type": "IAMUser", "arn": u, "userName": "Administrator"},
+        "RequestParameters": '{"roleArn": "arn:aws:iam::123456789012:role/Administrator"}'
+    }
+
+    result = correlate_activity_with_graph([event], G=G)
+    finding = result["correlated_findings"][0]
+    # Matching names ("Administrator" vs "Administrator") must NOT produce CORRELATED_ACTIVITY
+    assert finding["type"] == "OBSERVED_ACTIVITY"
+    assert finding["type"] != "CORRELATED_ACTIVITY"
+    assert finding["has_static_permission"] is False

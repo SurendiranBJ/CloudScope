@@ -43,8 +43,6 @@ VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
 for _res in RESOURCE_TYPES:
     if _res != "AuroraDBUser":
         VALID_TRANSITIONS[("Policy", _res)] = {"ALLOWS"}
-        VALID_TRANSITIONS[("Role", _res)] = {"ALLOWS", "CAN_ACCESS"}
-        VALID_TRANSITIONS[("User", _res)] = {"ALLOWS", "CAN_ACCESS"}
 
 
 def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
@@ -475,10 +473,10 @@ def find_attack_paths(
                     continue
 
                 for path in nx.all_simple_paths(G, source, target, cutoff=max_hops):
-                    path_tuple = tuple(path)
-                    if path_tuple in seen_paths:
+                    canonical_key = tuple(G.nodes[n].get("arn") or G.nodes[n].get("name") or n for n in path)
+                    if canonical_key in seen_paths:
                         continue
-                    seen_paths.add(path_tuple)
+                    seen_paths.add(canonical_key)
 
                     if not _validate_path_security_semantics(path, G):
                         continue
