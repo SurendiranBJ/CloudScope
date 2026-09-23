@@ -23,6 +23,7 @@ from app.services.attack import risk_engine, path_engine, cloudtrail_correlator
 from app.services.graph import graph_builder, graph_loader
 from app.database import execute_write
 from app.cache import cache
+from app.services.findings.finding_service import finding_service
 
 logger = logging.getLogger("scanner")
 
@@ -774,18 +775,28 @@ class ScanManager:
                         }
                     })
 
-            # Critical Risks Findings list
+            # Critical Risks Findings list & Canonical Security Findings Reconciled
+            canonical_findings = finding_service.reconcile_scan_findings(
+                inventory=self.inventory,
+                attack_paths=attack_paths,
+                correlated_findings=correlated_findings,
+                successful_regions=reconcilable_regions,
+                failed_regions=self._failed_regions,
+                scan_timestamp=scan_timestamp
+            )
+
             critical_risks = [
                 {
-                    "id": x.get('id', x.get('name', 'unknown')),
-                    "identity": x.get('name') or x.get('username') or "unknown",
-                    "identityType": x.get('type') or ("User" if "user" in x.get('arn', '').lower() else ("Role" if "role" in x.get('arn', '').lower() else "Resource")),
-                    "issue": _generate_risk_issue(x),
-                    "severity": "critical" if x.get('riskScore', 0) >= 80 else ("high" if x.get('riskScore', 0) >= 60 else "medium"),
-                    "riskScore": x['riskScore'],
-                    "recommendation": _generate_recommendation(x)
+                    "id": f.id,
+                    "identity": f.principal or f.resource or "unknown",
+                    "identityType": f.principalType or f.resourceType or "Resource",
+                    "issue": f.description or f.title,
+                    "severity": f.severity,
+                    "riskScore": f.riskScore,
+                    "recommendation": f.remediation.title if f.remediation else "Review configuration"
                 }
-                for x in all_scored_items if x.get('riskScore', 0) >= 40
+                for f in canonical_findings
+                if f.status == "OPEN" and f.riskScore >= 40
             ]
             critical_risks.sort(key=lambda x: x['riskScore'], reverse=True)
 
@@ -819,13 +830,19 @@ class ScanManager:
 
             final_scan_status = "PARTIAL" if scan_failed_regions else "SUCCESS"
 
+            open_canonical = [f for f in canonical_findings if f.status == "OPEN"]
+            crit_canonical = [f for f in open_canonical if f.severity == "critical"]
+            high_canonical = [f for f in open_canonical if f.severity == "high"]
+            med_canonical = [f for f in open_canonical if f.severity == "medium"]
+            low_canonical = [f for f in open_canonical if f.severity == "low"]
+
             dashboard_summary = {
                 "securityScore": f"{security_score} / 100",
                 "stats": {
                     "users": len(self.inventory.users),
                     "roles": len(self.inventory.roles),
                     "policies": len(self.inventory.policies),
-                    "risks": len(critical_items) + len(high_items) + len(medium_items),
+                    "risks": len(open_canonical),
                     "paths": len(attack_paths),
                     "resources": resources_count
                 },
@@ -836,10 +853,10 @@ class ScanManager:
                     "observedAttackActivity": activity_metrics.get("observed_attack_activity_count", 0)
                 },
                 "riskDistribution": [
-                    {"name": "Critical", "value": len(critical_items), "color": "#EF4444"},
-                    {"name": "High", "value": len(high_items), "color": "#F59E0B"},
-                    {"name": "Medium", "value": len(medium_items), "color": "#3B82F6"},
-                    {"name": "Low", "value": len(low_items), "color": "#10B981"}
+                    {"name": "Critical", "value": len(crit_canonical), "color": "#EF4444"},
+                    {"name": "High", "value": len(high_canonical), "color": "#F59E0B"},
+                    {"name": "Medium", "value": len(med_canonical), "color": "#3B82F6"},
+                    {"name": "Low", "value": len(low_canonical), "color": "#10B981"}
                 ],
                 "recentAlerts": self.inventory.alerts[:5],
                 "criticalPaths": critical_paths_list,
@@ -915,6 +932,7 @@ class ScanManager:
                 "v1:global_posture": global_posture,
                 "v1:graph": cytoscape_elements,
                 "v1:risks": critical_risks,
+                "v1:findings": [f.model_dump() for f in canonical_findings],
                 "v1:dashboard": dashboard_summary,
                 "v1:scan_metadata": scan_metadata,
             }

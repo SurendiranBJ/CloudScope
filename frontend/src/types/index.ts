@@ -137,14 +137,101 @@ export interface AttackPath {
   observedActivity?: any[];
 }
 
+export type FindingStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | 'SUPPRESSED';
+
+export type SecurityFindingCategory =
+  | 'IAM'
+  | 'RESOURCE'
+  | 'PRIVILEGE_ESCALATION'
+  | 'LATERAL_MOVEMENT'
+  | 'CLOUDTRAIL'
+  | 'CREDENTIAL'
+  | 'CONFIGURATION'
+  | 'DATA_ACCESS'
+  | 'MONITORING';
+
+export interface FindingRemediation {
+  title: string;
+  summary: string;
+  steps: string[];
+  priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | string;
+  references?: string[];
+}
+
+export interface SecurityFinding {
+  id: string;
+  type: string;
+  category: SecurityFindingCategory | string;
+  title: string;
+  description: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  riskScore: number;
+  riskFactors?: { code: string; points: number; reason: string }[];
+  principal?: string;
+  principalType?: string;
+  resource?: string;
+  resourceType?: string;
+  region?: string;
+  policy?: string;
+  policyArn?: string;
+  statementSid?: string;
+  action?: string;
+  resourceArn?: string;
+  attackPathId?: string;
+  eventId?: string;
+  eventName?: string;
+  eventTime?: string;
+  evidence?: Record<string, any>;
+  impact?: string;
+  remediation?: FindingRemediation;
+  status: FindingStatus;
+  firstSeen?: string;
+  lastSeen?: string;
+  source: 'STATIC_IAM' | 'RESOURCE_CONFIGURATION' | 'ATTACK_PATH' | 'CLOUDTRAIL' | 'CORRELATION' | string;
+  tags?: string[];
+  // Backwards compatibility with RiskFinding
+  identity?: string;
+  identityType?: 'User' | 'Role' | 'EC2' | 'Lambda' | string;
+  issue?: string;
+  recommendation?: string;
+}
+
 export interface RiskFinding {
   id: string;
   identity: string;
-  identityType: 'User' | 'Role' | 'EC2' | 'Lambda';
+  identityType: 'User' | 'Role' | 'EC2' | 'Lambda' | string;
   issue: string;
   severity: 'critical' | 'high' | 'medium' | 'low';
   riskScore: number;
   recommendation: string;
+  // Extended canonical finding fields
+  type?: string;
+  category?: string;
+  title?: string;
+  description?: string;
+  riskFactors?: { code: string; points: number; reason: string }[];
+  principal?: string;
+  principalType?: string;
+  resource?: string;
+  resourceType?: string;
+  region?: string;
+  policy?: string;
+  policyArn?: string;
+  statementSid?: string;
+  action?: string;
+  resourceArn?: string;
+  attackPathId?: string;
+  eventId?: string;
+  eventName?: string;
+  eventTime?: string;
+  evidence?: Record<string, any>;
+  impact?: string;
+  remediation?: FindingRemediation;
+  status?: FindingStatus;
+  firstSeen?: string;
+  lastSeen?: string;
+  source?: string;
+  tags?: string[];
 }
 
 export interface DashboardData {

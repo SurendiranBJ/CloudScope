@@ -53,6 +53,11 @@ def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
     if len(path) < 2:
         return False
 
+    # Do not traverse alias / shadow nodes
+    for n in path:
+        if G.nodes[n].get("is_canonical") is False:
+            return False
+
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
         u_type = G.nodes[u].get("type", "")
@@ -450,14 +455,21 @@ def find_attack_paths(
     if not G or G.number_of_nodes() == 0:
         return []
 
-    # Starting points (Users and Compute)
-    starts = [n for n, attr in G.nodes(data=True) if attr.get('type') in ['User', 'EC2']]
+    # Starting points (Users and Compute) - canonical nodes only
+    starts = [
+        n for n, attr in G.nodes(data=True)
+        if attr.get('type') in ['User', 'EC2']
+        and attr.get('is_canonical') is not False
+    ]
 
-    # Target points (Sensitive data stores and high-privilege roles)
+    # Target points (Sensitive data stores and high-privilege roles) - canonical nodes only
     targets = [
         n for n, attr in G.nodes(data=True)
-        if attr.get('type') in ['S3', 'Secrets', 'Secret', 'RDS', 'DynamoDB']
-        or (attr.get('type') == 'Role' and attr.get('riskScore', 0) >= 40)
+        if (
+            attr.get('type') in ['S3', 'Secrets', 'Secret', 'RDS', 'DynamoDB']
+            or (attr.get('type') == 'Role' and attr.get('riskScore', 0) >= 40)
+        )
+        and attr.get('is_canonical') is not False
     ]
 
     seen_paths = set()
@@ -473,13 +485,13 @@ def find_attack_paths(
                     continue
 
                 for path in nx.all_simple_paths(G, source, target, cutoff=max_hops):
-                    canonical_key = tuple(G.nodes[n].get("arn") or G.nodes[n].get("name") or n for n in path)
+                    if not _validate_path_security_semantics(path, G):
+                        continue
+
+                    canonical_key = tuple(G.nodes[n].get("canonical_id") or n for n in path)
                     if canonical_key in seen_paths:
                         continue
                     seen_paths.add(canonical_key)
-
-                    if not _validate_path_security_semantics(path, G):
-                        continue
 
                     candidate_paths.append(path)
             except Exception as e:

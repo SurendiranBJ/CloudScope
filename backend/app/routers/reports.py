@@ -29,10 +29,32 @@ def _compute_reports_from_cache() -> dict:
     users = cache.get("v1:users") or []
     roles = cache.get("v1:roles") or []
     risks = cache.get("v1:risks") or []
+    findings = cache.get("v1:findings") or []
     alerts = cache.get("v1:alerts") or []
     resources = cache.get("v1:resources") or []
     paths = cache.get("v1:attack-paths") or []
     global_posture = cache.get("v1:global_posture")
+
+    # If completely cold with zero scan data, return explicit empty data coverage state
+    if not users and not roles and not resources and not risks and not paths and not findings:
+        return {
+            "has_data": False,
+            "compliance": [],
+            "summary": {
+                "score": None,
+                "grade": "No scan data available",
+                "findings_count": 0,
+                "status": "No scan data available"
+            },
+            "findings_by_severity": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+            },
+            "findings_by_category": {},
+            "findings": []
+        }
 
     # 1. MFA Enforcement Coverage
     total_users = len(users)
@@ -96,13 +118,16 @@ def _compute_reports_from_cache() -> dict:
         {"name": "Attack Path Defense & Isolation", "score": path_defense_score, "details": path_details}
     ]
 
-    overall_score = global_posture.get("overall_score", 85) if global_posture else round(
-        (mfa_score * 0.20) +
-        (least_priv_score * 0.25) +
-        (exposure_score * 0.25) +
-        (trust_score * 0.15) +
-        (path_defense_score * 0.15)
-    )
+    if global_posture and "overall_score" in global_posture:
+        overall_score = global_posture["overall_score"]
+    else:
+        overall_score = round(
+            (mfa_score * 0.20) +
+            (least_priv_score * 0.25) +
+            (exposure_score * 0.25) +
+            (trust_score * 0.15) +
+            (path_defense_score * 0.15)
+        )
 
     if overall_score >= 90:
         grade = "Excellent (A)"
@@ -113,13 +138,28 @@ def _compute_reports_from_cache() -> dict:
     else:
         grade = "Action Required (F)"
 
+    # Severity and Category breakdowns from canonical findings
+    active_findings = [f for f in findings if f.get("status") == "OPEN"] if findings else risks
+    by_sev = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    by_cat: dict = {}
+    for f in active_findings:
+        sev = (f.get("severity") or "medium").lower()
+        if sev in by_sev:
+            by_sev[sev] += 1
+        cat = f.get("category") or "IAM"
+        by_cat[cat] = by_cat.get(cat, 0) + 1
+
     return {
+        "has_data": True,
         "compliance": compliance,
         "summary": {
             "score": overall_score,
             "grade": grade,
-            "findings_count": len(risks)
-        }
+            "findings_count": len(active_findings)
+        },
+        "findings_by_severity": by_sev,
+        "findings_by_category": by_cat,
+        "findings": active_findings[:50]
     }
 
 

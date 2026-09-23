@@ -97,6 +97,55 @@ class AttackPath(BaseModel):
     correlation_status: Optional[str] = None
     observed_activity: Optional[List[Dict[str, Any]]] = None
 
+class FindingRemediation(BaseModel):
+    title: str
+    summary: str
+    steps: List[str]
+    priority: str = "HIGH"
+    references: List[str] = []
+
+class RiskFactorItem(BaseModel):
+    code: str
+    points: int
+    reason: str
+
+class SecurityFinding(BaseModel):
+    id: str
+    type: str
+    category: str
+    title: str
+    description: str
+    severity: str
+    riskScore: int
+    riskFactors: Optional[List[Dict[str, Any]]] = None
+    principal: Optional[str] = None
+    principalType: Optional[str] = None
+    resource: Optional[str] = None
+    resourceType: Optional[str] = None
+    region: Optional[str] = None
+    policy: Optional[str] = None
+    policyArn: Optional[str] = None
+    statementSid: Optional[str] = None
+    action: Optional[str] = None
+    resourceArn: Optional[str] = None
+    attackPathId: Optional[str] = None
+    eventId: Optional[str] = None
+    eventName: Optional[str] = None
+    eventTime: Optional[str] = None
+    evidence: Optional[Dict[str, Any]] = None
+    impact: Optional[str] = None
+    remediation: Optional[FindingRemediation] = None
+    status: str = "OPEN"
+    firstSeen: Optional[str] = None
+    lastSeen: Optional[str] = None
+    source: str
+    tags: Optional[List[str]] = None
+    # Backward compatibility with RiskFinding
+    identity: Optional[str] = None
+    identityType: Optional[str] = None
+    issue: Optional[str] = None
+    recommendation: Optional[str] = None
+
 class RiskFinding(BaseModel):
     id: str
     identity: str

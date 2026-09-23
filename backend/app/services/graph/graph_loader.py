@@ -218,7 +218,8 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
     def register_node(canonical_id: str, alt_ids: List[str], **attrs):
         all_ids = set([canonical_id] + [a for a in alt_ids if a])
         for nid in all_ids:
-            G.add_node(nid, **attrs)
+            is_canon = (nid == canonical_id)
+            G.add_node(nid, canonical_id=canonical_id, is_canonical=is_canon, **attrs)
             if nid not in aliases:
                 aliases[nid] = set()
             aliases[nid].update(all_ids)
