@@ -841,43 +841,79 @@ class ScanManager:
                 elif G.in_degree(nid) > 0 or G.out_degree(nid) > 0 or nid in attack_path_node_ids:
                     relevant_node_ids.add(nid)
 
+            canonical_emitted_node_ids = set()
+            canonical_emitted_arns = set()
+            nid_to_canonical = {}
+
+            for nid, attr in G.nodes(data=True):
+                canon = attr.get('canonical_id') or nid
+                nid_to_canonical[nid] = canon
+
             cytoscape_elements = []
             role_map = {r['name']: r for r in self.inventory.roles}
             user_map = {u['name']: u for u in self.inventory.users}
 
             for nid in relevant_node_ids:
                 attr = G.nodes[nid]
+                if attr.get('is_canonical') is False:
+                    continue
+
+                canonical_id = attr.get('canonical_id') or nid
+                arn = attr.get('arn', '')
+
+                if canonical_id in canonical_emitted_node_ids:
+                    continue
+                if arn and arn in canonical_emitted_arns:
+                    continue
+
+                canonical_emitted_node_ids.add(canonical_id)
+                if arn:
+                    canonical_emitted_arns.add(arn)
+
                 node_type = attr.get('type', 'Resource')
-                label = attr.get('label', nid)
+                label = attr.get('label', canonical_id)
                 extra: dict = {}
                 if node_type == 'Role':
-                    role = role_map.get(label) or role_map.get(nid)
+                    role = role_map.get(label) or role_map.get(canonical_id)
                     if role:
                         extra['trustPolicy'] = role.get('trustPolicy', '')
                 elif node_type == 'User':
-                    user = user_map.get(label) or user_map.get(nid)
+                    user = user_map.get(label) or user_map.get(canonical_id)
                     if user:
                         extra['policies'] = user.get('policies', [])
 
                 cytoscape_elements.append({
                     "data": {
-                        "id": nid,
+                        "id": canonical_id,
                         "label": label,
                         "type": node_type,
                         "riskScore": attr.get('riskScore', 0),
-                        "arn": attr.get('arn', ''),
+                        "arn": arn,
                         "description": attr.get('description', ''),
                         **extra
                     }
                 })
+
+            seen_edges = set()
             for s, t, attr in G.edges(data=True):
-                if s in relevant_node_ids and t in relevant_node_ids:
+                canon_s = nid_to_canonical.get(s, s)
+                canon_t = nid_to_canonical.get(t, t)
+                if canon_s in canonical_emitted_node_ids and canon_t in canonical_emitted_node_ids:
+                    if canon_s == canon_t:
+                        continue
+                    lbl = attr.get('label', '')
+                    act = attr.get('action', '')
+                    edge_sig = f"{canon_s}->{canon_t}:{lbl}:{act}"
+                    if edge_sig in seen_edges:
+                        continue
+                    seen_edges.add(edge_sig)
+
                     cytoscape_elements.append({
                         "data": {
-                            "id": f"e-{s}-{t}",
-                            "source": s,
-                            "target": t,
-                            "label": attr.get('label', ''),
+                            "id": f"e-{canon_s}-{canon_t}-{len(seen_edges)}",
+                            "source": canon_s,
+                            "target": canon_t,
+                            "label": lbl,
                             "isActivity": attr.get('is_activity', False),
                             "timestamp": attr.get('timestamp', ''),
                             "sourceIp": attr.get('sourceIp', ''),

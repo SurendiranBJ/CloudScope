@@ -33,6 +33,7 @@ export const IdentityGraphPage: FC = () => {
   const [analystMode, setAnalystMode] = useState<AnalystMode>(
     highlightedNodeIds.length > 0 ? 'attack_path' : 'identity_overview'
   );
+  const [selectedIdentityId, setSelectedIdentityId] = useState<string | null>(null);
   const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
   const [focusDepth, setFocusDepth] = useState<FocusDepth>('all');
   const [showPolicies, setShowPolicies] = useState(false);
@@ -62,6 +63,23 @@ export const IdentityGraphPage: FC = () => {
 
   const isSimActive = Boolean(simDiff?.simulation_active && (simDiff?.pending_changes ?? 0) > 0);
 
+  // Extract IAM identities for Quick-Focus picker
+  const identityOptions = useMemo(() => {
+    if (!elements) return [];
+    return elements
+      .filter((el: any) => {
+        if (el.data.source) return false;
+        const t = (el.data.type || '').toLowerCase();
+        return t === 'user' || t === 'group' || t === 'role';
+      })
+      .map((el: any) => ({
+        id: el.data.id,
+        label: el.data.label || el.data.id,
+        type: el.data.type || 'Identity'
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [elements]);
+
   // Extract all cloud resources for Resource Detail mode picker
   const resourceOptions = useMemo(() => {
     if (!elements) return [];
@@ -78,6 +96,29 @@ export const IdentityGraphPage: FC = () => {
       }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [elements]);
+
+  const activeFocusedEntity = useMemo(() => {
+    const focusId = selectedIdentityId || selectedResourceId || selectedNode?.id;
+    if (!focusId || !elements) return null;
+    const n = elements.find((el: any) => !el.data.source && el.data.id === focusId);
+    if (!n) return null;
+    const t = n.data.type || 'Resource';
+    const isIdentity = t === 'User' || t === 'Group' || t === 'Role' || t === 'Policy';
+    return {
+      id: focusId,
+      label: n.data.label || focusId,
+      type: t,
+      isIdentity
+    };
+  }, [selectedIdentityId, selectedResourceId, selectedNode, elements]);
+
+  const handleClearFocus = () => {
+    setSelectedIdentityId(null);
+    setSelectedResourceId(null);
+    setSelectedNode(null);
+    setSelectedEdge(null);
+    window.dispatchEvent(new CustomEvent('graph:reset'));
+  };
 
   // Compute diff elements combining baseline current with graph diff
   const diffElements = useMemo(() => {
@@ -309,14 +350,33 @@ export const IdentityGraphPage: FC = () => {
             )}
 
             {/* Mode Specific Controls */}
+            {analystMode === 'identity_overview' && identityOptions.length > 0 && (
+              <div className="flex items-center gap-1.5 bg-gray-900 border border-blue-500/50 px-2 py-1 rounded-lg">
+                <span className="text-[10px] uppercase font-bold text-blue-400">Identity:</span>
+                <select
+                  value={selectedIdentityId || ''}
+                  onChange={(e) => setSelectedIdentityId(e.target.value || null)}
+                  className="bg-transparent text-xs text-white focus:outline-none max-w-[180px] font-mono"
+                >
+                  <option value="" className="bg-gray-900 text-gray-400">All (Complete Graph)</option>
+                  {identityOptions.map(i => (
+                    <option key={i.id} value={i.id} className="bg-gray-900 text-white">
+                      {i.label} ({i.type})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {analystMode === 'resource_detail' && (
               <div className="flex items-center gap-1.5 bg-gray-900 border border-emerald-500/50 px-2 py-1 rounded-lg">
                 <span className="text-[10px] uppercase font-bold text-emerald-400">Asset:</span>
                 <select
                   value={selectedResourceId || ''}
-                  onChange={(e) => setSelectedResourceId(e.target.value)}
+                  onChange={(e) => setSelectedResourceId(e.target.value || null)}
                   className="bg-transparent text-xs text-white focus:outline-none max-w-[180px] font-mono"
                 >
+                  <option value="" className="bg-gray-900 text-gray-400">All (Complete Graph)</option>
                   {resourceOptions.map(r => (
                     <option key={r.id} value={r.id} className="bg-gray-900 text-white">
                       {r.label} ({r.type})
@@ -413,14 +473,11 @@ export const IdentityGraphPage: FC = () => {
             </div>
             
             <button 
-              onClick={() => {
-                setSelectedNode(null);
-                setSelectedEdge(null);
-                window.dispatchEvent(new CustomEvent('graph:reset'));
-              }} 
+              onClick={handleClearFocus}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors"
+              title="Show complete cloud graph and clear focus dimming"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Reset View
+              <RefreshCw className="w-3.5 h-3.5" /> Show All
             </button>
             
             <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors" title="Toggle Fullscreen">
@@ -447,6 +504,27 @@ export const IdentityGraphPage: FC = () => {
         </div>
       )}
 
+      {/* Active Focus Spotlight Banner */}
+      {activeFocusedEntity && (
+        <div className="bg-blue-950/80 border-b border-blue-800/80 px-6 py-2 flex items-center justify-between z-20 backdrop-blur-md shadow-md">
+          <div className="flex items-center gap-2.5 text-xs">
+            <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping shrink-0" />
+            <span className="font-semibold text-blue-200">
+              Focusing <strong className="text-white font-mono">{activeFocusedEntity.label}</strong> ({activeFocusedEntity.type})
+            </span>
+            <span className="text-gray-400 text-[11px] hidden sm:inline">
+              — {activeFocusedEntity.isIdentity ? 'Reachable access path highlighted. Unrelated cloud resources dimmed.' : 'Inbound access path highlighted. Unrelated cloud resources dimmed.'}
+            </span>
+          </div>
+          <button
+            onClick={handleClearFocus}
+            className="px-2.5 py-0.5 bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 rounded text-xs font-medium transition-all"
+          >
+            Clear Focus (Show All)
+          </button>
+        </div>
+      )}
+
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 flex overflow-hidden min-h-0 relative">
         
@@ -461,6 +539,8 @@ export const IdentityGraphPage: FC = () => {
               setSelectedEdge(edge);
               if (edge) setSelectedNode(null);
             }}
+            selectedIdentityId={selectedIdentityId}
+            selectedResourceId={selectedResourceId}
             highlightedNodeIds={activeAttackPathNodes}
             searchQuery={searchQuery}
             showLabels={showLabels}
@@ -469,11 +549,11 @@ export const IdentityGraphPage: FC = () => {
             securityFilter={securityFilter}
             showPolicies={showPolicies}
             analystMode={analystMode}
-            selectedResourceId={selectedResourceId}
             focusDepth={focusDepth}
             customElements={isSimActive ? activeElements : undefined}
             graphMode={isSimActive ? graphMode : 'current'}
             activeAttackPath={activeAttackPathNodes}
+            onClearFocus={handleClearFocus}
           />
 
           {/* Unified Node & Edge Details Side Overlay */}
