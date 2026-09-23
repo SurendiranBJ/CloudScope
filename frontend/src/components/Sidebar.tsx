@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { useQuery } from '@tanstack/react-query';
 import {
   LayoutDashboard,
   Cloud,
@@ -12,9 +13,13 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  ShieldCheck
+  ShieldCheck,
+  Lock,
+  Share2,
+  Activity
 } from 'lucide-react';
 import { apiClient } from '../api/client';
+import { getSimulationState } from '../api/simulation';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -40,16 +45,28 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
       .catch(() => {});
   }, []);
 
+  const { data: simState } = useQuery({
+    queryKey: ['simulation-state'],
+    queryFn: getSimulationState,
+    refetchInterval: 5000,
+  });
+
+  const pendingChanges = simState?.pending_changes ?? 0;
+
   const menuItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
     { name: 'Cloud Resources', path: '/resources', icon: Cloud },
     { name: 'Identity Graph', path: '/graph', icon: Network },
     { name: 'Attack Paths', path: '/attack-paths', icon: GitMerge },
     { name: 'Risk Assessment', path: '/risks', icon: AlertTriangle },
+    { name: 'Policies', path: '/policies', icon: Lock },
+    { name: 'Relationships', path: '/relationships', icon: Share2 },
     { name: 'Alerts', path: '/alerts', icon: Bell },
     { name: 'Reports', path: '/reports', icon: FileBarChart },
     { name: 'Settings', path: '/settings', icon: Settings }
   ];
+
+  const changesItem = { name: 'Changes', path: '/changes', icon: Activity, badge: pendingChanges };
 
   return (
     <motion.div
@@ -84,6 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
             <NavLink
               key={item.name}
               to={item.path}
+              end={item.path === '/'}
               className={({ isActive }) =>
                 `flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${
                   isActive
@@ -107,6 +125,43 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
               </div>
             </NavLink>
           ))}
+
+          {/* Changes item with badge */}
+          <NavLink
+            to={changesItem.path}
+            className={({ isActive }) =>
+              `flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${
+                isActive
+                  ? 'bg-enterprise-accent/15 text-enterprise-accent border-l-4 border-enterprise-accent'
+                  : pendingChanges > 0
+                    ? 'text-amber-400 hover:bg-amber-500/10'
+                    : 'text-enterprise-subtext hover:bg-gray-800/50 hover:text-white'
+              }`
+            }
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <changesItem.icon className="w-5 h-5 shrink-0" />
+              {!collapsed && (
+                <motion.span
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="truncate"
+                >
+                  {changesItem.name}
+                </motion.span>
+              )}
+            </div>
+            {pendingChanges > 0 && (
+              <motion.span
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                className={`shrink-0 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center bg-amber-500 text-white`}
+              >
+                {pendingChanges}
+              </motion.span>
+            )}
+          </NavLink>
         </nav>
       </div>
 

@@ -8,12 +8,17 @@ export interface ComplianceStandard {
 }
 
 export interface ReportsSummary {
+  has_data?: boolean;
   compliance: ComplianceStandard[];
   summary: {
-    score: string;
+    score: number | string | null;
     grade: string;
     findings_count: number;
+    status?: string;
   };
+  findings_by_severity?: Record<string, number>;
+  findings_by_category?: Record<string, number>;
+  findings?: any[];
 }
 
 export const getReportsSummary = async (): Promise<ReportsSummary> => {

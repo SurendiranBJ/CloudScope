@@ -17,14 +17,25 @@ export interface CytoscapeElement {
 
 export interface ScanStatus {
   is_scanning: boolean;
+  scan_id?: string | null;
+  scan_status?: 'IDLE' | 'SCANNING' | 'SUCCESS' | 'FAILED' | 'PARTIAL';
   started_at: string | null;
+  last_successful_scan_at?: string | null;
+  last_successful_scan_id?: string | null;
+  last_error?: string | null;
   last_result: {
     status: string;
+    scan_id?: string;
+    scan_status?: string;
     timestamp?: string;
-    duration?: number;
+    last_successful_scan_at?: string;
+    duration_seconds?: number;
     resources?: number;
     risks?: number;
+    error?: string;
   } | null;
+  service_status?: Record<string, string>;
+  failed_regions?: string[];
 }
 
 export const getGraphElements = async (): Promise<CytoscapeElement[]> => {

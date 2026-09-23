@@ -24,10 +24,15 @@ import {
   SlidersHorizontal,
   FolderGit2,
   Share2,
-  Users
+  Users,
+  Activity,
+  FileText,
+  Key,
+  ShieldCheck
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getAttackPaths } from '../api/attack';
+import { getSimulationAttackPaths } from '../api/simulation';
 import { postCopilotMessage } from '../api/copilot';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
@@ -49,6 +54,10 @@ export interface ConsolidatedAttackPathGroup {
   mitreTechniques: string[];
   recommendation: string;
   description: string;
+  diffStatus?: 'NEW' | 'REMOVED' | 'CHANGED' | 'UNCHANGED';
+  currentRiskScore?: number;
+  desiredRiskScore?: number;
+  riskDelta?: number;
 }
 
 export const AttackPaths: FC = () => {
@@ -60,6 +69,11 @@ export const AttackPaths: FC = () => {
   const [resourceTypeFilter, setResourceTypeFilter] = useState<string>('all');
   const [aiExpanded, setAiExpanded] = useState<Record<string, { loading: boolean; text: string; codeBlock?: string } | null>>({});
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
+  const [evidenceExpanded, setEvidenceExpanded] = useState<Record<string, boolean>>({});
+
+  // Simulation View Controls
+  const [simViewMode, setSimViewMode] = useState<'current' | 'desired' | 'diff'>('diff');
+  const [diffFilter, setDiffFilter] = useState<'all' | 'new' | 'removed' | 'changed' | 'unchanged'>('all');
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -70,7 +84,56 @@ export const AttackPaths: FC = () => {
     refetchInterval: 10000
   });
 
-  const rawAttackPaths = data || [];
+  const { data: simAttackData } = useQuery({
+    queryKey: ['simulation-attack-paths'],
+    queryFn: getSimulationAttackPaths,
+    refetchInterval: 5000,
+  });
+
+  const isSimActive = Boolean(simAttackData?.simulation_active);
+
+  const rawAttackPaths = useMemo<AttackPath[]>(() => {
+    if (!isSimActive || !simAttackData) {
+      return data || [];
+    }
+
+    if (simViewMode === 'current') {
+      return (simAttackData.current_paths as AttackPath[]) || data || [];
+    }
+
+    if (simViewMode === 'desired') {
+      const desiredPaths = [
+        ...(simAttackData.unchanged_paths || []),
+        ...(simAttackData.new_paths || []),
+        ...(simAttackData.changed_paths || []).map((c: any) => c.desired),
+      ];
+      return desiredPaths as AttackPath[];
+    }
+
+    // simViewMode === 'diff'
+    const tagged: any[] = [];
+    (simAttackData.new_paths || []).forEach((p: any) => {
+      tagged.push({ ...p, _diffStatus: 'NEW' });
+    });
+    (simAttackData.removed_paths || []).forEach((p: any) => {
+      tagged.push({ ...p, _diffStatus: 'REMOVED' });
+    });
+    (simAttackData.changed_paths || []).forEach((c: any) => {
+      tagged.push({
+        ...c.desired,
+        _diffStatus: 'CHANGED',
+        _currentRisk: c.current?.riskScore ?? 0,
+        _desiredRisk: c.desired?.riskScore ?? 0,
+        _riskDelta: c.risk_delta ?? 0,
+      });
+    });
+    (simAttackData.unchanged_paths || []).forEach((p: any) => {
+      tagged.push({ ...p, _diffStatus: 'UNCHANGED' });
+    });
+
+    if (diffFilter === 'all') return tagged;
+    return tagged.filter(p => p._diffStatus?.toLowerCase() === diffFilter.toLowerCase());
+  }, [isSimActive, simAttackData, simViewMode, diffFilter, data]);
 
   // Extract exact relationship label from backend orderedRelationships (single source of truth)
   function findExactEdgeLabel(group: ConsolidatedAttackPathGroup, srcNodeIdOrName: string, tgtNodeIdOrName: string): string {
@@ -86,7 +149,7 @@ export const AttackPaths: FC = () => {
         }
       }
     }
-    return 'ALLOWS';
+    return '';
   }
 
   // 1. ADVANCED DEDUPLICATION & GROUPING ALGORITHM (Cases A, B, C)
@@ -110,13 +173,21 @@ export const AttackPaths: FC = () => {
       const effectiveSharedChain = isDirectRoleTarget ? [path.nodes[1]] : intermediateNodes;
       const effectiveTargetNode = isDirectRoleTarget ? null : targetNode;
 
-      // Grouping key: string of ordered shared privilege nodes
-      const chainKey = effectiveSharedChain.length > 0
+      // Grouping key: string of ordered shared privilege nodes + ordered relationships
+      const relsKey = (path.orderedRelationships || []).join('=>');
+      const chainNodesKey = effectiveSharedChain.length > 0
         ? effectiveSharedChain.map(n => `${n.type}:${n.id || n.name}`).join('->')
         : (effectiveTargetNode ? `target:${effectiveTargetNode.type}:${effectiveTargetNode.id || effectiveTargetNode.name}` : `source:${sourceNode.name}`);
+      const chainKey = `${chainNodesKey}|rels:${relsKey}`;
 
-      const sev = (path.severity || 'high').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
-      const score = path.riskScore ?? path.likelihood ?? 75;
+      const sev = (path.severity || 'low').toLowerCase() as 'critical' | 'high' | 'medium' | 'low';
+      const score = typeof path.riskScore === 'number' ? path.riskScore : 0;
+
+      const tagged = path as any;
+      const diffStatus = tagged._diffStatus as 'NEW' | 'REMOVED' | 'CHANGED' | 'UNCHANGED' | undefined;
+      const currentRisk = tagged._currentRisk as number | undefined;
+      const desiredRisk = tagged._desiredRisk as number | undefined;
+      const riskDelta = tagged._riskDelta as number | undefined;
 
       if (!groupMap[chainKey]) {
         groupMap[chainKey] = {
@@ -131,7 +202,11 @@ export const AttackPaths: FC = () => {
           blastRadiusSummary: path.blastRadius || 'Multiple connected resources',
           mitreTechniques: [...(path.mitreTechniques || [])],
           recommendation: path.recommendation || '',
-          description: path.description || ''
+          description: path.description || '',
+          diffStatus,
+          currentRiskScore: currentRisk,
+          desiredRiskScore: desiredRisk,
+          riskDelta,
         };
       } else {
         const group = groupMap[chainKey];
@@ -145,6 +220,16 @@ export const AttackPaths: FC = () => {
         // Deduplicate and append target resource
         if (effectiveTargetNode && !group.targets.some(t => (t.id || t.name) === (effectiveTargetNode.id || effectiveTargetNode.name))) {
           group.targets.push(effectiveTargetNode);
+        }
+
+        // Diff status prioritization: CHANGED > NEW > REMOVED > UNCHANGED
+        if (diffStatus === 'CHANGED' || diffStatus === 'NEW') {
+          group.diffStatus = diffStatus;
+          if (currentRisk !== undefined) group.currentRiskScore = currentRisk;
+          if (desiredRisk !== undefined) group.desiredRiskScore = desiredRisk;
+          if (riskDelta !== undefined) group.riskDelta = riskDelta;
+        } else if (!group.diffStatus && diffStatus) {
+          group.diffStatus = diffStatus;
         }
 
         // Elevate severity if higher
@@ -253,7 +338,8 @@ export const AttackPaths: FC = () => {
                 target: firstSharedId,
                 label: findExactEdgeLabel(group, sourceNode.id || sourceNode.name, firstSharedNode.id || firstSharedNode.name),
                 groupIds: [group.groupId],
-                severity: group.severity
+                severity: group.severity,
+                diffStatus: group.diffStatus
               }
             };
           } else if (!edgesMap[edgeId].data.groupIds.includes(group.groupId)) {
@@ -278,7 +364,8 @@ export const AttackPaths: FC = () => {
               target: tId,
               label: findExactEdgeLabel(group, sNode.id || sNode.name, tNode.id || tNode.name),
               groupIds: [group.groupId],
-              severity: group.severity
+              severity: group.severity,
+              diffStatus: group.diffStatus
             }
           };
         } else if (!edgesMap[edgeId].data.groupIds.includes(group.groupId)) {
@@ -316,7 +403,8 @@ export const AttackPaths: FC = () => {
                 target: targetId,
                 label: findExactEdgeLabel(group, lastSharedNode.id || lastSharedNode.name, targetNode.id || targetNode.name),
                 groupIds: [group.groupId],
-                severity: group.severity
+                severity: group.severity,
+                diffStatus: group.diffStatus
               }
             };
           } else if (!edgesMap[branchEdgeId].data.groupIds.includes(group.groupId)) {
@@ -333,20 +421,22 @@ export const AttackPaths: FC = () => {
   const blastRadiusStats = useMemo(() => {
     const uniqueIdentities = new Set<string>();
     const uniqueTargets = new Set<string>();
+    const uniqueCriticalTargets = new Set<string>();
     let maxDepth = 0;
-    let criticalTargets = 0;
 
     rawAttackPaths.forEach(p => {
-      if (p.nodes.length > 0) {
-        uniqueIdentities.add(p.nodes[0].name);
+      if (p.nodes && p.nodes.length > 0) {
+        const src = p.nodes[0];
+        uniqueIdentities.add(src.id || src.name);
         const target = p.nodes[p.nodes.length - 1];
-        uniqueTargets.add(target.name);
+        const targetId = target.id || target.name;
+        uniqueTargets.add(targetId);
         const t = target.type as string;
-        if (p.severity === 'critical' || t === 'Secrets' || t === 'Secret' || t === 'RDS') {
-          criticalTargets++;
+        if (p.severity === 'critical' || t === 'Secrets' || t === 'Secret' || t === 'RDS' || (target.riskScore && target.riskScore >= 70)) {
+          uniqueCriticalTargets.add(targetId);
         }
       }
-      if (p.nodes.length > maxDepth) {
+      if (p.nodes && p.nodes.length > maxDepth) {
         maxDepth = p.nodes.length;
       }
     });
@@ -356,7 +446,7 @@ export const AttackPaths: FC = () => {
       consolidatedGroupCount: consolidatedGroups.length,
       compromisedIdentities: uniqueIdentities.size,
       reachableAssets: uniqueTargets.size,
-      criticalAssets: criticalTargets,
+      criticalAssets: uniqueCriticalTargets.size,
       maxDepth: Math.max(1, maxDepth)
     };
   }, [rawAttackPaths, consolidatedGroups]);
@@ -506,6 +596,35 @@ export const AttackPaths: FC = () => {
             'opacity': 0.6,
             'transition-property': 'line-color, target-arrow-color, width, opacity',
             'transition-duration': 0.25
+          }
+        },
+        {
+          selector: 'edge[diffStatus = "NEW"]',
+          style: {
+            'line-color': '#10B981',
+            'target-arrow-color': '#10B981',
+            'width': 2.5,
+            'line-style': 'dashed',
+            'opacity': 0.95
+          }
+        },
+        {
+          selector: 'edge[diffStatus = "REMOVED"]',
+          style: {
+            'line-color': '#EF4444',
+            'target-arrow-color': '#EF4444',
+            'width': 2.5,
+            'line-style': 'dashed',
+            'opacity': 0.7
+          }
+        },
+        {
+          selector: 'edge[diffStatus = "CHANGED"]',
+          style: {
+            'line-color': '#F59E0B',
+            'target-arrow-color': '#F59E0B',
+            'width': 2.5,
+            'opacity': 0.95
           }
         },
         // Selected / Highlighted Branch
@@ -740,6 +859,90 @@ Explain why this shared privilege path introduces high blast radius across multi
         </div>
       </div>
 
+      {/* Simulation Active Bar */}
+      {isSimActive && (
+        <div className="bg-[#0F172A] border border-amber-500/40 rounded-xl p-3.5 shadow-xl flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs font-bold text-amber-300 uppercase tracking-wider">
+              SIMULATION ACTIVE ({simAttackData?.pending_changes ?? 1} pending change{(simAttackData?.pending_changes ?? 1) > 1 ? 's' : ''})
+            </span>
+            <span className="text-[10px] text-amber-400/80 font-mono px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">
+              SIMULATION ONLY — NOT APPLIED TO AWS
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* View Mode Buttons: Current / Desired / Diff View */}
+            <div className="flex items-center bg-gray-900 p-1 rounded-lg border border-gray-700 text-xs">
+              <button
+                onClick={() => setSimViewMode('current')}
+                className={`px-3 py-1 rounded font-semibold transition-colors ${
+                  simViewMode === 'current'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                Current Paths
+              </button>
+              <button
+                onClick={() => setSimViewMode('desired')}
+                className={`px-3 py-1 rounded font-semibold transition-colors ${
+                  simViewMode === 'desired'
+                    ? 'bg-indigo-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                Desired Paths
+              </button>
+              <button
+                onClick={() => setSimViewMode('diff')}
+                className={`px-3 py-1 rounded font-semibold transition-colors ${
+                  simViewMode === 'diff'
+                    ? 'bg-amber-600 text-white shadow'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                Diff View
+              </button>
+            </div>
+
+            {/* In Diff View: Filter tabs for New, Removed, Changed, Unchanged */}
+            {simViewMode === 'diff' && (
+              <div className="flex items-center gap-1 bg-gray-900 p-1 rounded-lg border border-gray-700 text-[11px]">
+                {(
+                  [
+                    { id: 'all', label: 'All Diff' },
+                    { id: 'new', label: `+ New (${simAttackData?.new_paths?.length || 0})` },
+                    { id: 'removed', label: `- Removed (${simAttackData?.removed_paths?.length || 0})` },
+                    { id: 'changed', label: `Changed (${simAttackData?.changed_paths?.length || 0})` },
+                    { id: 'unchanged', label: `Unchanged (${simAttackData?.unchanged_paths?.length || 0})` },
+                  ] as const
+                ).map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setDiffFilter(tab.id as any)}
+                    className={`px-2 py-0.5 rounded font-mono font-medium transition-colors ${
+                      diffFilter === tab.id
+                        ? tab.id === 'new'
+                          ? 'bg-emerald-600 text-white'
+                          : tab.id === 'removed'
+                          ? 'bg-red-600 text-white'
+                          : tab.id === 'changed'
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-gray-700 text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Blast Radius & Risk Summary Metric Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         <div className="p-3.5 bg-enterprise-card border border-enterprise-border rounded-xl flex items-center gap-3">
@@ -923,6 +1126,17 @@ Explain why this shared privilege path introduces high blast radius across multi
             const isAIExpanded = !!aiState && !aiState.loading;
             const isAILoading = !!aiState?.loading;
 
+            const correlationStatus = group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY')?.correlationStatus ||
+              group.originalPaths.find(p => p.correlationStatus === 'CORRELATED_ACTIVITY' || (p as any).correlation_status === 'CORRELATED_ACTIVITY')?.correlationStatus ||
+              group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ACTIVITY')?.correlationStatus ||
+              'POSSIBLE_CAPABILITY';
+
+            const privEsc = group.originalPaths.find(p => (p.privilegeEscalationDetails || (p as any).privilege_escalation_details)?.is_passrole)?.privilegeEscalationDetails ||
+              (group.originalPaths.find(p => (p.privilegeEscalationDetails || (p as any).privilege_escalation_details)?.is_passrole) as any)?.privilege_escalation_details;
+
+            const representativeEvidence = group.originalPaths.find(p => (p.evidence || []).length > 0)?.evidence || [];
+            const isEvidenceOpen = Boolean(evidenceExpanded[group.groupId]);
+
             return (
               <div
                 key={group.groupId}
@@ -930,6 +1144,12 @@ Explain why this shared privilege path introduces high blast radius across multi
                 className={`bg-enterprise-card border rounded-2xl p-6 transition-all shadow-xl flex flex-col gap-5 cursor-pointer ${
                   isSelected
                     ? 'border-red-500/80 bg-[#141B2D] ring-1 ring-red-500/50 shadow-red-500/10'
+                    : isSimActive && group.diffStatus === 'NEW'
+                    ? 'border-emerald-500/50 bg-emerald-950/10 hover:border-emerald-500'
+                    : isSimActive && group.diffStatus === 'REMOVED'
+                    ? 'border-red-500/40 bg-red-950/10 opacity-70 hover:opacity-90'
+                    : isSimActive && group.diffStatus === 'CHANGED'
+                    ? 'border-amber-500/50 bg-amber-950/10 hover:border-amber-500'
                     : 'border-enterprise-border hover:border-gray-700'
                 }`}
               >
@@ -937,6 +1157,53 @@ Explain why this shared privilege path introduces high blast radius across multi
                 <div className="flex flex-wrap items-start justify-between gap-4 border-b border-enterprise-border pb-4">
                   <div className="space-y-1.5">
                     <div className="flex items-center gap-2.5 flex-wrap">
+                      {isSimActive && group.diffStatus && (
+                        <span
+                          className={`text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider border flex items-center gap-1.5 ${
+                            group.diffStatus === 'NEW'
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'
+                              : group.diffStatus === 'REMOVED'
+                              ? 'bg-red-500/20 text-red-400 border-red-500/50 line-through'
+                              : group.diffStatus === 'CHANGED'
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                              : 'bg-gray-800 text-gray-400 border-gray-700'
+                          }`}
+                        >
+                          {group.diffStatus === 'NEW' && '+ NEW PATH'}
+                          {group.diffStatus === 'REMOVED' && '- REMOVED PATH'}
+                          {group.diffStatus === 'CHANGED' && (
+                            <span>
+                              CHANGED (Current Risk: {group.currentRiskScore ?? '—'} → Desired Risk: {group.desiredRiskScore ?? '—'}{' '}
+                              | Delta:{' '}
+                              {group.riskDelta !== undefined
+                                ? (group.riskDelta > 0 ? `+${group.riskDelta}` : group.riskDelta)
+                                : '0'})
+                            </span>
+                          )}
+                          {group.diffStatus === 'UNCHANGED' && 'UNCHANGED'}
+                        </span>
+                      )}
+                      {correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' ? (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-red-500/20 text-red-400 border border-red-500/50 flex items-center gap-1">
+                          <Activity className="w-3 h-3 text-red-400 animate-pulse" />
+                          <span>Observed Attack Activity</span>
+                        </span>
+                      ) : correlationStatus === 'CORRELATED_ACTIVITY' ? (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-blue-500/20 text-blue-300 border border-blue-500/50 flex items-center gap-1">
+                          <Activity className="w-3 h-3 text-blue-400" />
+                          <span>Correlated Activity</span>
+                        </span>
+                      ) : correlationStatus === 'OBSERVED_ACTIVITY' ? (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 flex items-center gap-1">
+                          <Activity className="w-3 h-3 text-cyan-400" />
+                          <span>Observed Activity</span>
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider bg-gray-800/80 text-gray-400 border border-gray-700 flex items-center gap-1">
+                          <ShieldCheck className="w-3 h-3 text-gray-400" />
+                          <span>Possible Capability (Static)</span>
+                        </span>
+                      )}
                       <span
                         className={`text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider border ${
                           group.severity === 'critical'
@@ -989,6 +1256,95 @@ Explain why this shared privilege path introduces high blast radius across multi
                   </div>
                 </div>
 
+                {/* Observed Attack Activity Callout Banner */}
+                {(() => {
+                  const observedAttack = group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY')?.observedActivity?.[0] ||
+                    (group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY') as any)?.observed_activity?.[0];
+                  
+                  if (!observedAttack) return null;
+
+                  return (
+                    <div className="bg-red-950/40 border border-red-500/60 rounded-xl p-4 flex items-start gap-3.5 text-xs shadow-xl">
+                      <div className="p-2 bg-red-500/20 rounded-lg text-red-400 shrink-0 mt-0.5">
+                        <Activity className="w-5 h-5 animate-pulse text-red-400" />
+                      </div>
+                      <div className="space-y-2 w-full font-mono">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <span className="font-bold text-red-300 text-sm flex items-center gap-2">
+                            <span>🚨 Active Attack Observed in CloudTrail:</span>
+                            <span className="text-white px-2 py-0.5 bg-red-900/60 rounded border border-red-500/40 font-bold">
+                              {observedAttack.event_name || observedAttack.eventName || 'Security Event'}
+                            </span>
+                          </span>
+                          <span className="text-[10px] text-gray-300 bg-black/50 px-2.5 py-1 rounded border border-red-500/30">
+                            Event ID: {observedAttack.event_id || observedAttack.eventId || 'N/A'}
+                          </span>
+                        </div>
+                        
+                        <p className="text-[11px] text-gray-200 font-sans leading-relaxed">
+                          <strong className="text-red-300 font-bold">Reason:</strong> {observedAttack.reason || 'CloudTrail recorded runtime activity matching a specific transition in this attack path.'}
+                        </p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-[10px] pt-1.5 border-t border-red-900/40">
+                          <div>
+                            <span className="text-gray-400 font-sans block">Event Time:</span>
+                            <span className="text-white font-bold">{observedAttack.event_time || observedAttack.timestamp || 'N/A'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 font-sans block">Principal:</span>
+                            <span className="text-blue-300 font-bold">{observedAttack.principal || observedAttack.actor_name || observedAttack.actor || 'Unknown'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 font-sans block">Target:</span>
+                            <span className="text-amber-300 font-bold">{observedAttack.target_name || observedAttack.target || 'N/A'}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 font-sans block">Matched Transition:</span>
+                            <span className="text-emerald-300 font-bold">
+                              {observedAttack.matched_transition?.description || observedAttack.matched_transition?.relationship || 'Path Transition'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {observedAttack.evidence && (
+                          <div className="text-[9px] text-gray-400 pt-1 font-mono">
+                            <span className="text-gray-500">Evidence Classification:</span> {observedAttack.evidence.classification || 'OBSERVED_ATTACK_ACTIVITY'} | 
+                            <span className="text-gray-500 ml-1">Source IP:</span> {observedAttack.evidence.source_ip || observedAttack.source_ip || 'N/A'} |
+                            <span className="text-gray-500 ml-1">Region:</span> {observedAttack.evidence.region || observedAttack.region || 'global'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Privilege Escalation Callout Banner */}
+                {privEsc && (
+                  <div className="bg-purple-950/40 border border-purple-500/50 rounded-xl p-3.5 flex items-start gap-3 text-xs shadow-lg">
+                    <div className="p-2 bg-purple-500/20 rounded-lg text-purple-400 shrink-0 mt-0.5">
+                      <Key className="w-4 h-4" />
+                    </div>
+                    <div className="space-y-1.5 w-full">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <span className="font-bold text-purple-200 text-xs">
+                          Privilege Escalation Vector: {privEsc.trigger_permission || 'iam:PassRole'}
+                        </span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 bg-purple-900/60 rounded text-purple-300 border border-purple-500/30 font-bold">
+                          Target Role: {privEsc.target_role || 'Target Role'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-300">
+                        <strong className="text-purple-300">Service Trust:</strong> {privEsc.target_role_trust_evidence || 'Trust policy allows service execution'}
+                      </p>
+                      {privEsc.risk_elevation && (
+                        <p className="text-[11px] text-amber-300/90 font-medium">
+                          <strong>Risk Elevation:</strong> {privEsc.risk_elevation}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* EXACT REFERENCE DESIGN: VERTICAL HIERARCHICAL BRANCHING DIAGRAM */}
                 <div className="bg-[#0B1120]/80 rounded-xl p-5 border border-enterprise-border/80 flex flex-col items-center select-none shadow-inner">
                   
@@ -1032,11 +1388,18 @@ Explain why this shared privilege path introduces high blast radius across multi
                       {group.sources.length > 1 && (
                         <div className="w-48 h-[2px] bg-gradient-to-r from-blue-500/20 via-blue-500 to-blue-500/20 my-0.5" />
                       )}
-                      <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
-                        {group.sharedChain.length > 0 && group.sources.length > 0
+                      {(() => {
+                        const lbl = group.sharedChain.length > 0 && group.sources.length > 0
                           ? findExactEdgeLabel(group, group.sources[0].id || group.sources[0].name, group.sharedChain[0].id || group.sharedChain[0].name)
-                          : 'CAN_ACCESS'}
-                      </span>
+                          : (group.targets.length > 0 && group.sources.length > 0
+                              ? findExactEdgeLabel(group, group.sources[0].id || group.sources[0].name, group.targets[0].id || group.targets[0].name)
+                              : '');
+                        return lbl ? (
+                          <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
+                            {lbl}
+                          </span>
+                        ) : null;
+                      })()}
                       <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
                       <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
                     </div>
@@ -1047,7 +1410,11 @@ Explain why this shared privilege path introduces high blast radius across multi
                     <div className="flex flex-col items-center w-full max-w-xl">
                       {group.sharedChain.map((node, index) => {
                         const nextNode = group.sharedChain[index + 1];
-                        const relLabel = nextNode ? findExactEdgeLabel(group, node.id || node.name, nextNode.id || nextNode.name) : 'ALLOWS';
+                        const relLabel = nextNode
+                          ? findExactEdgeLabel(group, node.id || node.name, nextNode.id || nextNode.name)
+                          : (group.targets.length > 0
+                              ? findExactEdgeLabel(group, node.id || node.name, group.targets[0].id || group.targets[0].name)
+                              : '');
 
                         return (
                           <div key={node.id || node.name} className="flex flex-col items-center w-full">
@@ -1084,9 +1451,11 @@ Explain why this shared privilege path introduces high blast radius across multi
 
                             {/* Vertical Connector Down */}
                             <div className="flex flex-col items-center py-1">
-                              <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
-                                {relLabel}
-                              </span>
+                              {relLabel ? (
+                                <span className="text-[8px] font-mono text-gray-500 font-bold uppercase tracking-wider mb-0.5">
+                                  {relLabel}
+                                </span>
+                              ) : null}
                               <div className="w-0.5 h-3 bg-gradient-to-b from-gray-600 to-gray-400" />
                               <ArrowDown className="w-3.5 h-3.5 text-gray-400 -mt-1" />
                             </div>
@@ -1167,6 +1536,46 @@ Explain why this shared privilege path introduces high blast radius across multi
                     </div>
                   </div>
                 </div>
+
+                {/* Step-by-step Transition Evidence Accordion */}
+                {representativeEvidence.length > 0 && (
+                  <div className="border border-enterprise-border/80 bg-[#0B1120]/60 rounded-xl p-4">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEvidenceExpanded(prev => ({ ...prev, [group.groupId]: !prev[group.groupId] }));
+                      }}
+                      className="flex items-center justify-between w-full text-xs font-semibold text-gray-300 hover:text-white transition-colors"
+                    >
+                      <span className="flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-blue-400" />
+                        <span>Step-by-Step Transition Provenance & Authorization Evidence ({representativeEvidence.length} hops)</span>
+                      </span>
+                      {isEvidenceOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                    </button>
+                    {isEvidenceOpen && (
+                      <div className="mt-3 space-y-2">
+                        {representativeEvidence.map((ev, i) => (
+                          <div key={i} className="bg-gray-900/90 border border-gray-800 rounded-lg p-3 text-xs flex flex-col gap-1.5 font-mono">
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <span className="text-blue-400 font-bold text-xs">{ev.from_node || (ev as any).fromNode || `Step ${i + 1}`} → {ev.to_node || (ev as any).toNode}</span>
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-blue-950 border border-blue-500/30 text-blue-300 font-bold">
+                                {ev.relationship || ev.action || 'TRANSITION'}
+                              </span>
+                            </div>
+                            {ev.why && <p className="text-[11px] text-gray-300 font-sans">{ev.why}</p>}
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-[10px] text-gray-400 pt-1 border-t border-gray-800/60">
+                              <div><span className="text-gray-500 font-sans">Policy:</span> <span className="text-gray-300">{ev.policy_name || (ev as any).policyName || 'Implicit / Attached'}</span></div>
+                              <div><span className="text-gray-500 font-sans">Statement:</span> <span className="text-gray-300">{ev.statement_sid || (ev as any).statementSid || 'Allow'}</span></div>
+                              <div><span className="text-gray-500 font-sans">Decision:</span> <span className="text-emerald-400 font-bold">{ev.decision || 'ALLOW'}</span></div>
+                              <div><span className="text-gray-500 font-sans">Conditions:</span> <span className="text-gray-300">{ev.condition_status || (ev as any).conditionStatus || 'Unconditional'}</span></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* AI Explanation Card */}
                 {isAIExpanded && aiState && (

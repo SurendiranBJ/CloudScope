@@ -139,71 +139,92 @@ export const Reports: React.FC = () => {
         doc.setTextColor(255, 255, 255);
         doc.setFontSize(12);
         doc.setFont('helvetica', 'bold');
-        doc.text('Platform Compliance Summary', 20, 58);
+        doc.text('Security Control Coverage Summary', 20, 58);
+
+        const scoreText = reportsData?.summary?.score !== null && reportsData?.summary?.score !== undefined
+          ? `${reportsData.summary.score}% (${reportsData.summary.grade || 'Evaluated'})`
+          : 'No scan data available';
+        const findingsText = reportsData?.summary?.findings_count !== undefined
+          ? `${reportsData.summary.findings_count} Open Findings`
+          : 'Not available';
 
         doc.setFontSize(10);
         doc.setTextColor(59, 130, 246);
-        doc.text(`Overall AWS Security Score: ${reportsData?.summary?.score || '84%'} (${reportsData?.summary?.grade || 'Good'})`, 20, 68);
+        doc.text(`Overall AWS Security Score: ${scoreText}`, 20, 68);
         doc.setTextColor(239, 68, 68);
-        doc.text(`Critical Open Findings: ${reportsData?.summary?.findings_count || 5}`, 120, 68);
+        doc.text(`Active Findings: ${findingsText}`, 120, 68);
 
-        // Compliance Standards
+        // Security Control Coverage Standards
         doc.setFontSize(14);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(255, 255, 255);
-        doc.text('Regulatory Compliance Standards', 14, 95);
+        doc.text('Verified Security Control Coverage', 14, 95);
 
         let yPos = 105;
-        const standards = reportsData?.compliance || complianceRaw;
-        standards.forEach((std) => {
-          doc.setFillColor(15, 23, 42);
-          doc.roundedRect(14, yPos, 182, 22, 2, 2, 'F');
-
-          doc.setFontSize(11);
-          doc.setFont('helvetica', 'bold');
-          doc.setTextColor(255, 255, 255);
-          doc.text(std.name, 20, yPos + 9);
-
+        const standards = reportsData?.compliance || [];
+        if (standards.length === 0) {
           doc.setFontSize(10);
-          doc.setTextColor(245, 158, 11);
-          doc.text(`${std.score}% Compliant`, 155, yPos + 9);
-
-          doc.setFontSize(9);
           doc.setFont('helvetica', 'normal');
           doc.setTextColor(156, 163, 175);
-          doc.text(std.details, 20, yPos + 16);
+          doc.text('No scan data available. Trigger a discovery scan to evaluate security control coverage.', 20, yPos);
+        } else {
+          standards.forEach((std: any) => {
+            doc.setFillColor(15, 23, 42);
+            doc.roundedRect(14, yPos, 182, 22, 2, 2, 'F');
 
-          yPos += 27;
-        });
+            doc.setFontSize(11);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(255, 255, 255);
+            doc.text(std.name, 20, yPos + 9);
+
+            doc.setFontSize(10);
+            doc.setTextColor(245, 158, 11);
+            doc.text(`${std.score}% Coverage`, 155, yPos + 9);
+
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(156, 163, 175);
+            doc.text(std.details, 20, yPos + 16);
+
+            yPos += 27;
+          });
+        }
 
         doc.save('cloudscope-security-assessment.pdf');
       } else if (id === 'csv') {
-        let content = 'Framework,Compliance Score,Status Details\n';
-        const standards = reportsData?.compliance || complianceRaw;
-        standards.forEach((s) => {
+        let content = 'Security Control,Coverage Score,Status Details\n';
+        const standards = reportsData?.compliance || [];
+        standards.forEach((s: any) => {
           content += `"${s.name}",${s.score}%,"${s.details}"\n`;
         });
         const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'cloudscope-compliance-ledger.csv';
+        a.download = 'cloudscope-control-coverage.csv';
         a.click();
         URL.revokeObjectURL(url);
       } else if (id === 'json') {
         const content = JSON.stringify({
           timestamp: new Date().toISOString(),
-          reportsSummary: reportsData || { empty: true },
+          platform: 'CloudScope AWS IAM Security Analysis',
+          hasData: reportsData?.has_data ?? ((reportsData?.compliance || []).length > 0),
+          securityScore: reportsData?.summary?.score ?? null,
+          grade: reportsData?.summary?.grade ?? 'No scan data available',
+          findingsCount: reportsData?.summary?.findings_count ?? 0,
+          findingsBySeverity: reportsData?.findings_by_severity || {},
+          findingsByCategory: reportsData?.findings_by_category || {},
+          controlCoverage: reportsData?.compliance || [],
+          canonicalFindings: reportsData?.findings || [],
           graphNodesCount: (graphData || []).filter(e => !e.data.source).length,
-          graphEdgesCount: (graphData || []).filter(e => e.data.source).length,
-          graphPayload: graphData || []
+          graphEdgesCount: (graphData || []).filter(e => e.data.source).length
         }, null, 2);
 
         const blob = new Blob([content], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'cloudscope-attack-path-diffs.json';
+        a.download = 'cloudscope-security-findings.json';
         a.click();
         URL.revokeObjectURL(url);
       } else if (id === 'svg') {
@@ -226,12 +247,12 @@ export const Reports: React.FC = () => {
     }
   };
 
-  const complianceRaw = reportsData?.compliance || [
-    { name: 'CIS AWS Foundations Benchmark', score: 72, details: 'Passed: 28 checks | Failed: 11 checks | Ignored: 3' },
-    { name: 'SOC 2 Type II Compliance Framework', score: 86, details: 'Passed: 44 checks | Failed: 7 checks | Ignored: 0' },
-    { name: 'HIPAA Security Controls Audit', score: 91, details: 'Passed: 19 checks | Failed: 2 checks | Ignored: 1' },
-    { name: 'PCI-DSS v4.0 Merchant Standard', score: 65, details: 'Passed: 30 checks | Failed: 16 checks | Ignored: 2' }
-  ];
+  const complianceStandards = (reportsData?.compliance || []).map((standard: any) => ({
+    name: standard.name,
+    status: `${standard.score}% Coverage`,
+    details: standard.details,
+    color: getColor(standard.score)
+  }));
 
   const getColor = (score: number) => {
     if (score >= 80) return 'border-l-4 border-enterprise-success bg-enterprise-success/5 text-enterprise-success';
@@ -239,12 +260,7 @@ export const Reports: React.FC = () => {
     return 'border-l-4 border-enterprise-critical bg-enterprise-critical/5 text-enterprise-critical';
   };
 
-  const complianceStandards = complianceRaw.map(standard => ({
-    name: standard.name,
-    status: `${standard.score}% Compliant`,
-    details: standard.details,
-    color: getColor(standard.score)
-  }));
+  const hasData = reportsData?.has_data ?? (complianceStandards.length > 0);
 
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
@@ -255,34 +271,41 @@ export const Reports: React.FC = () => {
           <span>Security Reports & Audits</span>
         </h1>
         <p className="text-xs text-enterprise-subtext mt-1">
-          Export system configuration logs and review compliance audits matching federal and industry standard guidelines.
+          Export verified configuration logs and review evidence-based security control coverage across your AWS environment.
         </p>
       </div>
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Compliance Assessments */}
+        {/* Security Control Coverage */}
         <div className="lg:col-span-2 space-y-4">
           <h2 className="text-xs font-bold text-white uppercase tracking-wider">
-            Regulatory Compliance Audits
+            Security Control Coverage
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {complianceStandards.map((std) => (
-              <div
-                key={std.name}
-                className={`p-4 bg-enterprise-card border border-enterprise-border rounded-xl flex flex-col justify-between gap-3 ${std.color}`}
-              >
-                <div>
-                  <h3 className="text-xs font-bold text-gray-200 leading-tight">{std.name}</h3>
-                  <p className="text-[10px] text-enterprise-subtext mt-1">{std.details}</p>
+          {!hasData ? (
+            <div className="p-8 bg-enterprise-card border border-enterprise-border rounded-xl text-center space-y-2">
+              <p className="text-xs font-semibold text-gray-300">No scan data available</p>
+              <p className="text-[11px] text-enterprise-subtext">Trigger a scan from the Control Center to evaluate verified AWS security controls.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {complianceStandards.map((std: any) => (
+                <div
+                  key={std.name}
+                  className={`p-4 bg-enterprise-card border border-enterprise-border rounded-xl flex flex-col justify-between gap-3 ${std.color}`}
+                >
+                  <div>
+                    <h3 className="text-xs font-bold text-gray-200 leading-tight">{std.name}</h3>
+                    <p className="text-[10px] text-enterprise-subtext mt-1">{std.details}</p>
+                  </div>
+                  <div className="flex justify-between items-center text-xs font-black">
+                    <span>Control Score:</span>
+                    <span>{std.status}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between items-center text-xs font-black">
-                  <span>Audit Grade:</span>
-                  <span>{std.status}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Security Summary overview */}
@@ -294,25 +317,31 @@ export const Reports: React.FC = () => {
             <div className="space-y-3">
               <div className="flex justify-between items-center text-xs">
                 <span className="text-enterprise-subtext font-medium">AWS Security Score:</span>
-                <span className="text-enterprise-success font-bold">{reportsData?.summary?.score || '84%'} ({reportsData?.summary?.grade || 'Good'})</span>
+                <span className="text-enterprise-success font-bold font-mono">
+                  {reportsData?.summary?.score !== null && reportsData?.summary?.score !== undefined
+                    ? `${reportsData.summary.score}% (${reportsData.summary.grade || 'Evaluated'})`
+                    : 'No scan data available'}
+                </span>
               </div>
               <div className="flex justify-between items-center text-xs">
-                <span className="text-enterprise-subtext font-medium">Critical Vulnerabilities:</span>
-                <span className="text-enterprise-critical font-bold">{reportsData?.summary?.findings_count || 5} Open Findings</span>
+                <span className="text-enterprise-subtext font-medium">Active Findings:</span>
+                <span className="text-enterprise-critical font-bold font-mono">
+                  {reportsData?.summary?.findings_count !== undefined
+                    ? `${reportsData.summary.findings_count} Open Findings`
+                    : 'Not available'}
+                </span>
               </div>
               <div className="flex justify-between items-center text-xs">
                 <span className="text-enterprise-subtext font-medium">Tracked Resources:</span>
-                <span className="text-white font-bold">{(graphData || []).filter(e => !e.data.source).length || 126} Assets Total</span>
-              </div>
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-enterprise-subtext font-medium">IAM Policies Audited:</span>
-                <span className="text-white font-bold">47 Custom/Managed</span>
+                <span className="text-white font-bold font-mono">
+                  {graphData ? `${(graphData || []).filter(e => !e.data.source).length} Assets Discovered` : 'Not available'}
+                </span>
               </div>
             </div>
           </div>
           <div className="p-3 bg-enterprise-accent/15 border border-enterprise-accent/30 rounded-lg text-[10px] leading-relaxed text-enterprise-accent font-semibold flex gap-2">
             <ShieldCheck className="w-4 h-4 text-enterprise-accent shrink-0" />
-            <span>Platform conforms to CIS AWS Foundations guidelines with 72% compliance.</span>
+            <span>Scores reflect verified evidence from current inventory and IAM AST evaluation.</span>
           </div>
         </div>
       </div>

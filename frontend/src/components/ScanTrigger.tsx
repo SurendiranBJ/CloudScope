@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { ShieldCheck, AlertCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { rebuildGraph, getScanStatus } from '../api/graph';
 
@@ -7,6 +7,8 @@ export const useScanTrigger = () => {
   const queryClient = useQueryClient();
   const [isScanning, setIsScanning] = useState(false);
   const [scanSuccess, setScanSuccess] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [lastSuccessfulScanAt, setLastSuccessfulScanAt] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -26,16 +28,36 @@ export const useScanTrigger = () => {
         if (!status.is_scanning) {
           stopPolling();
           setIsScanning(false);
-          setScanSuccess(true);
 
-          // Refresh all dashboard, graph, and resource query keys
-          queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
-          queryClient.invalidateQueries({ queryKey: ['graphElements'] });
-          queryClient.invalidateQueries({ queryKey: ['cloudResources'] });
-          queryClient.invalidateQueries({ queryKey: ['attackPaths'] });
-          queryClient.invalidateQueries({ queryKey: ['riskAssessmentFindings'] });
+          const scanState = status.scan_status || (status.last_result?.status || '').toUpperCase();
 
-          setTimeout(() => setScanSuccess(false), 4000);
+          if (scanState === 'SUCCESS') {
+            setScanSuccess(true);
+            setScanError(null);
+            setLastSuccessfulScanAt(status.last_successful_scan_at || status.last_result?.timestamp || null);
+
+            // Immediately invalidate and refetch all scan-dependent data
+            queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
+            queryClient.invalidateQueries({ queryKey: ['graphElements'] });
+            queryClient.invalidateQueries({ queryKey: ['cloudResources'] });
+            queryClient.invalidateQueries({ queryKey: ['attackPaths'] });
+            queryClient.invalidateQueries({ queryKey: ['riskAssessmentFindings'] });
+            queryClient.invalidateQueries({ queryKey: ['iamUsers'] });
+            queryClient.invalidateQueries({ queryKey: ['iamRoles'] });
+            queryClient.invalidateQueries({ queryKey: ['iamPolicies'] });
+            queryClient.invalidateQueries({ queryKey: ['scanStatus'] });
+
+            setTimeout(() => setScanSuccess(false), 4000);
+          } else if (scanState === 'FAILED') {
+            setScanSuccess(false);
+            const err = status.last_error || status.last_result?.error || 'Scan Failed';
+            setScanError(err);
+            setLastSuccessfulScanAt(status.last_successful_scan_at || null);
+            queryClient.invalidateQueries({ queryKey: ['scanStatus'] });
+            queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
+
+            setTimeout(() => setScanError(null), 6000);
+          }
         }
       } catch {
         // Ignore network blips during polling
@@ -50,6 +72,9 @@ export const useScanTrigger = () => {
         setIsScanning(true);
         startPolling();
       }
+      if (status.last_successful_scan_at) {
+        setLastSuccessfulScanAt(status.last_successful_scan_at);
+      }
     }).catch(() => {});
 
     return () => stopPolling();
@@ -59,10 +84,12 @@ export const useScanTrigger = () => {
     if (isScanning) return;
     setIsScanning(true);
     setScanSuccess(false);
+    setScanError(null);
 
-    // Update scan status immediately so other listeners (e.g. Navbar) update
+    // Update scan status immediately so other listeners update
     queryClient.setQueryData(['scanStatus'], {
       is_scanning: true,
+      scan_status: 'SCANNING',
       started_at: new Date().toISOString(),
       last_result: null,
     });
@@ -70,9 +97,10 @@ export const useScanTrigger = () => {
     try {
       await rebuildGraph(); // Returns immediately (async on backend)
       startPolling(); // Start polling for completion
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to trigger scan:', err);
       setIsScanning(false);
+      setScanError(err?.message || 'Failed to trigger scan');
       // Re-fetch correct status from backend
       getScanStatus().then((status) => {
         queryClient.setQueryData(['scanStatus'], status);
@@ -83,6 +111,8 @@ export const useScanTrigger = () => {
   return {
     isScanning,
     scanSuccess,
+    scanError,
+    lastSuccessfulScanAt,
     handleScanClick,
   };
 };
@@ -90,58 +120,82 @@ export const useScanTrigger = () => {
 interface ScanTriggerPresenterProps {
   isScanning: boolean;
   scanSuccess: boolean;
+  scanError?: string | null;
+  lastSuccessfulScanAt?: string | null;
   onClick: () => void;
 }
 
 const ScanTriggerPresenter: React.FC<ScanTriggerPresenterProps> = ({
   isScanning,
   scanSuccess,
+  scanError,
+  lastSuccessfulScanAt,
   onClick,
 }) => {
   return (
-    <button
-      disabled={isScanning}
-      onClick={onClick}
-      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-        scanSuccess
-          ? 'bg-enterprise-success/20 text-enterprise-success border border-enterprise-success/30'
-          : isScanning
-            ? 'bg-blue-600/10 text-blue-400/50 border border-blue-500/10 cursor-not-allowed'
-            : 'bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30'
-      }`}
-    >
-      {scanSuccess ? (
-        <ShieldCheck className="w-3.5 h-3.5" />
-      ) : (
-        <svg
-          className={isScanning ? 'animate-spin' : ''}
-          xmlns="http://www.w3.org/2000/svg"
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-          <path d="M3 3v5h5" />
-          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
-          <path d="M16 21v-5h5" />
-        </svg>
+    <div className="flex items-center gap-2">
+      <button
+        disabled={isScanning}
+        onClick={onClick}
+        title={scanError ? `Error: ${scanError}` : lastSuccessfulScanAt ? `Last successful scan: ${new Date(lastSuccessfulScanAt).toLocaleTimeString()}` : undefined}
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+          scanError
+            ? 'bg-enterprise-critical/20 text-enterprise-critical border border-enterprise-critical/30 hover:bg-enterprise-critical/30'
+            : scanSuccess
+              ? 'bg-enterprise-success/20 text-enterprise-success border border-enterprise-success/30'
+              : isScanning
+                ? 'bg-blue-600/10 text-blue-400/50 border border-blue-500/10 cursor-not-allowed'
+                : 'bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30'
+        }`}
+      >
+        {scanError ? (
+          <AlertCircle className="w-3.5 h-3.5" />
+        ) : scanSuccess ? (
+          <ShieldCheck className="w-3.5 h-3.5" />
+        ) : (
+          <svg
+            className={isScanning ? 'animate-spin' : ''}
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+            <path d="M16 21v-5h5" />
+          </svg>
+        )}
+        {scanError
+          ? 'Scan Failed'
+          : scanSuccess
+            ? 'Scan Complete!'
+            : isScanning
+              ? 'Scanning AWS...'
+              : 'Scan Again'}
+      </button>
+      {scanError && lastSuccessfulScanAt && (
+        <span className="text-[10px] text-gray-400 hidden sm:inline">
+          (last good: {new Date(lastSuccessfulScanAt).toLocaleTimeString()})
+        </span>
       )}
-      {scanSuccess ? 'Scan Complete!' : isScanning ? 'Scanning AWS...' : 'Scan Again'}
-    </button>
+    </div>
   );
 };
 
 const ScanTriggerWithInternalState: React.FC = () => {
-  const { isScanning, scanSuccess, handleScanClick } = useScanTrigger();
+  const { isScanning, scanSuccess, scanError, lastSuccessfulScanAt, handleScanClick } = useScanTrigger();
   return (
     <ScanTriggerPresenter
       isScanning={isScanning}
       scanSuccess={scanSuccess}
+      scanError={scanError}
+      lastSuccessfulScanAt={lastSuccessfulScanAt}
       onClick={handleScanClick}
     />
   );
@@ -150,12 +204,16 @@ const ScanTriggerWithInternalState: React.FC = () => {
 interface ScanTriggerProps {
   isScanning?: boolean;
   scanSuccess?: boolean;
+  scanError?: string | null;
+  lastSuccessfulScanAt?: string | null;
   onScanClick?: () => void;
 }
 
 export const ScanTrigger: React.FC<ScanTriggerProps> = ({
   isScanning,
   scanSuccess,
+  scanError,
+  lastSuccessfulScanAt,
   onScanClick,
 }) => {
   // If external state is passed, bypass the hook call completely to avoid extra timers/polling
@@ -164,6 +222,8 @@ export const ScanTrigger: React.FC<ScanTriggerProps> = ({
       <ScanTriggerPresenter
         isScanning={isScanning}
         scanSuccess={scanSuccess}
+        scanError={scanError}
+        lastSuccessfulScanAt={lastSuccessfulScanAt}
         onClick={onScanClick}
       />
     );

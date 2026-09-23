@@ -8,12 +8,14 @@ WITHOUT performing destructive full-graph deletions.
 
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
 from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
-    evaluate_assume_role_trust
+    evaluate_policy_allows_resources_with_provenance,
+    evaluate_assume_role_trust,
+    evaluate_assume_role_trust_with_evidence,
 )
 from app.services.aws.session import get_account_id
 
@@ -32,18 +34,22 @@ def get_node_id(res_type: str, item_id: str) -> str:
         "Lambda": "aws:lambda",
         "RDS": "aws:rds",
         "DynamoDB": "aws:dynamodb",
-        "Secrets": "aws:secret"
+        "Secrets": "aws:secret",
+        "AuroraDBUser": "aws:dbuser",
+        "DBUser": "aws:dbuser"
     }
     prefix = type_map.get(res_type, f"aws:{res_type.lower()}")
     return f"{prefix}:{item_id}"
 
 
-def build_graph_in_neo4j(inventory: AWSInventory):
+def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[List[str]] = None):
     """Build or update the Neo4j graph using idempotent MERGE operations.
     Preserves ActivityEvent nodes and dynamic CloudTrail edges.
     """
-    logger.info("Synchronizing AWS Inventory into Neo4j graph (idempotent)")
+    logger.info("Synchronizing AWS Inventory into Neo4j graph database...")
     try:
+        from app.services.aws.ec2_service import is_running_ec2
+        running_ec2 = [e for e in inventory.ec2 if is_running_ec2(e)]
         account_id = get_account_id()
 
         # 1. Write / Update Users (Idempotent MERGE)
@@ -158,8 +164,8 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 }
             )
 
-        for e in inventory.ec2:
-            e_id = get_node_id("EC2", e['name'])
+        for e in running_ec2:
+            e_id = get_node_id("EC2", e['id'])
             execute_write(
                 """
                 MERGE (n:EC2 {id: $id})
@@ -168,7 +174,9 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     n.arn = $arn,
                     n.riskScore = $riskScore,
                     n.type = 'EC2',
-                    n.region = $region
+                    n.region = $region,
+                    n.status = 'active',
+                    n.state = 'running'
                 """,
                 {
                     "id": e_id,
@@ -263,11 +271,19 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                 }
             )
 
-        # 6. Relationship: User -> Group (MEMBER_OF)
+        # 6. Relationship: User -> Group (MEMBER_OF) + Reconciliation
         for u in inventory.users:
             u_id = get_node_id("User", u['name'])
-            for grp in u.get('groups', []):
-                g_id = get_node_id("Group", grp)
+            valid_g_ids = [get_node_id("Group", grp) for grp in u.get('groups', [])]
+            execute_write(
+                """
+                MATCH (u:User {id: $u_id})-[rel:MEMBER_OF]->(g:Group)
+                WHERE NOT g.id IN $valid_g_ids
+                DELETE rel
+                """,
+                {"u_id": u_id, "valid_g_ids": valid_g_ids}
+            )
+            for g_id in valid_g_ids:
                 execute_write(
                     """
                     MATCH (u:User {id: $u_id}), (g:Group {id: $g_id})
@@ -276,11 +292,19 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     {"u_id": u_id, "g_id": g_id}
                 )
 
-        # 7. Relationship: Group -> Policy (HAS_POLICY)
+        # 7. Relationship: Group -> Policy (HAS_POLICY) + Reconciliation
         for g in inventory.groups:
             g_id = get_node_id("Group", g['name'])
-            for pol in g.get('attachedPolicies', []):
-                p_id = get_node_id("Policy", pol)
+            valid_p_ids = [get_node_id("Policy", pol.replace('[inline] ', '')) for pol in g.get('attachedPolicies', [])]
+            execute_write(
+                """
+                MATCH (g:Group {id: $g_id})-[rel:HAS_POLICY]->(p:Policy)
+                WHERE NOT p.id IN $valid_p_ids
+                DELETE rel
+                """,
+                {"g_id": g_id, "valid_p_ids": valid_p_ids}
+            )
+            for p_id in valid_p_ids:
                 execute_write(
                     """
                     MATCH (g:Group {id: $g_id}), (p:Policy {id: $p_id})
@@ -289,11 +313,19 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     {"g_id": g_id, "p_id": p_id}
                 )
 
-        # 8. Relationship: User -> Policy (HAS_POLICY)
+        # 8. Relationship: User -> Policy (HAS_POLICY) + Reconciliation
         for u in inventory.users:
             u_id = get_node_id("User", u['name'])
-            for pol in u.get('policies', []):
-                p_id = get_node_id("Policy", pol)
+            valid_p_ids = [get_node_id("Policy", pol.replace('[inline] ', '')) for pol in u.get('policies', [])]
+            execute_write(
+                """
+                MATCH (u:User {id: $u_id})-[rel:HAS_POLICY]->(p:Policy)
+                WHERE NOT p.id IN $valid_p_ids
+                DELETE rel
+                """,
+                {"u_id": u_id, "valid_p_ids": valid_p_ids}
+            )
+            for p_id in valid_p_ids:
                 execute_write(
                     """
                     MATCH (u:User {id: $u_id}), (p:Policy {id: $p_id})
@@ -302,11 +334,19 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     {"u_id": u_id, "p_id": p_id}
                 )
 
-        # 9. Relationship: Role -> Policy (HAS_POLICY)
+        # 9. Relationship: Role -> Policy (HAS_POLICY) + Reconciliation
         for r in inventory.roles:
             r_id = get_node_id("Role", r['name'])
-            for pol in r.get('attachedPolicies', []):
-                p_id = get_node_id("Policy", pol)
+            valid_p_ids = [get_node_id("Policy", pol.replace('[inline] ', '')) for pol in r.get('attachedPolicies', [])]
+            execute_write(
+                """
+                MATCH (r:Role {id: $r_id})-[rel:HAS_POLICY]->(p:Policy)
+                WHERE NOT p.id IN $valid_p_ids
+                DELETE rel
+                """,
+                {"r_id": r_id, "valid_p_ids": valid_p_ids}
+            )
+            for p_id in valid_p_ids:
                 execute_write(
                     """
                     MATCH (r:Role {id: $r_id}), (p:Policy {id: $p_id})
@@ -315,67 +355,291 @@ def build_graph_in_neo4j(inventory: AWSInventory):
                     {"r_id": r_id, "p_id": p_id}
                 )
 
-        # 10. Relationship: User / Role -> Role (CAN_ASSUME) via AST Trust Evaluation
+        # 10. Relationship: User / Role -> Role (CAN_ASSUME) — definitive evidence-verified only + Reconciliation
+        _policy_doc_map = {}
+        for _p in inventory.policies:
+            if _p.get('name') and _p.get('document'):
+                _policy_doc_map[_p['name']] = _p['document']
+
+        all_valid_role_ids = [get_node_id("Role", r['name']) for r in inventory.roles]
+        execute_write(
+            """
+            MATCH ()-[rel:CAN_ASSUME]->(r:Role)
+            WHERE NOT r.id IN $all_valid_role_ids
+            DELETE rel
+            """,
+            {"all_valid_role_ids": all_valid_role_ids}
+        )
+
         for r in inventory.roles:
             r_id = get_node_id("Role", r['name'])
-            trust_result = evaluate_assume_role_trust(
+            r_arn = r.get('arn', '')
+
+            trust_ev = evaluate_assume_role_trust_with_evidence(
                 r.get('trustPolicy', '{}'),
                 r['name'],
+                r_arn,
                 inventory.users,
                 inventory.roles,
-                account_id
+                account_id,
+                _policy_doc_map,
+                all_groups=inventory.groups,
             )
-            for trusted_u in trust_result["users"]:
+
+            # Annotate Role node with trust metadata in Neo4j (always reset to clean state)
+            execute_write(
+                """
+                MATCH (r:Role {id: $r_id})
+                SET r.trust_is_broad = $tib,
+                    r.trust_principal_types = $tpt,
+                    r.has_conditional_trust = $hct,
+                    r.conditional_trust_count = $ctc
+                """,
+                {
+                    "r_id": r_id,
+                    "tib": bool(trust_ev.get('trust_is_broad', False)),
+                    "tpt": ','.join(sorted(trust_ev.get('trust_principal_types', set()))),
+                    "hct": bool(trust_ev.get('conditional_trusts', [])),
+                    "ctc": len(trust_ev.get('conditional_trusts', [])),
+                }
+            )
+
+            # Compute currently valid definitive source IDs
+            valid_source_ids = []
+            valid_user_entries = []
+            for entry in trust_ev.get('users', []):
+                if entry['evidence'].get('trust_status') != 'definitive':
+                    continue
+                if not entry['evidence'].get('call_permission_verified'):
+                    continue
+                trusted_u = entry['principal']
                 u_id = get_node_id("User", trusted_u['name'])
+                valid_source_ids.append(u_id)
+                valid_user_entries.append((u_id, entry['evidence']['trust_principal_type']))
+
+            valid_role_entries = []
+            for entry in trust_ev.get('roles', []):
+                if entry['evidence'].get('trust_status') != 'definitive':
+                    continue
+                if not entry['evidence'].get('call_permission_verified'):
+                    continue
+                trusted_r = entry['principal']
+                tr_id = get_node_id("Role", trusted_r['name'])
+                if tr_id != r_id:
+                    valid_source_ids.append(tr_id)
+                    valid_role_entries.append((tr_id, entry['evidence']['trust_principal_type']))
+
+            # Reconcile: delete stale CAN_ASSUME edges targeting this role
+            execute_write(
+                """
+                MATCH (s)-[rel:CAN_ASSUME]->(r:Role {id: $r_id})
+                WHERE NOT s.id IN $valid_source_ids
+                DELETE rel
+                """,
+                {"r_id": r_id, "valid_source_ids": valid_source_ids}
+            )
+
+            # Merge valid CAN_ASSUME edges
+            for u_id, t_type in valid_user_entries:
                 execute_write(
                     """
                     MATCH (u:User {id: $u_id}), (r:Role {id: $r_id})
-                    MERGE (u)-[:CAN_ASSUME]->(r)
+                    MERGE (u)-[rel:CAN_ASSUME]->(r)
+                    SET rel.trust_type = $trust_type
                     """,
-                    {"u_id": u_id, "r_id": r_id}
+                    {"u_id": u_id, "r_id": r_id, "trust_type": t_type}
                 )
-            for trusted_r in trust_result["roles"]:
-                tr_id = get_node_id("Role", trusted_r['name'])
+
+            for tr_id, t_type in valid_role_entries:
                 execute_write(
                     """
                     MATCH (tr:Role {id: $tr_id}), (r:Role {id: $r_id})
-                    MERGE (tr)-[:CAN_ASSUME]->(r)
+                    MERGE (tr)-[rel:CAN_ASSUME]->(r)
+                    SET rel.trust_type = $trust_type
                     """,
-                    {"tr_id": tr_id, "r_id": r_id}
+                    {"tr_id": tr_id, "r_id": r_id, "trust_type": t_type}
                 )
 
-        # 11. Relationship: Policy -> Target Resource (ALLOWS) via AST Evaluation
+        # 11. Relationship: Policy -> Target Resource (ALLOWS) via AST Evaluation + Reconciliation
         all_resources: List[Dict[str, Any]] = (
-            inventory.s3 + inventory.ec2 + inventory.lambdas +
+            inventory.s3 + running_ec2 + inventory.lambdas +
             inventory.secrets + inventory.rds + inventory.dynamodb
         )
         for p in inventory.policies:
             p_id = get_node_id("Policy", p['name'])
-            allowed_res = evaluate_policy_allows_resources(p.get('document', '{}'), all_resources)
+            allowed_res, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
+                p['name'], p.get('arn', ''), p.get('document', '{}'), all_resources, account_id=account_id
+            )
+            valid_res_node_ids = []
             for res in allowed_res:
                 rtype = res.get('type', 'Resource')
-                res_node_id = get_node_id(rtype, res['name'])
+                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                valid_res_node_ids.append(get_node_id(rtype, item_ident))
+
+            execute_write(
+                """
+                MATCH (p:Policy {id: $p_id})-[rel:ALLOWS]->(res)
+                WHERE NOT res.id IN $valid_res_node_ids
+                DELETE rel
+                """,
+                {"p_id": p_id, "valid_res_node_ids": valid_res_node_ids}
+            )
+
+            for res in allowed_res:
+                rtype = res.get('type', 'Resource')
+                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                res_node_id = get_node_id(rtype, item_ident)
+                prov = prov_map.get(str(item_ident), {})
                 execute_write(
-                    f"""
-                    MATCH (p:Policy {{id: $p_id}}), (res:{rtype} {{id: $res_id}})
-                    MERGE (p)-[:ALLOWS]->(res)
+                    """
+                    MATCH (p:Policy {id: $p_id}), (res {id: $res_id})
+                    MERGE (p)-[rel:ALLOWS]->(res)
+                    SET rel.edge_type = 'ALLOWS',
+                        rel.source = 'IAM',
+                        rel.policy_name = $policy_name,
+                        rel.policy_arn = $policy_arn,
+                        rel.statement_sid = $statement_sid,
+                        rel.effect = $effect,
+                        rel.action = $action,
+                        rel.resource = $resource,
+                        rel.resource_arn = $resource_arn,
+                        rel.decision = $decision,
+                        rel.condition_status = $condition_status,
+                        rel.region = $region,
+                        rel.why = $why
                     """,
-                    {"p_id": p_id, "res_id": res_node_id}
+                    {
+                        "p_id": p_id,
+                        "res_id": res_node_id,
+                        "policy_name": p['name'],
+                        "policy_arn": p.get('arn', ''),
+                        "statement_sid": prov.get('statement_sid', 'Statement-1'),
+                        "effect": prov.get('effect', 'Allow'),
+                        "action": prov.get('action', '*'),
+                        "resource": str(item_ident),
+                        "resource_arn": prov.get('resource_arn', ''),
+                        "decision": prov.get('decision', 'ALLOWED'),
+                        "condition_status": prov.get('condition_status', 'NONE'),
+                        "region": prov.get('region', 'global'),
+                        "why": prov.get('why', f"Policy '{p['name']}' allows access to {rtype} '{item_ident}'")
+                    }
                 )
 
-        # 12. Relationship: EC2 -> Role (CAN_ASSUME)
-        for e in inventory.ec2:
+        # 12. Relationship: EC2 -> Role (ATTACHED_TO) + Reconciliation
+        for e in running_ec2:
+            e_id = get_node_id("EC2", e['id'])
             role_name = e.get('details', {}).get('iam_role_name', 'None')
+            valid_r_ids = []
             if role_name and role_name != 'None':
-                e_id = get_node_id("EC2", e['name'])
-                r_id = get_node_id("Role", role_name)
+                valid_r_ids = [get_node_id("Role", role_name)]
+
+            execute_write(
+                """
+                MATCH (e:EC2 {id: $e_id})-[rel:ATTACHED_TO]->(r:Role)
+                WHERE NOT r.id IN $valid_r_ids
+                DELETE rel
+                """,
+                {"e_id": e_id, "valid_r_ids": valid_r_ids}
+            )
+            for r_id in valid_r_ids:
                 execute_write(
                     """
                     MATCH (e:EC2 {id: $e_id}), (r:Role {id: $r_id})
-                    MERGE (e)-[:CAN_ASSUME]->(r)
+                    MERGE (e)-[:ATTACHED_TO]->(r)
                     """,
                     {"e_id": e_id, "r_id": r_id}
                 )
+
+        # 13. Relationship: Lambda -> Role (EXECUTES_WITH) + Reconciliation
+        for l in inventory.lambdas:
+            l_id = get_node_id("Lambda", l['name'])
+            exec_role = l.get('details', {}).get('execution_role', 'None')
+            valid_r_ids = []
+            if exec_role and exec_role != 'None':
+                valid_r_ids = [get_node_id("Role", exec_role)]
+
+            execute_write(
+                """
+                MATCH (l:Lambda {id: $l_id})-[rel:EXECUTES_WITH]->(r:Role)
+                WHERE NOT r.id IN $valid_r_ids
+                DELETE rel
+                """,
+                {"l_id": l_id, "valid_r_ids": valid_r_ids}
+            )
+            for r_id in valid_r_ids:
+                execute_write(
+                    """
+                    MATCH (l:Lambda {id: $l_id}), (r:Role {id: $r_id})
+                    MERGE (l)-[:EXECUTES_WITH]->(r)
+                    """,
+                    {"l_id": l_id, "r_id": r_id}
+                )
+
+        # 14. Configuration Node Reconciliation: prune stale AWS inventory nodes
+        # Strictly preserves historical CloudTrail (:ActivityEvent) nodes and edges.
+        # For regional resources (EC2, Lambda), only prune within successfully scanned regions.
+        global_node_type_specs = [
+            ("User", [get_node_id("User", u['name']) for u in inventory.users]),
+            ("Group", [get_node_id("Group", g['name']) for g in inventory.groups]),
+            ("Role", [get_node_id("Role", r['name']) for r in inventory.roles]),
+            ("Policy", [get_node_id("Policy", p['name']) for p in inventory.policies]),
+            ("S3", [get_node_id("S3", s['name']) for s in inventory.s3]),
+            ("Secrets", [get_node_id("Secrets", s['name']) for s in inventory.secrets]),
+            ("RDS", [get_node_id("RDS", r['name']) for r in inventory.rds]),
+            ("DynamoDB", [get_node_id("DynamoDB", d['name']) for d in inventory.dynamodb]),
+        ]
+
+        for label, valid_ids in global_node_type_specs:
+            execute_write(
+                f"""
+                MATCH (n:{label})
+                WHERE NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"valid_ids": valid_ids}
+            )
+
+        # Region-scoped pruning for EC2 & Lambda
+        valid_ec2_ids = [get_node_id("EC2", e['id']) for e in running_ec2]
+        valid_lambda_ids = [get_node_id("Lambda", l['name']) for l in inventory.lambdas]
+
+        if successful_regions is not None:
+            if len(successful_regions) > 0:
+                execute_write(
+                    """
+                    MATCH (n:EC2)
+                    WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
+                    DETACH DELETE n
+                    """,
+                    {"successful_regions": successful_regions, "valid_ids": valid_ec2_ids}
+                )
+                execute_write(
+                    """
+                    MATCH (n:Lambda)
+                    WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
+                    DETACH DELETE n
+                    """,
+                    {"successful_regions": successful_regions, "valid_ids": valid_lambda_ids}
+                )
+            else:
+                logger.info("No successful regions available for regional node pruning; preserving all existing EC2 and Lambda nodes.")
+        else:
+            execute_write(
+                """
+                MATCH (n:EC2)
+                WHERE NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"valid_ids": valid_ec2_ids}
+            )
+            execute_write(
+                """
+                MATCH (n:Lambda)
+                WHERE NOT n.id IN $valid_ids
+                DETACH DELETE n
+                """,
+                {"valid_ids": valid_lambda_ids}
+            )
 
         logger.info("Neo4j idempotent synchronization completed successfully.")
     except Exception as e:

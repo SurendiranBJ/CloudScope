@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
+import { SimulationBanner } from './components/SimulationBanner';
 import { Dashboard } from './pages/Dashboard';
 import { Resources } from './pages/Resources';
 import { IdentityGraphPage } from './pages/IdentityGraphPage';
@@ -13,6 +14,9 @@ import { Alerts } from './pages/Alerts';
 import { Copilot } from './pages/Copilot';
 import { Reports } from './pages/Reports';
 import { SettingsPage } from './pages/Settings';
+import { Policies } from './pages/Policies';
+import { Relationships } from './pages/Relationships';
+import { Changes } from './pages/Changes';
 
 const queryClient = new QueryClient();
 
@@ -36,6 +40,8 @@ function App() {
 
             {/* Main Page Content Body */}
             <main className="flex-1 overflow-hidden flex flex-col">
+              {/* Simulation active banner */}
+              <SimulationBanner />
               <Routes>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/resources" element={<Resources search={searchQuery} />} />
@@ -47,6 +53,9 @@ function App() {
                 <Route path="/copilot" element={<Copilot />} />
                 <Route path="/reports" element={<Reports />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/policies" element={<Policies />} />
+                <Route path="/relationships" element={<Relationships />} />
+                <Route path="/changes" element={<Changes />} />
               </Routes>
             </main>
           </div>

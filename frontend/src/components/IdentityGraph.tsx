@@ -21,6 +21,8 @@ export interface IdentityGraphProps {
   highlightRisky?: boolean;
   securityFilter?: 'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only';
   showAllPolicies?: boolean;
+  customElements?: any[];
+  graphMode?: 'current' | 'desired' | 'diff';
 }
 
 export const formatShortLabel = (label?: string, id?: string): string => {
@@ -58,7 +60,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   showEdgeLabels = false,
   highlightRisky = false,
   securityFilter = 'all',
-  showAllPolicies = false
+  showAllPolicies = false,
+  customElements,
+  graphMode = 'current'
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -66,14 +70,16 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   const [isLayerGuideOpen, setIsLayerGuideOpen] = useState(true);
   const [selectedEdgeData, setSelectedEdgeData] = useState<any>(null);
   const [activeSelectedNodeId, setActiveSelectedNodeId] = useState<string | null>(null);
+  void graphMode;
 
   const { data } = useQuery({
     queryKey: ['graphElements'],
     queryFn: getGraphElements,
-    refetchInterval: 10000
+    refetchInterval: 10000,
+    enabled: !customElements
   });
 
-  const rawElements = data || [];
+  const rawElements = customElements || data || [];
 
   // Filter state for categories
   const [activeFilters, setActiveFilters] = useState<Record<string, boolean>>({
@@ -134,7 +140,7 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
 
           if (!userToGroups[src]) userToGroups[src] = [];
           if (!userToGroups[src].includes(tgt)) userToGroups[src].push(tgt);
-        } else if (lbl === 'HAS_POLICY' || lbl === 'ATTACHED_TO') {
+        } else if (lbl === 'HAS_POLICY') {
           allAttachedPolicies.add(tgt);
           if (src.includes(':group:')) {
             if (!groupToPolicies[src]) groupToPolicies[src] = [];
@@ -146,6 +152,10 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             if (!roleToPolicies[src]) roleToPolicies[src] = [];
             if (!roleToPolicies[src].includes(tgt)) roleToPolicies[src].push(tgt);
           }
+        } else if (lbl === 'ATTACHED_TO' || lbl === 'EXECUTES_WITH') {
+          // Resource execution attachment to Role: EC2 -[ATTACHED_TO]-> Role, Lambda -[EXECUTES_WITH]-> Role
+          if (!roleToResources[tgt]) roleToResources[tgt] = [];
+          if (!roleToResources[tgt].includes(src)) roleToResources[tgt].push(src);
         } else if (lbl === 'ALLOWS' || lbl === 'CAN_ACCESS') {
           if (!policyToResources[src]) policyToResources[src] = [];
           if (!policyToResources[src].includes(tgt)) policyToResources[src].push(tgt);
@@ -746,6 +756,61 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'opacity': 0.85
           }
         },
+        // Policy attachment edges (User/Group/Role -> Policy)
+        {
+          selector: 'edge[label = "HAS_POLICY"]',
+          style: {
+            'line-color': '#14B8A6',
+            'target-arrow-color': '#14B8A6',
+            'line-style': 'solid',
+            'width': 2,
+            'opacity': 0.85
+          }
+        },
+        // Role assumption edges (User/Role -> Role)
+        {
+          selector: 'edge[label = "CAN_ASSUME"]',
+          style: {
+            'line-color': '#A78BFA',
+            'target-arrow-color': '#A78BFA',
+            'line-style': 'dashed',
+            'width': 2,
+            'opacity': 0.85
+          }
+        },
+        // Policy allows resource access (Policy -> S3/EC2/Lambda/Secrets/RDS/DynamoDB)
+        {
+          selector: 'edge[label = "ALLOWS"]',
+          style: {
+            'line-color': '#10B981',
+            'target-arrow-color': '#10B981',
+            'line-style': 'solid',
+            'width': 2.5,
+            'opacity': 0.9
+          }
+        },
+        // EC2 instance profile attachment (EC2 -> Role)
+        {
+          selector: 'edge[label = "ATTACHED_TO"]',
+          style: {
+            'line-color': '#06B6D4',
+            'target-arrow-color': '#06B6D4',
+            'line-style': 'dashed',
+            'width': 2,
+            'opacity': 0.85
+          }
+        },
+        // Lambda execution role (Lambda -> Role)
+        {
+          selector: 'edge[label = "EXECUTES_WITH"]',
+          style: {
+            'line-color': '#F472B6',
+            'target-arrow-color': '#F472B6',
+            'line-style': 'dashed',
+            'width': 2,
+            'opacity': 0.85
+          }
+        },
         // Dynamic Activity Edges
         {
           selector: 'edge[label = "ASSUMED_ROLE"], edge[label = "MODIFIED_CONFIG"]',
@@ -755,6 +820,48 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'line-style': 'dashed',
             'width': 2.5,
             'opacity': 0.9
+          }
+        },
+        // Diff Overlay Styling
+        {
+          selector: 'edge.diff-added, edge[diffStatus = "added"]',
+          style: {
+            'line-color': '#10B981',
+            'target-arrow-color': '#10B981',
+            'line-style': 'dashed',
+            'width': 3.5,
+            'opacity': 1,
+            'color': '#34D399',
+            'z-index': 997,
+          }
+        },
+        {
+          selector: 'edge.diff-removed, edge[diffStatus = "removed"]',
+          style: {
+            'line-color': '#EF4444',
+            'target-arrow-color': '#EF4444',
+            'line-style': 'dashed',
+            'width': 3.5,
+            'opacity': 0.7,
+            'color': '#F87171',
+            'z-index': 997,
+          }
+        },
+        {
+          selector: 'node.diff-added, node[diffStatus = "added"]',
+          style: {
+            'border-color': '#10B981',
+            'border-width': '4px',
+            'border-style': 'solid',
+          }
+        },
+        {
+          selector: 'node.diff-removed, node[diffStatus = "removed"]',
+          style: {
+            'border-color': '#EF4444',
+            'border-width': '4px',
+            'border-style': 'dashed',
+            'opacity': 0.6,
           }
         },
         // Focused / Selected States
@@ -840,16 +947,32 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       }
     });
 
-    // Edge click handler
+    // Edge click handler: Captures full provenance metadata
     cy.on('tap', 'edge', (evt) => {
       const edge = evt.target;
       cy.edges().removeClass('selected');
       edge.addClass('selected');
+      const d = edge.data();
       setSelectedEdgeData({
         source: edge.source().data('label') || edge.source().id(),
         target: edge.target().data('label') || edge.target().id(),
-        label: edge.data('label') || 'Relationship',
-        type: edge.data('type') || ''
+        sourceType: edge.source().data('type') || 'Resource',
+        targetType: edge.target().data('type') || 'Resource',
+        label: d.label || d.edge_type || 'Relationship',
+        edge_type: d.edge_type || d.label || 'Relationship',
+        provenance_source: d.provenance_source || d.source || 'IAM',
+        policy_name: d.policy_name,
+        policy_arn: d.policy_arn,
+        statement_sid: d.statement_sid,
+        effect: d.effect || (d.decision === 'ALLOWED' ? 'Allow' : ''),
+        action: d.action,
+        resource: d.resource,
+        resource_arn: d.resource_arn,
+        region: d.region,
+        decision: d.decision || 'ALLOWED',
+        condition_status: d.condition_status,
+        why: d.why,
+        evidence: d.evidence
       });
     });
 
@@ -1145,6 +1268,95 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
               {line}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* Edge Provenance Overlay Card */}
+      {selectedEdgeData && (
+        <div className="absolute bottom-6 right-6 z-40 w-96 bg-[#0F172A]/95 border border-cyan-500/40 rounded-xl p-4 shadow-2xl backdrop-blur-md text-white space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
+                {selectedEdgeData.provenance_source || 'IAM'}
+              </span>
+              <span className="font-bold text-sm text-cyan-300">
+                {selectedEdgeData.edge_type || selectedEdgeData.label}
+              </span>
+            </div>
+            <button
+              onClick={() => setSelectedEdgeData(null)}
+              className="text-gray-400 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-800 transition-colors"
+              title="Close details"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="text-xs space-y-2">
+            <div>
+              <span className="text-gray-400 block text-[10px] uppercase">Why This Relationship Exists:</span>
+              <p className="text-gray-200 mt-0.5 font-medium leading-relaxed">
+                {selectedEdgeData.why || `Semantic relationship connecting ${selectedEdgeData.source} to ${selectedEdgeData.target}.`}
+              </p>
+            </div>
+
+            {selectedEdgeData.policy_name && (
+              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-gray-800">
+                <div>
+                  <span className="text-gray-400 block text-[10px] uppercase">Policy:</span>
+                  <span className="text-gray-200 font-mono text-[11px] truncate block" title={selectedEdgeData.policy_name}>
+                    {selectedEdgeData.policy_name}
+                  </span>
+                </div>
+                {selectedEdgeData.statement_sid && (
+                  <div>
+                    <span className="text-gray-400 block text-[10px] uppercase">Statement Sid:</span>
+                    <span className="text-gray-200 font-mono text-[11px]">
+                      {selectedEdgeData.statement_sid}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {(selectedEdgeData.action || selectedEdgeData.resource) && (
+              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-gray-800">
+                {selectedEdgeData.action && (
+                  <div>
+                    <span className="text-gray-400 block text-[10px] uppercase">Action:</span>
+                    <span className="text-amber-400 font-mono text-[11px]">
+                      {selectedEdgeData.action}
+                    </span>
+                  </div>
+                )}
+                {selectedEdgeData.resource && (
+                  <div>
+                    <span className="text-gray-400 block text-[10px] uppercase">Resource:</span>
+                    <span className="text-emerald-400 font-mono text-[11px] truncate block" title={selectedEdgeData.resource_arn || selectedEdgeData.resource}>
+                      {selectedEdgeData.resource}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-1 border-t border-gray-800 text-[11px]">
+              <div>
+                <span className="text-gray-400 mr-1.5">Decision:</span>
+                <span className={`font-bold px-1.5 py-0.5 rounded text-[10px] ${
+                  selectedEdgeData.decision === 'ALLOWED' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400'
+                }`}>
+                  {selectedEdgeData.decision || 'ALLOWED'}
+                </span>
+              </div>
+              {selectedEdgeData.region && (
+                <div>
+                  <span className="text-gray-400 mr-1.5">Region:</span>
+                  <span className="font-mono text-gray-300">{formatRegion(selectedEdgeData.region)}</span>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

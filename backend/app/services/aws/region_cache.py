@@ -3,13 +3,34 @@ import logging
 from app.config import settings
 from app.services.aws.session import get_aws_session
 
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+
 logger = logging.getLogger("scanner")
 
-_cached_regions: list | None = None
+@dataclass
+class RegionalCollectionResult:
+    """Typed result model for regional AWS resource collection with sequence compatibility."""
+    items: List[Dict[str, Any]] = field(default_factory=list)
+    regional_status: Dict[str, str] = field(default_factory=dict)
+    successful_regions: List[str] = field(default_factory=list)
+    failed_regions: List[str] = field(default_factory=list)
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, index):
+        return self.items[index]
+
+_cached_regions: List[str] | None = None
+_cached_mode: str | None = None
 
 # Runtime-settable scan mode state (not persisted across restarts).
 # Use set_scan_mode() to update; clear_region_cache() is called automatically.
-_scan_mode: str = "single"          # "single" | "global"
+_scan_mode: str = "auto"          # "auto" | "single" | "global"
 _selected_region: str | None = None
 
 
@@ -18,11 +39,8 @@ def set_scan_mode(mode: str, region: str | None = None) -> None:
     change takes effect on the next call to get_all_regions().
 
     Args:
-        mode: "single" to scan one region, "global" to sweep all enabled regions.
+        mode: "single" to scan one region, "global" to sweep all enabled regions, or "auto".
         region: The specific region code to use when mode is "single". Ignored for "global".
-
-    Note: This setting is NOT persisted across server restarts. To make a permanent
-    change update SCAN_REGIONS in .env instead.
     """
     global _scan_mode, _selected_region
     _scan_mode = mode
@@ -33,55 +51,83 @@ def set_scan_mode(mode: str, region: str | None = None) -> None:
 
 def get_scan_mode_state() -> dict:
     """Return the current runtime scan mode state for health / status endpoints."""
+    # Ensure regions are resolved
+    regions = get_all_regions()
     return {
-        "mode": _scan_mode,
+        "mode": _cached_mode or "global",
         "selected_region": _selected_region,
+        "resolved_regions": list(regions),
     }
 
 
-def get_all_regions() -> list:
-    """Return the list of AWS regions to scan, based on the active scan mode.
+def get_resolved_scan_mode() -> str:
+    """Return the resolved scan mode string: 'single', 'configured', or 'global'."""
+    get_all_regions()
+    return _cached_mode or "global"
 
-    Resolution order:
-    1. _scan_mode == "global"  → call describe_regions() and return all enabled regions.
-    2. _scan_mode == "single" and _selected_region is set  → return [_selected_region].
-    3. Otherwise (default)  → respect SCAN_REGIONS env var, then fall back to the
-       AWS session's own default region (matches documented single-region scope).
+
+def get_all_regions() -> List[str]:
+    """Return the list of AWS regions to scan, based on the active scan mode and priority.
+
+    Required resolution priority:
+    1. Explicit runtime single-region selection (_scan_mode == 'single' and _selected_region is set)
+       -> mode: 'single', returns [_selected_region]
+    2. Explicit SCAN_REGIONS configuration (settings.SCAN_REGIONS non-empty)
+       -> mode: 'configured', returns deterministic sorted list of configured regions
+    3. Dynamic DescribeRegions discovery (ec2.describe_regions with enabled opt-in status)
+       -> mode: 'global', returns deterministic sorted list of all enabled AWS regions
+    4. AWS session/default-region fallback only as a final safety fallback
+       -> mode: 'single' / fallback default
 
     Result is cached after the first call; call clear_region_cache() to invalidate.
     """
-    global _cached_regions
-    if _cached_regions is not None:
+    global _cached_regions, _cached_mode
+    if _cached_regions is not None and _cached_mode is not None:
         return _cached_regions
 
-    # --- Mode: global — sweep all enabled regions via describe_regions() ---
-    if _scan_mode == "global":
-        try:
-            session = get_aws_session()
-            ec2 = session.client("ec2", region_name=session.region_name or "us-east-1")
-            response = ec2.describe_regions(Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}])
-            _cached_regions = [r["RegionName"] for r in response.get("Regions", [])]
-            logger.info(f"Global mode: discovered {len(_cached_regions)} enabled regions")
-        except Exception as e:
-            logger.error(f"Global region discovery failed: {e}. Falling back to session default.")
-            _cached_regions = [_get_session_default_region()]
-        return _cached_regions
-
-    # --- Mode: single (runtime-selected region) ---
+    # --- Priority 1: Explicit runtime single-region selection ---
     if _scan_mode == "single" and _selected_region:
+        _cached_mode = "single"
         _cached_regions = [_selected_region]
-        logger.info(f"Single mode: scanning selected region {_selected_region}")
+        logger.info(f"Priority 1 (Runtime Single): scanning selected region {_selected_region}")
         return _cached_regions
 
-    # --- Default fallback: env var → session default ---
-    if settings.SCAN_REGIONS:
-        regions = [r.strip() for r in settings.SCAN_REGIONS.split(",") if r.strip()]
-        if regions:
-            _cached_regions = regions
-            logger.info(f"Using configured scan regions: {_cached_regions}")
+    # --- Priority 2: Explicit SCAN_REGIONS configuration (unless runtime explicitly requested 'global') ---
+    if _scan_mode != "global" and settings.SCAN_REGIONS:
+        raw_configured = [r.strip() for r in settings.SCAN_REGIONS.split(",") if r.strip()]
+        if raw_configured:
+            # Deterministic, unique, sorted list
+            _cached_mode = "configured"
+            _cached_regions = sorted(list(dict.fromkeys(raw_configured)))
+            logger.info(f"Priority 2 (Configured Override): scanning {len(_cached_regions)} configured regions: {_cached_regions}")
             return _cached_regions
 
-    _cached_regions = [_get_session_default_region()]
+    # --- Priority 3: Dynamic DescribeRegions discovery (default when SCAN_REGIONS is empty or mode is 'global') ---
+    try:
+        session = get_aws_session()
+        # Query describe_regions using session region or default
+        probe_region = session.region_name or settings.AWS_DEFAULT_REGION or "us-east-1"
+        ec2 = session.client("ec2", region_name=probe_region)
+        response = ec2.describe_regions(
+            Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}]
+        )
+        discovered = [r["RegionName"] for r in response.get("Regions", []) if r.get("RegionName")]
+        if discovered:
+            # Deterministic alphabetical ordering
+            _cached_mode = "global"
+            _cached_regions = sorted(list(set(discovered)))
+            logger.info(f"Priority 3 (Dynamic Discovery): resolved {len(_cached_regions)} enabled AWS regions: {_cached_regions}")
+            return _cached_regions
+        else:
+            logger.warning("DescribeRegions returned zero enabled regions. Proceeding to safety fallback.")
+    except Exception as e:
+        logger.error(f"Priority 3 (Dynamic Discovery) failed: {e}. Falling back to AWS session default region.")
+
+    # --- Priority 4: AWS session/default-region fallback only as a final safety fallback ---
+    fallback_region = _get_session_default_region()
+    _cached_mode = "single"
+    _cached_regions = [fallback_region]
+    logger.info(f"Priority 4 (Safety Fallback): scanning fallback region {fallback_region}")
     return _cached_regions
 
 
@@ -106,7 +152,6 @@ def make_region_sessions(regions: list) -> dict:
 
 def clear_region_cache():
     """Force re-fetch on next call to get_all_regions()."""
-    global _cached_regions
+    global _cached_regions, _cached_mode
     _cached_regions = None
-
-
+    _cached_mode = None

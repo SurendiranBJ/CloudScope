@@ -130,7 +130,7 @@ def test_attack_paths_endpoint():
         "name": "User to Admin Role",
         "nodes": [{"id": "u1", "name": "alice", "type": "User"}],
         "severity": "critical",
-        "likelihood": 90,
+        "riskScore": 90,
         "blastRadius": "High",
         "mitreTechniques": ["T1078"],
         "recommendation": "Enforce MFA",

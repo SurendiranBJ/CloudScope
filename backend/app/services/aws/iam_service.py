@@ -2,7 +2,7 @@ import logging
 import json
 import concurrent.futures
 from datetime import datetime, timezone
-from app.services.aws.session import get_aws_session, get_account_id
+from app.services.aws.session import get_aws_session, get_account_id, get_boto_config
 
 logger = logging.getLogger("scanner")
 
@@ -67,7 +67,7 @@ def collect_users() -> list:
     users_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_users')
 
         for page in paginator.paginate():
@@ -127,6 +127,9 @@ def collect_users() -> list:
                 create_date = u.get('CreateDate')
                 status = "active" if password_last_used or last_active != "Never" else "inactive"
 
+                pb = u.get('PermissionsBoundary')
+                pb_arn = pb.get('PermissionsBoundaryArn') if isinstance(pb, dict) else (pb if isinstance(pb, str) else None)
+
                 users_data.append({
                     "id": user_id,
                     "name": username,
@@ -136,6 +139,7 @@ def collect_users() -> list:
                     "attachedPolicyArns": policy_arns,  # name -> ARN, for AWS-managed doc resolution
                     "inlinePolicyDocuments": user_inline_docs,
                     "groups": group_names,
+                    "permissionsBoundary": pb_arn,
                     "riskScore": 0,  # Calculated downstream by risk_engine
                     "mfaEnabled": mfa_enabled,
                     "lastActive": last_active,
@@ -144,16 +148,17 @@ def collect_users() -> list:
                     "owner": get_account_id()
                 })
         logger.info(f"IAM Collector: Discovered {len(users_data)} users")
+        return users_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list users: {str(e)}")
-    return users_data
+        raise e
 
 
 def collect_groups() -> list:
     groups_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_groups')
 
         for page in paginator.paginate():
@@ -198,16 +203,17 @@ def collect_groups() -> list:
                     "inlinePolicyDocuments": group_inline_docs
                 })
         logger.info(f"IAM Collector: Discovered {len(groups_data)} groups")
+        return groups_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list groups: {str(e)}")
-    return groups_data
+        raise e
 
 
 def collect_roles() -> list:
     roles_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_roles')
 
         for page in paginator.paginate():
@@ -250,6 +256,9 @@ def collect_roles() -> list:
                 except Exception:
                     pass
 
+                pb = r.get('PermissionsBoundary')
+                pb_arn = pb.get('PermissionsBoundaryArn') if isinstance(pb, dict) else (pb if isinstance(pb, str) else None)
+
                 roles_data.append({
                     "name": role_name,
                     "arn": arn,
@@ -260,22 +269,26 @@ def collect_roles() -> list:
                     "attachedPolicies": attached_policy_names,
                     "attachedPolicyArns": attached_policy_arns,  # name -> ARN, for AWS-managed doc resolution
                     "inlinePolicyDocuments": role_inline_docs,
+                    "permissionsBoundary": pb_arn,
                     "type": "Role",
                     "region": "global",
                     "status": "active",
                     "owner": get_account_id()
                 })
         logger.info(f"IAM Collector: Discovered {len(roles_data)} roles")
+        return roles_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list roles: {str(e)}")
-    return roles_data
+        raise e
 
 
 def collect_policies() -> list:
+    """Collect customer-managed (Local scope) policies with full documents.
+    Preserved for backward compatibility with scan_manager pipeline."""
     policies_data = []
     try:
         session = get_aws_session()
-        client = session.client('iam')
+        client = session.client('iam', config=get_boto_config())
         paginator = client.get_paginator('list_policies')
 
         for page in paginator.paginate(Scope='Local'):
@@ -300,9 +313,113 @@ def collect_policies() -> list:
                     "riskScore": 0  # Calculated downstream
                 })
         logger.info(f"IAM Collector: Discovered {len(policies_data)} custom policies")
+        return policies_data
     except Exception as e:
         logger.error(f"IAM Collector failed to list policies: {str(e)}")
-    return policies_data
+        raise e
+
+
+def fetch_policy_catalog() -> list:
+    """Fetch a browsable policy catalog at the METADATA level (Level 1).
+
+    Two-level design:
+        Level 1 (this function): Fetch policy metadata — name, ARN, type,
+            attachment count, description, dates for ALL discoverable
+            policies (both customer-managed and AWS-managed).
+            No documents are loaded here for performance.
+        Level 2 (fetch_policy_document_by_arn): Fetch an individual policy
+            document on demand (when a user opens the policy detail view,
+            selects a policy for simulation, previews a simulation, or
+            when required for deep security analysis).
+
+    Returns a list of catalog entries suitable for the /api/v1/policies
+    endpoint. Documents are NOT fetched here for performance.
+    """
+    catalog = []
+    try:
+        session = get_aws_session()
+        client = session.client('iam')
+
+        # --- Customer-managed policies (fetch all) ---
+        try:
+            paginator = client.get_paginator('list_policies')
+            for page in paginator.paginate(Scope='Local'):
+                for p in page['Policies']:
+                    catalog.append(_build_catalog_entry(p, policy_type="customer-managed"))
+            logger.info(f"Policy catalog: {len(catalog)} customer-managed policies")
+        except Exception as e:
+            logger.warning(f"Could not list customer-managed policies for catalog: {e}")
+
+        # --- AWS-managed policies (metadata only, full discoverable catalog without cap) ---
+        aws_managed_entries = []
+        try:
+            paginator = client.get_paginator('list_policies')
+            for page in paginator.paginate(Scope='AWS', OnlyAttached=False):
+                for p in page['Policies']:
+                    aws_managed_entries.append(_build_catalog_entry(p, policy_type="aws-managed"))
+        except Exception as e:
+            logger.warning(f"Could not list AWS-managed policies for catalog: {e}")
+
+        # Sort by attachment count descending (most commonly used first)
+        aws_managed_entries.sort(key=lambda x: x.get("attachmentCount", 0), reverse=True)
+        catalog.extend(aws_managed_entries)
+        logger.info(
+            f"Policy catalog: added all {len(aws_managed_entries)} "
+            "discoverable AWS-managed policies"
+        )
+
+    except Exception as e:
+        logger.error(f"fetch_policy_catalog failed: {e}")
+
+    return catalog
+
+
+def _build_catalog_entry(policy_obj: dict, policy_type: str) -> dict:
+    """Build a catalog metadata entry from an AWS list_policies item."""
+    return {
+        "name": policy_obj.get("PolicyName", ""),
+        "arn": policy_obj.get("Arn", ""),
+        "policyId": policy_obj.get("PolicyId", ""),
+        "type": policy_type,
+        "defaultVersionId": policy_obj.get("DefaultVersionId", ""),
+        "attachmentCount": policy_obj.get("AttachmentCount", 0),
+        "permissionsBoundaryUsageCount": policy_obj.get("PermissionsBoundaryUsageCount", 0),
+        "isAttachable": policy_obj.get("IsAttachable", False),
+        "description": policy_obj.get("Description", ""),
+        "createDate": policy_obj.get("CreateDate", "").isoformat() if hasattr(policy_obj.get("CreateDate", ""), "isoformat") else str(policy_obj.get("CreateDate", "")),
+        "updateDate": policy_obj.get("UpdateDate", "").isoformat() if hasattr(policy_obj.get("UpdateDate", ""), "isoformat") else str(policy_obj.get("UpdateDate", "")),
+        # Document is NOT fetched at catalog level (Level 2 on demand)
+        "document": None,
+        "riskScore": 0,
+        "severity": "low",
+        "findings": [],
+    }
+
+
+def fetch_policy_document_by_arn(policy_arn: str) -> dict | None:
+    """Fetch the policy document for a single policy ARN (Level 2 — on demand).
+
+    Returns a dict with keys: name, arn, document (JSON string), type.
+    Returns None if unavailable.
+    """
+    if not policy_arn:
+        return None
+    try:
+        session = get_aws_session()
+        client = session.client('iam', config=get_boto_config())
+        pol = client.get_policy(PolicyArn=policy_arn)
+        default_ver = pol['Policy']['DefaultVersionId']
+        pol_ver = client.get_policy_version(PolicyArn=policy_arn, VersionId=default_ver)
+        doc = pol_ver.get('PolicyVersion', {}).get('Document', {})
+        return {
+            "name": pol['Policy']['PolicyName'],
+            "arn": policy_arn,
+            "document": json.dumps(doc),
+            "type": "aws-managed" if "::aws:policy/" in policy_arn else "customer-managed",
+        }
+    except Exception as e:
+        logger.warning(f"fetch_policy_document_by_arn({policy_arn}) failed: {e}")
+        return None
 
 
 def fetch_managed_policy_documents(policy_arns: set) -> dict:
@@ -342,7 +459,7 @@ def fetch_managed_policy_documents(policy_arns: set) -> dict:
     def fetch_single_policy(arn):
         try:
             session = get_aws_session()
-            client = session.client('iam')
+            client = session.client('iam', config=get_boto_config())
             pol = client.get_policy(PolicyArn=arn)
             default_ver = pol['Policy']['DefaultVersionId']
             pol_ver = client.get_policy_version(PolicyArn=arn, VersionId=default_ver)

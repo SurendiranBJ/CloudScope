@@ -10,7 +10,7 @@ Collects S3 buckets and performs comprehensive security posture inspection:
 
 import json
 import logging
-from app.services.aws.session import get_aws_session, get_account_id
+from app.services.aws.session import get_aws_session, get_account_id, get_boto_config
 
 logger = logging.getLogger("scanner")
 
@@ -19,7 +19,7 @@ def collect_s3_buckets() -> list:
     buckets = []
     try:
         session = get_aws_session()
-        client = session.client('s3')
+        client = session.client('s3', config=get_boto_config())
         account_id = get_account_id()
         response = client.list_buckets()
 
@@ -190,6 +190,7 @@ def collect_s3_buckets() -> list:
                 }
             })
         logger.info(f"S3 Collector: Discovered {len(buckets)} buckets")
+        return buckets
     except Exception as e:
         logger.error(f"S3 Collector failed to list buckets: {str(e)}")
-    return buckets
+        raise e

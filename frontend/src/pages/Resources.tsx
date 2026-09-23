@@ -10,10 +10,15 @@ import {
   Search,
   X,
   Copy,
-  Check
+  Check,
+  AlertTriangle,
+  Layers,
+  Cloud,
+  Shield
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getCloudResources } from '../api/resources';
+import { getScanStatus } from '../api/graph';
 import { formatRegion } from '../utils/regionNames';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import type { CloudResource } from '../types';
@@ -22,8 +27,12 @@ interface ResourcesProps {
   search?: string;
 }
 
+const CLOUD_TYPES = new Set(['S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB']);
+const IDENTITY_TYPES = new Set(['User', 'Role', 'Policy']);
+
 export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
   const [localSearch, setLocalSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<'ALL' | 'CLOUD' | 'IDENTITY'>('ALL');
   const [selectedType, setSelectedType] = useState<string>('ALL');
   const [selectedRegion, setSelectedRegion] = useState<string>('ALL');
   // JSON config modal state
@@ -36,6 +45,12 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     queryKey: ['cloudResources'],
     queryFn: getCloudResources,
     refetchInterval: 10000
+  });
+
+  const { data: scanStatus } = useQuery({
+    queryKey: ['scanStatus'],
+    queryFn: getScanStatus,
+    refetchInterval: 5000
   });
 
   const resources = data || [];
@@ -69,9 +84,25 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     }
   };
 
-  // Filter resources based on query inputs
+  // Filter resources based on category, query inputs, and running EC2 condition
   const filteredResources = useMemo(() => {
     return resources.filter((res) => {
+      // Security filter: EC2 must be running only
+      if (res.type === 'EC2') {
+        const state = (res.state || res.details?.state || res.status || '').toLowerCase();
+        if (state !== 'running' && state !== 'active') {
+          return false;
+        }
+      }
+
+      // Category filter
+      if (selectedCategory === 'CLOUD' && !CLOUD_TYPES.has(res.type)) {
+        return false;
+      }
+      if (selectedCategory === 'IDENTITY' && !IDENTITY_TYPES.has(res.type)) {
+        return false;
+      }
+
       const matchesSearch =
         res.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         res.arn.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -82,13 +113,27 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
 
       return matchesSearch && matchesType && matchesRegion;
     });
-  }, [resources, searchQuery, selectedType, selectedRegion]);
+  }, [resources, searchQuery, selectedCategory, selectedType, selectedRegion]);
 
   const uniqueRegions = useMemo(() => {
     return ['ALL', ...new Set(resources.map((r) => r.region))];
   }, [resources]);
 
+  const runningEc2Count = useMemo(() => {
+    return resources.filter((r) => {
+      if (r.type !== 'EC2') return false;
+      const state = (r.state || r.details?.state || r.status || '').toLowerCase();
+      return state === 'running' || state === 'active';
+    }).length;
+  }, [resources]);
+
+  const lambdaCount = useMemo(() => {
+    return resources.filter((r) => r.type === 'Lambda').length;
+  }, [resources]);
+
   const resourceTypes = ['ALL', 'User', 'Role', 'S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB'];
+
+  const failedRegions = scanStatus?.failed_regions || [];
 
   const handleCopy = () => {
     if (inspectResource) {
@@ -110,6 +155,70 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
         </div>
         <div className="flex items-center gap-3">
           <ScannedRegionBadge />
+        </div>
+      </div>
+
+      {/* Regional Failure Warning */}
+      {failedRegions.length > 0 && (
+        <div className="flex items-center gap-3 p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-300 shadow-sm animate-pulse">
+          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+          <div>
+            <span className="font-semibold text-amber-200">Regional Collection Warning:</span> AWS collection failed for region(s):{' '}
+            <span className="font-mono font-bold text-white bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-500/40">
+              {failedRegions.join(', ')}
+            </span>
+            . Prior cached inventory was preserved for failed regions. Scan status marked as PARTIAL.
+          </div>
+        </div>
+      )}
+
+      {/* Category Tabs */}
+      <div className="flex items-center gap-2 border-b border-enterprise-border pb-3">
+        <button
+          onClick={() => { setSelectedCategory('ALL'); setSelectedType('ALL'); }}
+          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            selectedCategory === 'ALL'
+              ? 'bg-enterprise-accent text-white shadow'
+              : 'bg-enterprise-card text-enterprise-subtext hover:text-white border border-enterprise-border'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>All Assets</span>
+          <span className="ml-1 text-[10px] px-1.5 py-0.2 bg-black/20 rounded-full">{resources.length}</span>
+        </button>
+
+        <button
+          onClick={() => { setSelectedCategory('CLOUD'); setSelectedType('ALL'); }}
+          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            selectedCategory === 'CLOUD'
+              ? 'bg-enterprise-accent text-white shadow'
+              : 'bg-enterprise-card text-enterprise-subtext hover:text-white border border-enterprise-border'
+          }`}
+        >
+          <Cloud className="w-3.5 h-3.5" />
+          <span>Cloud Workloads</span>
+          <span className="ml-1 text-[10px] px-1.5 py-0.2 bg-black/20 rounded-full">
+            {resources.filter(r => CLOUD_TYPES.has(r.type)).length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => { setSelectedCategory('IDENTITY'); setSelectedType('ALL'); }}
+          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            selectedCategory === 'IDENTITY'
+              ? 'bg-enterprise-accent text-white shadow'
+              : 'bg-enterprise-card text-enterprise-subtext hover:text-white border border-enterprise-border'
+          }`}
+        >
+          <Shield className="w-3.5 h-3.5" />
+          <span>IAM & Identity</span>
+          <span className="ml-1 text-[10px] px-1.5 py-0.2 bg-black/20 rounded-full">
+            {resources.filter(r => IDENTITY_TYPES.has(r.type)).length}
+          </span>
+        </button>
+
+        <div className="ml-auto text-[11px] text-enterprise-subtext font-mono">
+          Running EC2: <span className="text-white font-bold">{runningEc2Count}</span> | Lambda: <span className="text-white font-bold">{lambdaCount}</span>
         </div>
       </div>
 
@@ -137,11 +246,18 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
             onChange={(e) => setSelectedType(e.target.value)}
             className="w-full bg-enterprise-bg/60 border border-enterprise-border rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-enterprise-accent"
           >
-            {resourceTypes.map((t) => (
-              <option key={t} value={t} className="bg-enterprise-card">
-                {t === 'ALL' ? 'All Types' : `${t}s`}
-              </option>
-            ))}
+            {resourceTypes
+              .filter((t) => {
+                if (t === 'ALL') return true;
+                if (selectedCategory === 'CLOUD') return CLOUD_TYPES.has(t);
+                if (selectedCategory === 'IDENTITY') return IDENTITY_TYPES.has(t);
+                return true;
+              })
+              .map((t) => (
+                <option key={t} value={t} className="bg-enterprise-card">
+                  {t === 'ALL' ? 'All Types' : `${t}s`}
+                </option>
+              ))}
           </select>
         </div>
 
@@ -235,7 +351,16 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
               ) : (
                 <tr>
                   <td colSpan={7} className="text-center p-8 text-enterprise-subtext font-medium text-xs">
-                    No resources matched the active filters.
+                    {selectedType === 'EC2' ? (
+                      <div>
+                        <p className="text-white font-semibold">No running EC2 instances discovered.</p>
+                        <p className="text-[11px] text-enterprise-subtext mt-1">
+                          Only instances in the <code className="text-enterprise-success bg-enterprise-bg px-1 py-0.5 rounded">running</code> state are tracked in the security ledger. Stopped and terminated instances are excluded.
+                        </p>
+                      </div>
+                    ) : (
+                      'No resources matched the active filters.'
+                    )}
                   </td>
                 </tr>
               )}

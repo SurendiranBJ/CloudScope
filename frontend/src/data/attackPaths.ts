@@ -1,11 +1,15 @@
 import type { AttackPath } from '../types';
 
+/**
+ * Isolated unit test fixture data only.
+ * NOT used in production UI or live API responses.
+ */
 export const mockAttackPaths: AttackPath[] = [
   {
     id: 'path-001',
     name: 'Developer Path to PII S3 Bucket',
     severity: 'critical',
-    likelihood: 72,
+    riskScore: 72,
     blastRadius: 'High (Critical Customer DB Access)',
     mitreTechniques: ['T1078 - Valid Accounts', 'T1548.003 - Abuse Elevation Control Mechanism', 'T1530 - Data from Cloud Storage Object'],
     recommendation: 'Enforce MFA on developer-session user, restrict trust policy of AWSAdminRole to specific session duration limits, and remove full wildcard permissions from InlineS3FullAccess.',
@@ -21,7 +25,7 @@ export const mockAttackPaths: AttackPath[] = [
     id: 'path-002',
     name: 'EC2 SSRF to RDS Database Credentials Access',
     severity: 'high',
-    likelihood: 58,
+    riskScore: 58,
     blastRadius: 'Medium (Database Credentials Compromise)',
     mitreTechniques: ['T1190 - Exploit Public-Facing Application', 'T1552 - Unsecured Credentials', 'T1083 - File and Directory Discovery'],
     recommendation: 'Upgrade EC2 to use IMDSv2 instead of IMDSv1 to prevent local server-side request forgery (SSRF), and enforce resource-level IAM policies limiting SecretsReaderRole scope.',
@@ -37,7 +41,7 @@ export const mockAttackPaths: AttackPath[] = [
     id: 'path-003',
     name: 'CI/CD Automation Token Hijack to Infrastructure Admin Access',
     severity: 'critical',
-    likelihood: 80,
+    riskScore: 80,
     blastRadius: 'Full AWS Account takeover',
     mitreTechniques: ['T1078 - Valid Accounts', 'T1082 - System Information Discovery', 'T1199 - Trusted Relationship'],
     recommendation: 'Configure OIDC roles instead of hardcoded credentials for CI/CD, enable continuous IP checking, and alert on logins outside corporate firewall subnets.',

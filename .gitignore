@@ -30,6 +30,10 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# Runtime local data
+**/data/*.json
+!**/data/.gitkeep
+
 # Environment files
 .env
 .env.*

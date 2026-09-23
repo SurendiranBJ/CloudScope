@@ -1,15 +1,16 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { IdentityGraph } from '../components/IdentityGraph';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { 
   Network, Search, Maximize, RefreshCw, 
   AlertTriangle, Info, ChevronDown, ChevronRight, ShieldAlert, Filter, 
-  Target, ChevronLeft, Key
+  Target, ChevronLeft, Key, Sparkles, GitCompare
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getGraphElements } from '../api/graph';
 import { getRiskAssessmentFindings } from '../api/risks';
+import { getSimulationDiff } from '../api/simulation';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 
 export const IdentityGraphPage: React.FC = () => {
@@ -27,15 +28,109 @@ export const IdentityGraphPage: React.FC = () => {
   const [highlightRisky, setHighlightRisky] = useState(false);
   const [showAllPolicies, setShowAllPolicies] = useState(false); // Default: Relevant policies only
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [graphMode, setGraphMode] = useState<'current' | 'desired' | 'diff'>('diff');
   
   const pageRef = useRef<HTMLDivElement>(null);
 
   const { data: elements } = useQuery({ queryKey: ['graphElements'], queryFn: getGraphElements });
   const { data: risks } = useQuery({ queryKey: ['risk-assessment'], queryFn: getRiskAssessmentFindings });
+  const { data: simDiff } = useQuery({
+    queryKey: ['simulation-diff'],
+    queryFn: getSimulationDiff,
+    refetchInterval: 5000,
+  });
+
+  const isSimActive = Boolean(simDiff?.simulation_active && (simDiff?.pending_changes ?? 0) > 0);
+
+  // Compute diff elements combining baseline current with graph diff
+  const diffElements = useMemo(() => {
+    if (!elements || !simDiff?.graph_diff) return elements || [];
+
+    const graphDiff = simDiff.graph_diff;
+    const removedNodeIds = new Set((graphDiff.removed_nodes || []).map((n: any) => n.id));
+
+    const removedEdgeKeys = new Set(
+      (graphDiff.removed_edges || []).map((e: any) => `${e.source}|${e.target}|${e.label || ''}`)
+    );
+
+    const result: any[] = [];
+    const seenNodeIds = new Set<string>();
+
+    // Process current elements
+    (elements || []).forEach((el: any) => {
+      if (!el.data.source) {
+        // Node
+        seenNodeIds.add(el.data.id);
+        const isRemoved = removedNodeIds.has(el.data.id);
+        result.push({
+          ...el,
+          data: {
+            ...el.data,
+            diffStatus: isRemoved ? 'removed' : undefined,
+          },
+          classes: isRemoved ? `${el.classes || ''} diff-removed`.trim() : el.classes,
+        });
+      } else {
+        // Edge
+        const key = `${el.data.source}|${el.data.target}|${el.data.label || ''}`;
+        const isRemoved = removedEdgeKeys.has(key);
+        result.push({
+          ...el,
+          data: {
+            ...el.data,
+            diffStatus: isRemoved ? 'removed' : undefined,
+          },
+          classes: isRemoved ? `${el.classes || ''} diff-removed`.trim() : el.classes,
+        });
+      }
+    });
+
+    // Add added nodes (from desired_elements if available, or construct from diff)
+    (graphDiff.added_nodes || []).forEach((n: any) => {
+      if (!seenNodeIds.has(n.id)) {
+        seenNodeIds.add(n.id);
+        const desiredNode = (simDiff.desired_elements || []).find((de: any) => !de.data.source && de.data.id === n.id);
+        result.push({
+          data: {
+            ...(desiredNode?.data || {}),
+            id: n.id,
+            label: n.label || n.id,
+            type: n.type || 'Resource',
+            diffStatus: 'added',
+          },
+          classes: 'diff-added',
+        });
+      }
+    });
+
+    // Add added edges
+    (graphDiff.added_edges || []).forEach((e: any) => {
+      result.push({
+        data: {
+          id: `diff-edge-${e.source}-${e.target}-${e.label || 'edge'}`,
+          source: e.source,
+          target: e.target,
+          label: e.label || '',
+          diffStatus: 'added',
+        },
+        classes: 'diff-added',
+      });
+    });
+
+    return result;
+  }, [elements, simDiff]);
+
+  const activeElements = useMemo(() => {
+    if (!isSimActive) return elements;
+    if (graphMode === 'current') return elements;
+    if (graphMode === 'desired') return simDiff?.desired_elements || elements;
+    if (graphMode === 'diff') return diffElements;
+    return elements;
+  }, [isSimActive, graphMode, elements, simDiff, diffElements]);
 
   // Compute stats
-  const nodes = elements?.filter(e => !e.data.source) || [];
-  const edges = elements?.filter(e => e.data.source) || [];
+  const nodes = (activeElements || elements)?.filter((e: any) => !e.data.source) || [];
+  const edges = (activeElements || elements)?.filter((e: any) => e.data.source) || [];
   const totalNodes = nodes.length;
   const totalEdges = edges.length;
   
@@ -93,6 +188,49 @@ export const IdentityGraphPage: React.FC = () => {
           
           <div className="flex items-center gap-3">
             <ScannedRegionBadge />
+
+            {/* Simulation State Toggle */}
+            {isSimActive && (
+              <div className="flex items-center bg-gray-900/90 border border-indigo-500/50 p-1 rounded-lg shadow-md">
+                <div className="flex items-center gap-1.5 px-2 py-0.5 mr-1 border-r border-gray-700 text-xs font-semibold text-indigo-400">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                  <span className="hidden sm:inline">Simulation</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setGraphMode('current')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                      graphMode === 'current'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                    }`}
+                  >
+                    Current State
+                  </button>
+                  <button
+                    onClick={() => setGraphMode('desired')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                      graphMode === 'desired'
+                        ? 'bg-purple-600 text-white shadow'
+                        : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                    }`}
+                  >
+                    Desired State
+                  </button>
+                  <button
+                    onClick={() => setGraphMode('diff')}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                      graphMode === 'diff'
+                        ? 'bg-emerald-600 text-white shadow'
+                        : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                    }`}
+                  >
+                    <GitCompare className="w-3.5 h-3.5" />
+                    Diff Overlay
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Policy Scope Toggle Button (Relevant Policies vs All Policies) */}
             <button
@@ -163,6 +301,33 @@ export const IdentityGraphPage: React.FC = () => {
         </header>
       )}
 
+      {/* Simulation Diff Banner when Diff Overlay is Active */}
+      {isSimActive && graphMode === 'diff' && simDiff?.graph_diff && (
+        <div className="bg-emerald-950/40 border-b border-emerald-800/60 px-6 py-2 flex items-center justify-between text-xs text-gray-300 z-20 backdrop-blur-md">
+          <div className="flex items-center gap-4">
+            <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
+              <GitCompare className="w-3.5 h-3.5" /> Graph Simulation Diff:
+            </span>
+            <span className="flex items-center gap-1.5 text-emerald-300 font-medium">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-emerald-300"></span>
+              <span>+{simDiff.graph_diff.added_edges?.length || 0} Relationships Added</span>
+              {simDiff.graph_diff.added_nodes?.length ? ` (+${simDiff.graph_diff.added_nodes.length} Nodes)` : ''}
+            </span>
+            <span className="flex items-center gap-1.5 text-red-300 font-medium">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500 border border-red-300"></span>
+              <span>-{simDiff.graph_diff.removed_edges?.length || 0} Relationships Removed</span>
+              {simDiff.graph_diff.removed_nodes?.length ? ` (-${simDiff.graph_diff.removed_nodes.length} Nodes)` : ''}
+            </span>
+            <span className="text-gray-400">
+              {simDiff.graph_diff.unchanged_edge_count} unchanged relationships
+            </span>
+          </div>
+          <span className="text-[11px] text-amber-400/90 font-medium tracking-wide">
+            SIMULATION ONLY — AWS and Neo4j are not modified
+          </span>
+        </div>
+      )}
+
       {/* Attack Path Prominent Summary Banner */}
       {highlightedNodeIds.length > 0 && (
         <div className="bg-red-950/90 border-b border-red-800 px-6 py-2.5 flex items-center justify-between z-20 backdrop-blur-md shadow-lg">
@@ -194,6 +359,8 @@ export const IdentityGraphPage: React.FC = () => {
             highlightRisky={highlightRisky}
             securityFilter={securityFilter}
             showAllPolicies={showAllPolicies}
+            customElements={isSimActive ? activeElements : undefined}
+            graphMode={isSimActive ? graphMode : 'current'}
           />
 
           {/* Node Details Overlay */}
