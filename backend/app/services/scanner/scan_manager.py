@@ -1,3 +1,5 @@
+import os
+import json
 import time
 import uuid
 import logging
@@ -26,6 +28,9 @@ from app.cache import cache
 from app.services.findings.finding_service import finding_service
 
 logger = logging.getLogger("scanner")
+
+SCAN_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
+LAST_SCAN_FILE = os.path.join(SCAN_DATA_DIR, "last_scan.json")
 
 
 def _generate_recommendations(inventory: AWSInventory, attack_paths: list) -> list:
@@ -212,7 +217,31 @@ class ScanManager:
         self._service_status: Dict[str, str] = {}
         self._failed_regions: List[str] = []
         self._successful_regions: List[str] = []
-        self._phase_durations: Dict[str, float] = {}
+        self._phase_durations: Dict[str, Any] = {
+            "discovery": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "iam_analysis": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "graph_construction": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "path_analysis": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "cloudtrail_correlation": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "finding_synthesis": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "total": {"duration_seconds": 0.0, "status": "SKIPPED"}
+        }
+        self._init_from_disk()
+
+    def _init_from_disk(self):
+        """Restore last successful scan metadata from durable disk storage."""
+        if os.path.exists(LAST_SCAN_FILE):
+            try:
+                with open(LAST_SCAN_FILE, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                if data:
+                    self._last_result = data
+                    self._last_successful_scan_at = data.get("last_successful_scan_at") or data.get("timestamp")
+                    self._last_successful_scan_id = data.get("last_successful_scan_id") or data.get("scan_id")
+                    if "phase_durations" in data:
+                        self._phase_durations = data["phase_durations"]
+            except Exception as e:
+                logger.warning(f"Failed to restore scan metadata from disk: {e}")
 
     @property
     def is_running(self) -> bool:
@@ -240,26 +269,49 @@ class ScanManager:
         }
 
     def trigger_async_scan(self) -> dict:
-        """Start a scan in a background thread. Returns immediately."""
-        if self._is_running:
-            return {"status": "already_running", "message": "Scan already in progress"}
-        thread = threading.Thread(target=self.run_scan, daemon=True)
+        """Start a scan in a background thread with atomic slot claim. Returns immediately."""
+        with self._lock:
+            if self._is_running:
+                return {"status": "skipped", "message": "Scan already running"}
+            self._is_running = True
+            self._scan_id = str(uuid.uuid4())
+            self._scan_status = "SCANNING"
+            self._scan_started_at = datetime.utcnow().isoformat() + "Z"
+            scan_id = self._scan_id
+
+        thread = threading.Thread(target=self._execute_scan, args=(scan_id,), daemon=True)
         thread.start()
         return {"status": "started", "message": "Scan started in background"}
 
     def run_scan(self) -> dict:
-        if not self._lock.acquire(blocking=False):
-            logger.warning("Scan lock held. Skipping duplicate.")
-            return {"status": "skipped", "message": "Scan already running"}
+        """Execute a scan synchronously with atomic slot claim."""
+        with self._lock:
+            if self._is_running:
+                logger.warning("Scan lock held. Skipping duplicate.")
+                return {"status": "skipped", "message": "Scan already running"}
+            self._is_running = True
+            self._scan_id = str(uuid.uuid4())
+            self._scan_status = "SCANNING"
+            self._scan_started_at = datetime.utcnow().isoformat() + "Z"
+            scan_id = self._scan_id
 
-        scan_id = str(uuid.uuid4())
-        self._is_running = True
-        self._scan_id = scan_id
-        self._scan_status = "SCANNING"
-        self._scan_started_at = datetime.utcnow().isoformat() + "Z"
+        return self._execute_scan(scan_id)
+
+    def _execute_scan(self, scan_id: str) -> dict:
         self._last_error = None
+        start_mono = time.monotonic()
         start_time = time.time()
         self._service_status = {}
+
+        self._phase_durations = {
+            "discovery": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "iam_analysis": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "graph_construction": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "path_analysis": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "cloudtrail_correlation": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "finding_synthesis": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "total": {"duration_seconds": 0.0, "status": "SKIPPED"}
+        }
 
         logger.info(f"[INFO] SCAN START: Initializing AWS security scan (scan_id={scan_id})")
 
@@ -276,7 +328,8 @@ class ScanManager:
                     "scan_id": scan_id,
                     "error": err_msg,
                     "timestamp": self._scan_started_at,
-                    "service_status": self._service_status
+                    "service_status": self._service_status,
+                    "phase_durations": self._phase_durations
                 }
                 return self._last_result
 
@@ -402,13 +455,19 @@ class ScanManager:
                 logger.error(f"[ERROR] Scan {scan_id} aborted: {err_msg}")
                 self._scan_status = "FAILED"
                 self._last_error = err_msg
+                self._phase_durations["discovery"]["status"] = "FAILED"
+                self._phase_durations["total"] = {
+                    "duration_seconds": max(0.0, round(time.monotonic() - start_mono, 3)),
+                    "status": "FAILED"
+                }
                 self._last_result = {
                     "status": "failed",
                     "scan_id": scan_id,
                     "error": err_msg,
                     "timestamp": datetime.utcnow().isoformat() + "Z",
                     "service_status": self._service_status,
-                    "failed_regions": self._failed_regions
+                    "failed_regions": self._failed_regions,
+                    "phase_durations": self._phase_durations
                 }
                 # Do NOT prune Neo4j, do NOT publish empty cache, preserve previous snapshot
                 return self._last_result
@@ -427,7 +486,8 @@ class ScanManager:
             self.inventory.findings = collector_results.get("AccessAnalyzer", [])
             self.inventory.alerts = collector_results.get("CloudTrail", [])
 
-            discovery_duration = round(time.time() - t_disc_start, 2)
+            discovery_duration = max(0.0, round(time.time() - t_disc_start, 3))
+            self._phase_durations["discovery"] = {"duration_seconds": discovery_duration, "status": "COMPLETED"}
             logger.info(f"[PERF] Phase 1 (Discovery) completed in {discovery_duration}s")
 
             logger.info(
@@ -575,7 +635,8 @@ class ScanManager:
                 ddb['riskScore'] = eval_res['score']
                 ddb['riskAssessment'] = eval_res
 
-            iam_analysis_duration = round(time.time() - t_iam_start, 2)
+            iam_analysis_duration = max(0.0, round(time.time() - t_iam_start, 3))
+            self._phase_durations["iam_analysis"] = {"duration_seconds": iam_analysis_duration, "status": "COMPLETED"}
             logger.info(f"[PERF] Phase 2 (IAM Analysis & Scoring) completed in {iam_analysis_duration}s")
 
             # 4. STEP 1 OF PIPELINE: Neo4j Configuration Sync (Idempotent MERGE, preserves ActivityEvent)
@@ -602,7 +663,8 @@ class ScanManager:
                 logger.warning(f"Neo4j loader exception: {loader_err}. Building local NetworkX model.")
                 G = graph_loader.build_local_graph(self.inventory)
 
-            graph_construction_duration = round(time.time() - t_graph_start, 2)
+            graph_construction_duration = max(0.0, round(time.time() - t_graph_start, 3))
+            self._phase_durations["graph_construction"] = {"duration_seconds": graph_construction_duration, "status": "COMPLETED"}
             logger.info(f"[PERF] Phase 3 (Graph Construction) completed in {graph_construction_duration}s")
 
             # 6. STEP 3 OF PIPELINE: Attack Path Engine Analysis on Graph
@@ -620,7 +682,8 @@ class ScanManager:
                 inventory=self.inventory,
                 policy_doc_map=_policy_doc_map,
             )
-            path_analysis_duration = round(time.time() - t_path_start, 2)
+            path_analysis_duration = max(0.0, round(time.time() - t_path_start, 3))
+            self._phase_durations["path_analysis"] = {"duration_seconds": path_analysis_duration, "status": "COMPLETED"}
             logger.info(f"[PERF] Phase 4 (Path Analysis) completed in {path_analysis_duration}s: {len(attack_paths)} paths detected")
 
             # 7. STEP 4 OF PIPELINE: CloudTrail Activity Normalization & Correlation with Graph/Paths
@@ -633,7 +696,8 @@ class ScanManager:
             )
             correlated_findings = correlation_result.get("correlated_findings", [])
             activity_metrics = correlation_result.get("metrics", {})
-            cloudtrail_correlation_duration = round(time.time() - t_ct_start, 2)
+            cloudtrail_correlation_duration = max(0.0, round(time.time() - t_ct_start, 3))
+            self._phase_durations["cloudtrail_correlation"] = {"duration_seconds": cloudtrail_correlation_duration, "status": "COMPLETED"}
 
             nodes_count = G.number_of_nodes()
             edges_count = G.number_of_edges()
@@ -806,19 +870,13 @@ class ScanManager:
                 failed_regions=self._failed_regions,
                 scan_timestamp=scan_timestamp
             )
-            finding_synthesis_duration = round(time.time() - t_find_start, 2)
+            finding_synthesis_duration = max(0.0, round(time.time() - t_find_start, 3))
+            self._phase_durations["finding_synthesis"] = {"duration_seconds": finding_synthesis_duration, "status": "COMPLETED"}
             logger.info(f"[PERF] Phase 6 (Finding Synthesis & Lifecycle) completed in {finding_synthesis_duration}s: {len(canonical_findings)} total findings")
 
-            phase_durations = {
-                "discovery": discovery_duration,
-                "iam_analysis": iam_analysis_duration,
-                "graph_construction": graph_construction_duration,
-                "path_analysis": path_analysis_duration,
-                "cloudtrail_correlation": cloudtrail_correlation_duration,
-                "finding_synthesis": finding_synthesis_duration,
-                "total": duration
-            }
-            self._phase_durations = phase_durations
+            duration = max(0.0, round(time.monotonic() - start_mono, 3))
+            self._phase_durations["total"] = {"duration_seconds": duration, "status": "COMPLETED"}
+            phase_durations = self._phase_durations
             logger.info(
                 f"[PERF] Scan {scan_id} Pipeline Timing: "
                 f"discovery={discovery_duration}s, "
@@ -989,6 +1047,14 @@ class ScanManager:
             cache.set_many(new_snapshot)
             logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id}, status={final_scan_status})")
 
+            # Persist authoritative scan metadata to durable disk storage
+            try:
+                os.makedirs(os.path.dirname(LAST_SCAN_FILE), exist_ok=True)
+                with open(LAST_SCAN_FILE, "w", encoding="utf-8") as fp:
+                    json.dump(scan_metadata, fp, indent=2)
+            except Exception as disk_err:
+                logger.warning(f"Failed to persist scan metadata to disk: {disk_err}")
+
             self._scan_status = final_scan_status
             self._last_successful_scan_at = scan_timestamp
             self._last_successful_scan_id = scan_id
@@ -1013,7 +1079,8 @@ class ScanManager:
                 "failed_regions": self._failed_regions,
                 "successful_regions": reconcilable_regions,
                 "scanned_regions": scanned_regions,
-                "resolved_regions": scanned_regions
+                "resolved_regions": scanned_regions,
+                "phase_durations": self._phase_durations
             }
 
             return self._last_result
@@ -1022,18 +1089,21 @@ class ScanManager:
             logger.error(f"[ERROR] Scan execution encountered an unexpected failure: {e}", exc_info=True)
             self._scan_status = "FAILED"
             self._last_error = str(e)
+            duration = max(0.0, round(time.monotonic() - start_mono, 3))
+            self._phase_durations["total"] = {"duration_seconds": duration, "status": "FAILED"}
             self._last_result = {
                 "status": "failed",
                 "scan_id": scan_id,
                 "scan_status": "FAILED",
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat() + "Z",
-                "service_status": self._service_status
+                "service_status": self._service_status,
+                "phase_durations": self._phase_durations
             }
             return self._last_result
         finally:
-            self._is_running = False
-            self._lock.release()
+            with self._lock:
+                self._is_running = False
 
 
 scan_manager = ScanManager()

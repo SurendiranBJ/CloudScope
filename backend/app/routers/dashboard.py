@@ -47,6 +47,8 @@ def get_dashboard_summary():
         data["successfulRegions"] = status_info.get("successful_regions") or data.get("successfulRegions") or []
         data["scanMode"] = status_info.get("scan_mode") or data.get("scanMode")
         data["resolvedRegions"] = status_info.get("resolved_regions") or data.get("resolvedRegions") or data.get("scannedRegions") or []
+        data["phaseDurations"] = status_info.get("phase_durations") or data.get("phaseDurations") or {}
+        data["phase_durations"] = status_info.get("phase_durations") or data.get("phase_durations") or {}
 
         return APIResponse(
             success=True,
@@ -94,6 +96,8 @@ def get_dashboard_summary():
             {"title": "Security Scan In Progress", "desc": "Live cloud scan is gathering inventory and calculating risk posture."}
         ] if effective_status == "SCANNING" else [],
         "lastScan": None,
+        "phaseDurations": status_info.get("phase_durations", {}),
+        "phase_durations": status_info.get("phase_durations", {}),
         "topRiskyIdentities": [],
         "resourceBreakdown": [],
         "scanId": scan_id,

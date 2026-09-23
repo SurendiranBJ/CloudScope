@@ -15,6 +15,37 @@ from app.cache import cache
 router = APIRouter(prefix="/findings", tags=["Security Findings"])
 
 
+VALID_SEVERITIES = {"critical", "high", "medium", "low"}
+VALID_STATUSES = {"open", "acknowledged", "resolved", "suppressed"}
+VALID_CATEGORIES = {
+    "iam",
+    "resource",
+    "privilege_escalation",
+    "lateral_movement",
+    "cloudtrail",
+    "credential",
+    "configuration",
+    "data_access",
+    "monitoring",
+    "identity_excessive_privilege",
+    "data_exposure",
+    "network_exposure",
+    "secrets_management",
+    "attack_path_risk",
+    "runtime_activity",
+    "security_hygiene"
+}
+VALID_SOURCES = {
+    "static_iam",
+    "resource_configuration",
+    "attack_path",
+    "cloudtrail",
+    "correlation",
+    "static_analysis",
+    "runtime_activity"
+}
+
+
 @router.get("", response_model=APIResponse[List[SecurityFinding]])
 def get_security_findings(
     severity: Optional[str] = Query(None, description="Filter by severity: critical, high, medium, low"),
@@ -24,9 +55,37 @@ def get_security_findings(
     region: Optional[str] = Query(None, description="Filter by AWS region"),
     principal: Optional[str] = Query(None, description="Filter by affected principal"),
     source: Optional[str] = Query(None, description="Filter by source: STATIC_IAM, RESOURCE_CONFIGURATION, ATTACK_PATH, CLOUDTRAIL, CORRELATION"),
-    search: Optional[str] = Query(None, description="Full text search on title, description, principal, and resource")
+    search: Optional[str] = Query(None, description="Full text search on title, description, principal, and resource"),
+    limit: Optional[int] = Query(None, description="Maximum number of findings to return (1-200)"),
+    offset: Optional[int] = Query(None, description="Pagination offset (>= 0)")
 ):
-    """Retrieve unified security findings with multi-attribute filtering."""
+    """Retrieve unified security findings with strict multi-attribute validation and filtering."""
+    # 1. Parameter Validation (Reject invalid inputs with HTTP 400)
+    if severity and severity.lower() not in VALID_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid severity '{severity}'. Allowed values: {sorted(VALID_SEVERITIES)}"
+        )
+    if status and status.lower() not in VALID_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status '{status}'. Allowed values: {sorted(VALID_STATUSES)}"
+        )
+    if category and category.lower() not in VALID_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid category '{category}'. Allowed values: {sorted(VALID_CATEGORIES)}"
+        )
+    if source and source.lower() not in VALID_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid source '{source}'. Allowed values: {sorted(VALID_SOURCES)}"
+        )
+    if limit is not None and (limit < 1 or limit > 200):
+        raise HTTPException(status_code=400, detail="Query parameter 'limit' must be between 1 and 200.")
+    if offset is not None and offset < 0:
+        raise HTTPException(status_code=400, detail="Query parameter 'offset' must be greater than or equal to 0.")
+
     findings = finding_service.get_all_findings()
 
     if not findings and not scan_manager.is_running:
@@ -73,11 +132,16 @@ def get_security_findings(
             or (f.remediation and s_lower in f.remediation.title.lower())
         ]
 
+    # Apply pagination
+    start = offset or 0
+    end = start + limit if limit is not None else None
+    paginated = filtered[start:end]
+
     return APIResponse(
         success=True,
         message="Unified security findings retrieved successfully",
         timestamp=datetime.utcnow().isoformat() + "Z",
-        data=filtered
+        data=paginated
     )
 
 

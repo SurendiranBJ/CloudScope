@@ -14,10 +14,12 @@ from app.main import app
 from app.cache import cache
 from app.schemas import SecurityFinding, FindingRemediation
 from app.services.scanner.inventory import AWSInventory
+import os
 from app.services.findings.finding_service import (
     FindingService,
     compute_deterministic_id,
-    finding_service
+    finding_service,
+    FINDINGS_FILE
 )
 from app.services.findings.remediation_engine import (
     generate_remediation,
@@ -33,9 +35,19 @@ def clear_test_cache():
     """Ensure clean cache before and after each test."""
     cache.clear()
     finding_service._memory_store.clear()
+    if os.path.exists(FINDINGS_FILE):
+        try:
+            os.remove(FINDINGS_FILE)
+        except OSError:
+            pass
     yield
     cache.clear()
     finding_service._memory_store.clear()
+    if os.path.exists(FINDINGS_FILE):
+        try:
+            os.remove(FINDINGS_FILE)
+        except OSError:
+            pass
 
 
 # ==============================================================================

@@ -214,7 +214,7 @@ export const Dashboard: React.FC = () => {
               <Cloud className="w-5 h-5" />
               <span className="text-xs font-bold uppercase tracking-wider">Initial Setup & Discovery</span>
             </div>
-            <h2 className="text-lg font-bold text-white">No AWS Environment Scan Discovered Yet</h2>
+            <h2 className="text-lg font-bold text-white">No verified scan data available yet.</h2>
             <p className="text-xs text-gray-300 leading-relaxed">
               CloudScope operates in 100% read-only mode to evaluate AST IAM policy documents, build the multi-hop identity graph in Neo4j, compute lateral movement attack paths, and correlate live CloudTrail events.
             </p>
@@ -224,7 +224,7 @@ export const Dashboard: React.FC = () => {
             className="px-5 py-2.5 rounded-xl bg-enterprise-accent text-white font-semibold text-xs hover:bg-blue-600 transition-colors shadow-lg flex items-center gap-2 whitespace-nowrap"
           >
             <Cloud className="w-4 h-4" />
-            <span>Scan AWS Environment</span>
+            <span>Trigger Initial Scan</span>
           </button>
         </div>
       )}
@@ -273,7 +273,7 @@ export const Dashboard: React.FC = () => {
               <span>Scan Duration: <strong className="text-white">{data.lastScan.duration_seconds}s</strong></span>
               {data?.lastScan?.phase_durations && (
                 <span className="text-gray-500 hidden sm:inline">
-                  (Disc: {data.lastScan.phase_durations.discovery}s, IAM: {data.lastScan.phase_durations.iam_analysis}s, Graph: {data.lastScan.phase_durations.graph_construction}s, Path: {data.lastScan.phase_durations.path_analysis}s)
+                  (Disc: {(data.lastScan.phase_durations.discovery as any)?.duration_seconds ?? data.lastScan.phase_durations.discovery}s, IAM: {(data.lastScan.phase_durations.iam_analysis as any)?.duration_seconds ?? data.lastScan.phase_durations.iam_analysis}s, Graph: {(data.lastScan.phase_durations.graph_construction as any)?.duration_seconds ?? data.lastScan.phase_durations.graph_construction}s, Path: {(data.lastScan.phase_durations.path_analysis as any)?.duration_seconds ?? data.lastScan.phase_durations.path_analysis}s)
                 </span>
               )}
             </div>

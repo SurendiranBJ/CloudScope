@@ -138,6 +138,8 @@ class SecurityFinding(BaseModel):
     status: str = "OPEN"
     firstSeen: Optional[str] = None
     lastSeen: Optional[str] = None
+    updatedAt: Optional[str] = None
+    resolvedAt: Optional[str] = None
     source: str
     tags: Optional[List[str]] = None
     # Backward compatibility with RiskFinding
@@ -248,6 +250,8 @@ class DashboardData(BaseModel):
     lastSuccessfulScanAt: Optional[str] = None
     lastSuccessfulScanId: Optional[str] = None
     lastError: Optional[str] = None
+    phaseDurations: Optional[dict] = None
+    phase_durations: Optional[dict] = None
 
 # Copilot Request/Response
 class CopilotRequest(BaseModel):

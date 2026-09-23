@@ -8,6 +8,8 @@ risk score factor binding, read-only remediation linking, and lifecycle manageme
 import hashlib
 import json
 import logging
+import os
+import threading
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Set, Tuple
 
@@ -22,6 +24,17 @@ from app.services.findings.remediation_engine import generate_remediation
 from app.cache import cache
 
 logger = logging.getLogger("scanner")
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
+FINDINGS_FILE = os.path.join(DATA_DIR, "findings_store.json")
+
+# Lifecycle State Machine Transition Rules
+VALID_TRANSITIONS: Dict[str, Set[str]] = {
+    "OPEN": {"OPEN", "ACKNOWLEDGED", "RESOLVED", "SUPPRESSED"},
+    "ACKNOWLEDGED": {"ACKNOWLEDGED", "OPEN", "RESOLVED", "SUPPRESSED"},
+    "RESOLVED": {"RESOLVED", "OPEN"},
+    "SUPPRESSED": {"SUPPRESSED", "OPEN", "RESOLVED"}
+}
 
 # Valid Category Taxonomy
 VALID_CATEGORIES = {
@@ -74,14 +87,41 @@ def compute_deterministic_id(
 class FindingService:
     def __init__(self):
         self._memory_store: Dict[str, SecurityFinding] = {}
+        self._lifecycle_lock = threading.Lock()
+        self._init_from_disk()
+
+    def _init_from_disk(self):
+        """Seed memory store from persistent disk storage if available."""
+        if os.path.exists(FINDINGS_FILE):
+            try:
+                with open(FINDINGS_FILE, "r", encoding="utf-8") as fp:
+                    disk_data = json.load(fp)
+                if disk_data:
+                    self._memory_store = {
+                        d["id"]: SecurityFinding(**d) for d in disk_data if isinstance(d, dict) and "id" in d
+                    }
+            except Exception as e:
+                logger.warning(f"Could not load initial findings from disk: {e}")
 
     def get_all_findings(self) -> List[SecurityFinding]:
-        """Retrieve all canonical findings from cache or in-memory store."""
-        cached = cache.get("v1:findings")
-        if cached:
-            # Rehydrate if dicts
-            return [f if isinstance(f, SecurityFinding) else SecurityFinding(**f) for f in cached]
-        return list(self._memory_store.values())
+        """Retrieve all canonical findings from cache, disk, or in-memory store."""
+        try:
+            cached = cache.get("v1:findings")
+            if cached:
+                return [f if isinstance(f, SecurityFinding) else SecurityFinding(**f) for f in cached]
+        except Exception:
+            pass
+
+        if not self._memory_store and os.path.exists(FINDINGS_FILE):
+            self._init_from_disk()
+
+        res = list(self._memory_store.values())
+        if res:
+            try:
+                cache.set("v1:findings", [f.model_dump() for f in res])
+            except Exception:
+                pass
+        return res
 
     def get_finding_by_id(self, finding_id: str) -> Optional[SecurityFinding]:
         """Retrieve a single finding by its deterministic ID."""
@@ -90,70 +130,127 @@ class FindingService:
                 return f
         return None
 
-    def acknowledge_finding(self, finding_id: str) -> Optional[SecurityFinding]:
-        """Transition finding status to ACKNOWLEDGED.
-        Rejects invalid transitions (e.g. from RESOLVED).
+    def transition_status(self, finding_id: str, new_status: str) -> Optional[SecurityFinding]:
+        """Atomically validate and execute lifecycle status transition.
+        
+        Enforces strict state machine rules:
+        - OPEN -> ACKNOWLEDGED, RESOLVED, SUPPRESSED
+        - ACKNOWLEDGED -> OPEN, RESOLVED, SUPPRESSED
+        - RESOLVED -> OPEN (only via reopen)
+        - SUPPRESSED -> OPEN, RESOLVED
+        Invalid transitions raise ValueError.
         """
-        findings = self.get_all_findings()
-        matched = None
-        for f in findings:
-            if f.id == finding_id:
-                if f.status == "RESOLVED":
-                    raise ValueError(f"Cannot acknowledge resolved finding '{finding_id}'. Reopen the finding first.")
-                f.status = "ACKNOWLEDGED"
-                matched = f
-                break
-        if matched:
-            self._save_findings(findings)
-        return matched
+        with self._lifecycle_lock:
+            findings = self.get_all_findings()
+            matched = None
+            target = new_status.upper()
+            now_iso = datetime.utcnow().isoformat() + "Z"
+
+            for f in findings:
+                if f.id == finding_id:
+                    curr = (f.status or "OPEN").upper()
+                    allowed = VALID_TRANSITIONS.get(curr, set())
+                    if target not in allowed:
+                        msg = f"Invalid finding status transition from '{curr}' to '{target}'."
+                        if curr in ["RESOLVED", "SUPPRESSED"] and target == "ACKNOWLEDGED":
+                            msg += " Reopen the finding first."
+                        elif curr == "RESOLVED" and target == "SUPPRESSED":
+                            msg += " Reopen the finding first."
+                        raise ValueError(msg)
+
+                    f.status = target
+                    f.updatedAt = now_iso
+                    if target == "RESOLVED":
+                        f.resolvedAt = now_iso
+                    elif target == "OPEN":
+                        f.resolvedAt = None
+
+                    matched = f
+                    break
+
+            if matched:
+                self._save_findings(findings)
+            return matched
+
+    def acknowledge_finding(self, finding_id: str) -> Optional[SecurityFinding]:
+        """Transition finding status to ACKNOWLEDGED."""
+        return self.transition_status(finding_id, "ACKNOWLEDGED")
 
     def resolve_finding(self, finding_id: str) -> Optional[SecurityFinding]:
         """Transition finding status to RESOLVED."""
-        findings = self.get_all_findings()
-        matched = None
-        for f in findings:
-            if f.id == finding_id:
-                f.status = "RESOLVED"
-                matched = f
-                break
-        if matched:
-            self._save_findings(findings)
-        return matched
+        return self.transition_status(finding_id, "RESOLVED")
 
     def suppress_finding(self, finding_id: str) -> Optional[SecurityFinding]:
-        """Transition finding status to SUPPRESSED.
-        Rejects invalid transitions (e.g. from RESOLVED).
-        """
-        findings = self.get_all_findings()
-        matched = None
-        for f in findings:
-            if f.id == finding_id:
-                if f.status == "RESOLVED":
-                    raise ValueError(f"Cannot suppress resolved finding '{finding_id}'. Reopen the finding first.")
-                f.status = "SUPPRESSED"
-                matched = f
-                break
-        if matched:
-            self._save_findings(findings)
-        return matched
+        """Transition finding status to SUPPRESSED."""
+        return self.transition_status(finding_id, "SUPPRESSED")
 
     def reopen_finding(self, finding_id: str) -> Optional[SecurityFinding]:
         """Transition finding status back to OPEN."""
-        findings = self.get_all_findings()
-        matched = None
-        for f in findings:
-            if f.id == finding_id:
-                f.status = "OPEN"
-                matched = f
-                break
-        if matched:
-            self._save_findings(findings)
-        return matched
+        return self.transition_status(finding_id, "OPEN")
 
     def _save_findings(self, findings: List[SecurityFinding]):
-        """Persist findings to in-memory store and cache."""
+        """Persist findings to in-memory store, durable disk storage, and Redis cache."""
         self._memory_store = {f.id: f for f in findings}
-        cache.set("v1:findings", [f.model_dump() for f in findings])
+        data_dicts = [f.model_dump() for f in findings]
+
+        # 1. Durable disk persistence (atomic replace)
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            tmp_path = FINDINGS_FILE + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fp:
+                json.dump(data_dicts, fp, indent=2)
+            os.replace(tmp_path, FINDINGS_FILE)
+        except Exception as e:
+            logger.warning(f"Failed to persist findings to local disk: {e}")
+
+        # 2. Redis cache
+        try:
+            cache.set("v1:findings", data_dicts)
+        except Exception as ce:
+            logger.warning(f"Failed to write findings to Redis cache: {ce}")
+
+        # 3. Neo4j persistent security finding state (isolated from topology)
+        self._sync_to_neo4j(findings)
+
+    def _sync_to_neo4j(self, findings: List[SecurityFinding]):
+        """Durable persistence for finding lifecycle in Neo4j (isolated from topology entities)."""
+        if not findings:
+            return
+        try:
+            from app.database import get_driver
+            driver = get_driver()
+            if not driver:
+                return
+            findings_payload = [
+                {
+                    "id": f.id,
+                    "status": f.status,
+                    "firstSeen": f.firstSeen,
+                    "lastSeen": f.lastSeen,
+                    "updatedAt": f.updatedAt,
+                    "severity": f.severity,
+                    "category": f.category,
+                    "title": f.title
+                }
+                for f in findings
+            ]
+            with driver.session() as session:
+                session.run(
+                    """
+                    UNWIND $batch AS f
+                    MERGE (sf:SecurityFindingState {findingId: f.id})
+                    SET sf.status = f.status,
+                        sf.firstSeen = f.firstSeen,
+                        sf.lastSeen = f.lastSeen,
+                        sf.updatedAt = f.updatedAt,
+                        sf.severity = f.severity,
+                        sf.category = f.category,
+                        sf.title = f.title
+                    """,
+                    batch=findings_payload
+                )
+        except Exception as ne:
+            logger.debug(f"Neo4j SecurityFindingState sync skipped: {ne}")
 
     def extract_findings_from_scan(
         self,
@@ -713,17 +810,21 @@ class FindingService:
                 n_find.firstSeen = h_find.firstSeen or scan_ts
                 n_find.lastSeen = scan_ts
 
+                n_find.updatedAt = scan_ts
+
                 # Preserve user lifecycle decisions
                 if h_find.status in ["ACKNOWLEDGED", "SUPPRESSED"]:
                     n_find.status = h_find.status
                 elif h_find.status == "RESOLVED":
                     # Reopen if vulnerability reappeared
                     n_find.status = "OPEN"
+                    n_find.resolvedAt = None
                 else:
                     n_find.status = "OPEN"
             else:
                 n_find.firstSeen = scan_ts
                 n_find.lastSeen = scan_ts
+                n_find.updatedAt = scan_ts
                 n_find.status = "OPEN"
 
             reconciled.append(n_find)
@@ -742,6 +843,8 @@ class FindingService:
                     # Successful scan verified the condition no longer exists -> Transition to RESOLVED
                     h_find.status = "RESOLVED"
                     h_find.lastSeen = scan_ts
+                    h_find.updatedAt = scan_ts
+                    h_find.resolvedAt = scan_ts
                     reconciled.append(h_find)
                 else:
                     # Region wasn't evaluated in this scan, retain current state

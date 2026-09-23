@@ -146,8 +146,8 @@ CloudScope operates as a single, continuous, unified security analysis pipeline:
 ## 🛠️ Technology Stack
 
 - **Backend**: Python 3.11, FastAPI, Uvicorn, Boto3, Pydantic v2, NetworkX, Neo4j Python Driver, APScheduler
-- **Database & Cache**: Neo4j Graph Database (Bolt Protocol), Redis (with automatic in-memory fallback)
-- **Frontend**: React 18, Vite, TypeScript, Tailwind CSS, Lucide React, Cytoscape.js (`cytoscape-dagre`), TanStack Query, Recharts
+- **Database & Cache**: Neo4j Graph Database (Bolt Protocol), Redis (Cache layer with automatic in-memory fallback), Local Durable State Store
+- **Frontend**: React 19, Vite, TypeScript, Tailwind CSS, Lucide React, Cytoscape.js (`cytoscape-dagre`), TanStack Query, Recharts
 
 ---
 
