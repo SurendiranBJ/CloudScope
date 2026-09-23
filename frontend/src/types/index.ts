@@ -286,6 +286,8 @@ export interface DashboardData {
   scannedRegions?: string[];
   scanId?: string;
   scanStatus?: 'NO_SCAN' | 'SCANNING' | 'SUCCESS' | 'FAILED' | 'PARTIAL';
+  lastCompletedScanAt?: string | null;
+  lastCompletedScanId?: string | null;
   lastSuccessfulScanAt?: string | null;
   lastSuccessfulScanId?: string | null;
   lastError?: string | null;

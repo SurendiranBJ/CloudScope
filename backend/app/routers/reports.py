@@ -178,3 +178,38 @@ def get_reports_summary():
         timestamp=datetime.utcnow().isoformat() + "Z",
         data=report_data
     )
+
+
+@router.get("/reports/export/json")
+def export_security_report_json():
+    """Export complete security report as structured JSON with canonical findings and scan metadata."""
+    report = _compute_reports_from_cache()
+    scan_meta = cache.get("v1:scan_metadata") or {}
+    findings = cache.get("v1:findings") or []
+
+    export_payload = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "platform": "CloudScope AWS Security Analysis",
+        "scan_information": {
+            "scan_id": scan_meta.get("scanId"),
+            "scan_status": scan_meta.get("scanStatus"),
+            "scanned_regions": scan_meta.get("scannedRegions", []),
+            "duration_seconds": scan_meta.get("durationSeconds"),
+            "last_completed_scan_at": scan_meta.get("lastCompletedScanAt"),
+            "last_successful_scan_at": scan_meta.get("lastSuccessfulScanAt"),
+        },
+        "security_summary": report.get("summary", {}),
+        "control_coverage": report.get("compliance", []),
+        "findings_by_severity": report.get("findings_by_severity", {}),
+        "canonical_findings": [
+            f if isinstance(f, dict) else f.model_dump()
+            for f in findings
+        ]
+    }
+    return APIResponse(
+        success=True,
+        message="Security report exported successfully",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data=export_payload
+    )
+

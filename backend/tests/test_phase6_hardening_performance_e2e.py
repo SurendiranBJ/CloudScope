@@ -660,3 +660,351 @@ def test_25_report_counts_match_canonical_findings():
     report = _compute_reports_from_cache()
     assert report["summary"]["findings_count"] == 1
     assert report["findings_by_severity"]["high"] == 1
+
+
+# ------------------------------------------------------------------------------
+# 26. IAM Analysis Failure Marks FAILED & Unreached SKIPPED
+# ------------------------------------------------------------------------------
+def test_26_phase_failure_iam_analysis_marks_failed_and_unreached_skipped():
+    """Verify that a failure during IAM Analysis marks that phase FAILED and subsequent phases SKIPPED."""
+    mgr = ScanManager()
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "123", "arn": "arn:aws:iam::123:root", "region": "ap-south-1"}), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_users", return_value=[{"name": "u1", "inlinePolicyDocuments": {}}]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_roles", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_groups", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_policies", return_value=[]), \
+         patch("app.services.scanner.scan_manager.ec2_service.collect_ec2_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.s3_service.collect_s3_buckets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.lambda_service.collect_lambda_functions", return_value=[]), \
+         patch("app.services.scanner.scan_manager.secrets_service.collect_secrets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.rds_service.collect_rds_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_service.collect_recent_alerts", return_value=[]), \
+         patch("app.services.scanner.scan_manager.risk_engine.get_user_risk_assessment", side_effect=RuntimeError("IAM Risk Engine Fatal Error")):
+
+        res = mgr._execute_scan("scan-test-iam-fail")
+        assert res["scan_status"] == "FAILED"
+        pd = res["phase_durations"]
+        assert pd["discovery"]["status"] == "COMPLETED"
+        assert pd["iam_analysis"]["status"] == "FAILED"
+        assert pd["graph_construction"]["status"] == "SKIPPED"
+        assert pd["path_analysis"]["status"] == "SKIPPED"
+        assert pd["cloudtrail_correlation"]["status"] == "SKIPPED"
+        assert pd["finding_synthesis"]["status"] == "SKIPPED"
+        assert pd["total"]["status"] == "FAILED"
+
+
+# ------------------------------------------------------------------------------
+# 27. Graph Construction Failure Marks FAILED & Unreached SKIPPED
+# ------------------------------------------------------------------------------
+def test_27_phase_failure_graph_construction_marks_failed_and_unreached_skipped():
+    """Verify that a failure during Graph Construction marks that phase FAILED and subsequent phases SKIPPED."""
+    mgr = ScanManager()
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "123", "arn": "arn:aws:iam::123:root", "region": "ap-south-1"}), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_users", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_roles", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_groups", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_policies", return_value=[]), \
+         patch("app.services.scanner.scan_manager.ec2_service.collect_ec2_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.s3_service.collect_s3_buckets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.lambda_service.collect_lambda_functions", return_value=[]), \
+         patch("app.services.scanner.scan_manager.secrets_service.collect_secrets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.rds_service.collect_rds_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_service.collect_recent_alerts", return_value=[]), \
+         patch("app.services.scanner.scan_manager.graph_builder.build_graph_in_neo4j", side_effect=Exception("Neo4j down")), \
+         patch("app.services.scanner.scan_manager.graph_loader.build_local_graph", side_effect=RuntimeError("Graph Memory Crash")):
+
+        res = mgr._execute_scan("scan-test-graph-fail")
+        assert res["scan_status"] == "FAILED"
+        pd = res["phase_durations"]
+        assert pd["discovery"]["status"] == "COMPLETED"
+        assert pd["iam_analysis"]["status"] == "COMPLETED"
+        assert pd["graph_construction"]["status"] == "FAILED"
+        assert pd["path_analysis"]["status"] == "SKIPPED"
+        assert pd["cloudtrail_correlation"]["status"] == "SKIPPED"
+        assert pd["finding_synthesis"]["status"] == "SKIPPED"
+        assert pd["total"]["status"] == "FAILED"
+
+
+# ------------------------------------------------------------------------------
+# 28. Path Analysis Failure Marks FAILED & Unreached SKIPPED
+# ------------------------------------------------------------------------------
+def test_28_phase_failure_path_analysis_marks_failed_and_unreached_skipped():
+    """Verify that a failure during Path Analysis marks that phase FAILED and subsequent phases SKIPPED."""
+    mgr = ScanManager()
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "123", "arn": "arn:aws:iam::123:root", "region": "ap-south-1"}), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_users", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_roles", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_groups", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_policies", return_value=[]), \
+         patch("app.services.scanner.scan_manager.ec2_service.collect_ec2_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.s3_service.collect_s3_buckets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.lambda_service.collect_lambda_functions", return_value=[]), \
+         patch("app.services.scanner.scan_manager.secrets_service.collect_secrets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.rds_service.collect_rds_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_service.collect_recent_alerts", return_value=[]), \
+         patch("app.services.scanner.scan_manager.graph_builder.build_graph_in_neo4j", return_value=None), \
+         patch("app.services.scanner.scan_manager.graph_loader.build_local_graph", return_value=nx.DiGraph()), \
+         patch("app.services.scanner.scan_manager.path_engine.find_attack_paths", side_effect=RuntimeError("Path Engine Overflow")):
+
+        res = mgr._execute_scan("scan-test-path-fail")
+        assert res["scan_status"] == "FAILED"
+        pd = res["phase_durations"]
+        assert pd["discovery"]["status"] == "COMPLETED"
+        assert pd["iam_analysis"]["status"] == "COMPLETED"
+        assert pd["graph_construction"]["status"] == "COMPLETED"
+        assert pd["path_analysis"]["status"] == "FAILED"
+        assert pd["cloudtrail_correlation"]["status"] == "SKIPPED"
+        assert pd["finding_synthesis"]["status"] == "SKIPPED"
+        assert pd["total"]["status"] == "FAILED"
+
+
+# ------------------------------------------------------------------------------
+# 29. CloudTrail Correlation Failure Marks FAILED & Unreached SKIPPED
+# ------------------------------------------------------------------------------
+def test_29_phase_failure_cloudtrail_correlation_marks_failed_and_unreached_skipped():
+    """Verify that a failure during CloudTrail Correlation marks that phase FAILED and subsequent phases SKIPPED."""
+    mgr = ScanManager()
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "123", "arn": "arn:aws:iam::123:root", "region": "ap-south-1"}), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_users", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_roles", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_groups", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_policies", return_value=[]), \
+         patch("app.services.scanner.scan_manager.ec2_service.collect_ec2_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.s3_service.collect_s3_buckets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.lambda_service.collect_lambda_functions", return_value=[]), \
+         patch("app.services.scanner.scan_manager.secrets_service.collect_secrets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.rds_service.collect_rds_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_service.collect_recent_alerts", return_value=[]), \
+         patch("app.services.scanner.scan_manager.graph_builder.build_graph_in_neo4j", return_value=None), \
+         patch("app.services.scanner.scan_manager.graph_loader.build_local_graph", return_value=nx.DiGraph()), \
+         patch("app.services.scanner.scan_manager.path_engine.find_attack_paths", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_correlator.correlate_activity_with_graph", side_effect=RuntimeError("Correlator Deadlock")):
+
+        res = mgr._execute_scan("scan-test-ct-fail")
+        assert res["scan_status"] == "FAILED"
+        pd = res["phase_durations"]
+        assert pd["discovery"]["status"] == "COMPLETED"
+        assert pd["iam_analysis"]["status"] == "COMPLETED"
+        assert pd["graph_construction"]["status"] == "COMPLETED"
+        assert pd["path_analysis"]["status"] == "COMPLETED"
+        assert pd["cloudtrail_correlation"]["status"] == "FAILED"
+        assert pd["finding_synthesis"]["status"] == "SKIPPED"
+        assert pd["total"]["status"] == "FAILED"
+
+
+# ------------------------------------------------------------------------------
+# 30. Finding Synthesis Failure Marks FAILED & Total FAILED
+# ------------------------------------------------------------------------------
+def test_30_phase_failure_finding_synthesis_marks_failed_and_total_failed():
+    """Verify that a failure during Finding Synthesis marks that phase FAILED and total FAILED."""
+    mgr = ScanManager()
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "123", "arn": "arn:aws:iam::123:root", "region": "ap-south-1"}), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_users", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_roles", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_groups", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_policies", return_value=[]), \
+         patch("app.services.scanner.scan_manager.ec2_service.collect_ec2_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.s3_service.collect_s3_buckets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.lambda_service.collect_lambda_functions", return_value=[]), \
+         patch("app.services.scanner.scan_manager.secrets_service.collect_secrets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.rds_service.collect_rds_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_service.collect_recent_alerts", return_value=[]), \
+         patch("app.services.scanner.scan_manager.graph_builder.build_graph_in_neo4j", return_value=None), \
+         patch("app.services.scanner.scan_manager.graph_loader.build_local_graph", return_value=nx.DiGraph()), \
+         patch("app.services.scanner.scan_manager.path_engine.find_attack_paths", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_correlator.correlate_activity_with_graph", return_value={"correlated_findings": [], "metrics": {}}), \
+         patch("app.services.scanner.scan_manager.finding_service.reconcile_scan_findings", side_effect=RuntimeError("Lifecycle Reconciliation Crash")):
+
+        res = mgr._execute_scan("scan-test-find-fail")
+        assert res["scan_status"] == "FAILED"
+        pd = res["phase_durations"]
+        assert pd["discovery"]["status"] == "COMPLETED"
+        assert pd["iam_analysis"]["status"] == "COMPLETED"
+        assert pd["graph_construction"]["status"] == "COMPLETED"
+        assert pd["path_analysis"]["status"] == "COMPLETED"
+        assert pd["cloudtrail_correlation"]["status"] == "COMPLETED"
+        assert pd["finding_synthesis"]["status"] == "FAILED"
+        assert pd["total"]["status"] == "FAILED"
+
+
+# ------------------------------------------------------------------------------
+# 31. Scan Metadata: SUCCESS Updates Both Completed and Successful
+# ------------------------------------------------------------------------------
+def test_31_scan_metadata_success_updates_both_completed_and_successful():
+    """Verify that a successful scan updates both lastCompletedScanAt and lastSuccessfulScanAt."""
+    mgr = ScanManager()
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "123", "arn": "arn:aws:iam::123:root", "region": "ap-south-1"}), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_users", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_roles", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_groups", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_policies", return_value=[]), \
+         patch("app.services.scanner.scan_manager.ec2_service.collect_ec2_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.s3_service.collect_s3_buckets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.lambda_service.collect_lambda_functions", return_value=[]), \
+         patch("app.services.scanner.scan_manager.secrets_service.collect_secrets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.rds_service.collect_rds_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_service.collect_recent_alerts", return_value=[]), \
+         patch("app.services.scanner.scan_manager.graph_builder.build_graph_in_neo4j", return_value=None), \
+         patch("app.services.scanner.scan_manager.graph_loader.build_local_graph", return_value=nx.DiGraph()), \
+         patch("app.services.scanner.scan_manager.path_engine.find_attack_paths", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_correlator.correlate_activity_with_graph", return_value={"correlated_findings": [], "metrics": {}}), \
+         patch("app.services.scanner.scan_manager.finding_service.reconcile_scan_findings", return_value=[]):
+
+        res = mgr._execute_scan("scan-test-success-meta")
+        assert res["scan_status"] == "SUCCESS"
+        assert mgr._last_completed_scan_at is not None
+        assert mgr._last_successful_scan_at is not None
+        assert mgr._last_completed_scan_at == mgr._last_successful_scan_at
+        assert mgr._last_completed_scan_id == "scan-test-success-meta"
+        assert mgr._last_successful_scan_id == "scan-test-success-meta"
+
+
+# ------------------------------------------------------------------------------
+# 32. Scan Metadata: PARTIAL Updates Completed but Preserves Successful
+# ------------------------------------------------------------------------------
+def test_32_scan_metadata_partial_updates_completed_but_preserves_successful():
+    """Verify that a PARTIAL scan updates lastCompletedScanAt but preserves previous lastSuccessfulScanAt."""
+    class FakeRegionalResult:
+        def __init__(self):
+            self.items = []
+            self.regional_status = {"ap-south-1": "SUCCESS", "us-east-1": "FAILED: AccessDenied"}
+            self.successful_regions = ["ap-south-1"]
+            self.failed_regions = ["us-east-1"]
+
+    mgr = ScanManager()
+    mgr._last_successful_scan_at = "2026-09-23T01:00:00Z"
+    mgr._last_successful_scan_id = "prior-good-id"
+
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "123", "arn": "arn:aws:iam::123:root", "region": "ap-south-1"}), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_users", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_roles", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_groups", return_value=[]), \
+         patch("app.services.scanner.scan_manager.iam_service.collect_policies", return_value=[]), \
+         patch("app.services.scanner.scan_manager.ec2_service.collect_ec2_instances", return_value=FakeRegionalResult()), \
+         patch("app.services.scanner.scan_manager.s3_service.collect_s3_buckets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.lambda_service.collect_lambda_functions", return_value=[]), \
+         patch("app.services.scanner.scan_manager.secrets_service.collect_secrets", return_value=[]), \
+         patch("app.services.scanner.scan_manager.rds_service.collect_rds_instances", return_value=[]), \
+         patch("app.services.scanner.scan_manager.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_service.collect_recent_alerts", return_value=[]), \
+         patch("app.services.scanner.scan_manager.graph_builder.build_graph_in_neo4j", return_value=None), \
+         patch("app.services.scanner.scan_manager.graph_loader.build_local_graph", return_value=nx.DiGraph()), \
+         patch("app.services.scanner.scan_manager.path_engine.find_attack_paths", return_value=[]), \
+         patch("app.services.scanner.scan_manager.cloudtrail_correlator.correlate_activity_with_graph", return_value={"correlated_findings": [], "metrics": {}}), \
+         patch("app.services.scanner.scan_manager.finding_service.reconcile_scan_findings", return_value=[]):
+
+        res = mgr._execute_scan("scan-test-partial-meta")
+        assert res["scan_status"] == "PARTIAL"
+        assert mgr._last_completed_scan_at != "2026-09-23T01:00:00Z"
+        assert mgr._last_completed_scan_id == "scan-test-partial-meta"
+        # Crucial preservation guarantee:
+        assert mgr._last_successful_scan_at == "2026-09-23T01:00:00Z"
+        assert mgr._last_successful_scan_id == "prior-good-id"
+
+
+# ------------------------------------------------------------------------------
+# 33. Scan Metadata: FAILED Preserves Both Previous Timestamps
+# ------------------------------------------------------------------------------
+def test_33_scan_metadata_failed_preserves_both_previous_timestamps():
+    """Verify that a FAILED scan does not update lastCompletedScanAt or lastSuccessfulScanAt."""
+    mgr = ScanManager()
+    mgr._last_completed_scan_at = "2026-09-23T01:00:00Z"
+    mgr._last_completed_scan_id = "prior-completed-id"
+    mgr._last_successful_scan_at = "2026-09-23T01:00:00Z"
+    mgr._last_successful_scan_id = "prior-successful-id"
+
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": False, "error": "InvalidClientTokenId"}):
+        res = mgr._execute_scan("scan-test-fail-preserve")
+        assert res["scan_status"] == "FAILED"
+        assert mgr._last_completed_scan_at == "2026-09-23T01:00:00Z"
+        assert mgr._last_completed_scan_id == "prior-completed-id"
+        assert mgr._last_successful_scan_at == "2026-09-23T01:00:00Z"
+        assert mgr._last_successful_scan_id == "prior-successful-id"
+
+
+# ------------------------------------------------------------------------------
+# 34. JSON Export Endpoint Exercises Canonical Findings and Metadata
+# ------------------------------------------------------------------------------
+def test_34_json_export_endpoint_exercises_canonical_findings_and_metadata(client):
+    """Verify that GET /api/v1/reports/export/json produces authentic scan metadata and canonical findings."""
+    scan_meta = {
+        "scanId": "scan-export-abc",
+        "scanStatus": "SUCCESS",
+        "scannedRegions": ["ap-south-1"],
+        "durationSeconds": 2.45,
+        "lastCompletedScanAt": "2026-09-23T05:00:00Z",
+        "lastSuccessfulScanAt": "2026-09-23T05:00:00Z",
+    }
+    cache.set("v1:scan_metadata", scan_meta)
+
+    f1 = SecurityFinding(
+        id="f-canonical-export-01",
+        type="NO_MFA",
+        category="CREDENTIAL",
+        title="Root user without MFA",
+        description="The account root user does not have MFA enabled",
+        severity="critical",
+        riskScore=95,
+        riskFactors=[{"code": "ROOT_USER", "points": 50, "reason": "Root account access"}],
+        status="OPEN",
+        source="STATIC_IAM",
+        principal="root",
+        principalType="User",
+        evidence={"mfa_active": False}
+    )
+    cache.set("v1:findings", [f1.model_dump()])
+    cache.set("v1:users", [{"name": "root", "mfaEnabled": False, "riskScore": 95}])
+
+    resp = client.get("/api/v1/reports/export/json")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    data = body["data"]
+
+    assert "generated_at" in data
+    assert data["scan_information"]["scan_id"] == "scan-export-abc"
+    assert data["scan_information"]["scan_status"] == "SUCCESS"
+    assert "ap-south-1" in data["scan_information"]["scanned_regions"]
+    assert "security_summary" in data
+    assert "score" in data["security_summary"]
+    assert len(data["canonical_findings"]) >= 1
+    assert data["canonical_findings"][0]["id"] == "f-canonical-export-01"
+    assert data["canonical_findings"][0]["severity"] == "critical"
+    assert data["canonical_findings"][0]["principal"] == "root"
+
+
+# ------------------------------------------------------------------------------
+# 35. High-Resolution Monotonic Timing Recorded for All Phases
+# ------------------------------------------------------------------------------
+def test_35_monotonic_timing_high_resolution_recorded_for_all_phases():
+    """Verify that all 6 phases + total have high-resolution float durations and valid status."""
+    manager = ScanManager()
+    pd = manager.get_status()["phase_durations"]
+    expected_phases = [
+        "discovery",
+        "iam_analysis",
+        "graph_construction",
+        "path_analysis",
+        "cloudtrail_correlation",
+        "finding_synthesis",
+        "total"
+    ]
+    for p in expected_phases:
+        assert p in pd
+        assert isinstance(pd[p]["duration_seconds"], float)
+        assert pd[p]["duration_seconds"] >= 0.0
+        assert pd[p]["status"] in {"COMPLETED", "FAILED", "SKIPPED"}
+

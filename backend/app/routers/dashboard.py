@@ -14,6 +14,8 @@ def get_dashboard_summary():
     current_scan_status = status_info.get("scan_status", "IDLE")
     last_error = status_info.get("last_error")
     scan_id = status_info.get("scan_id")
+    last_completed_at = status_info.get("last_completed_scan_at")
+    last_completed_id = status_info.get("last_completed_scan_id")
     last_successful_at = status_info.get("last_successful_scan_at")
     last_successful_id = status_info.get("last_successful_scan_id")
     service_status = status_info.get("service_status", {})
@@ -39,6 +41,8 @@ def get_dashboard_summary():
             data["scanStatus"] = cached_dashboard.get("scanStatus", "SUCCESS")
 
         data["scanId"] = scan_id or data.get("scanId")
+        data["lastCompletedScanAt"] = last_completed_at or data.get("lastCompletedScanAt")
+        data["lastCompletedScanId"] = last_completed_id or data.get("lastCompletedScanId")
         data["lastSuccessfulScanAt"] = last_successful_at or data.get("lastSuccessfulScanAt")
         data["lastSuccessfulScanId"] = last_successful_id or data.get("lastSuccessfulScanId")
         data["lastError"] = last_error if current_scan_status == "FAILED" else data.get("lastError")
@@ -102,6 +106,8 @@ def get_dashboard_summary():
         "resourceBreakdown": [],
         "scanId": scan_id,
         "scanStatus": effective_status,
+        "lastCompletedScanAt": last_completed_at,
+        "lastCompletedScanId": last_completed_id,
         "lastSuccessfulScanAt": last_successful_at,
         "lastSuccessfulScanId": last_successful_id,
         "lastError": last_error,

@@ -247,6 +247,8 @@ class DashboardData(BaseModel):
     failedRegions: Optional[List[str]] = None
     scanId: Optional[str] = None
     scanStatus: Optional[str] = "NO_SCAN"
+    lastCompletedScanAt: Optional[str] = None
+    lastCompletedScanId: Optional[str] = None
     lastSuccessfulScanAt: Optional[str] = None
     lastSuccessfulScanId: Optional[str] = None
     lastError: Optional[str] = None

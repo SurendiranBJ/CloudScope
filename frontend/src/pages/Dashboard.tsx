@@ -186,9 +186,12 @@ export const Dashboard: React.FC = () => {
               . Cached inventory for failed regions was preserved.
             </span>
           </div>
-          {data?.lastSuccessfulScanAt && (
+          {(data?.lastCompletedScanAt || data?.lastSuccessfulScanAt) && (
             <span className="text-gray-400 text-[11px]">
-              Last completed: {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()}
+              Last completed: {new Date(data.lastCompletedScanAt || data.lastSuccessfulScanAt!).toLocaleTimeString()}
+              {data.lastSuccessfulScanAt && data.lastSuccessfulScanAt !== data.lastCompletedScanAt && (
+                <span className="ml-1 text-gray-500">(full scan: {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()})</span>
+              )}
             </span>
           )}
         </div>
