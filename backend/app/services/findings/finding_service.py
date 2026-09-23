@@ -91,11 +91,15 @@ class FindingService:
         return None
 
     def acknowledge_finding(self, finding_id: str) -> Optional[SecurityFinding]:
-        """Transition finding status to ACKNOWLEDGED."""
+        """Transition finding status to ACKNOWLEDGED.
+        Rejects invalid transitions (e.g. from RESOLVED).
+        """
         findings = self.get_all_findings()
         matched = None
         for f in findings:
             if f.id == finding_id:
+                if f.status == "RESOLVED":
+                    raise ValueError(f"Cannot acknowledge resolved finding '{finding_id}'. Reopen the finding first.")
                 f.status = "ACKNOWLEDGED"
                 matched = f
                 break
@@ -117,12 +121,29 @@ class FindingService:
         return matched
 
     def suppress_finding(self, finding_id: str) -> Optional[SecurityFinding]:
-        """Transition finding status to SUPPRESSED."""
+        """Transition finding status to SUPPRESSED.
+        Rejects invalid transitions (e.g. from RESOLVED).
+        """
         findings = self.get_all_findings()
         matched = None
         for f in findings:
             if f.id == finding_id:
+                if f.status == "RESOLVED":
+                    raise ValueError(f"Cannot suppress resolved finding '{finding_id}'. Reopen the finding first.")
                 f.status = "SUPPRESSED"
+                matched = f
+                break
+        if matched:
+            self._save_findings(findings)
+        return matched
+
+    def reopen_finding(self, finding_id: str) -> Optional[SecurityFinding]:
+        """Transition finding status back to OPEN."""
+        findings = self.get_all_findings()
+        matched = None
+        for f in findings:
+            if f.id == finding_id:
+                f.status = "OPEN"
                 matched = f
                 break
         if matched:

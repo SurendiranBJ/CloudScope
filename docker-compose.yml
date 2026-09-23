@@ -1,7 +1,7 @@
 services:
   neo4j:
     image: neo4j:5.18.0-community
-    container_name: identityscope-neo4j
+    container_name: cloudscope-neo4j
     ports:
       - "7474:7474" # Neo4j HTTP Console
       - "7687:7687" # Neo4j Bolt Driver
@@ -11,25 +11,38 @@ services:
     environment:
       - NEO4J_AUTH=neo4j/password
       - NEO4J_PLUGINS=["apoc"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   redis:
     image: redis:7-alpine
-    container_name: identityscope-redis
+    container_name: cloudscope-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: identityscope-backend
+    container_name: cloudscope-backend
     ports:
       - "8000:8000"
     depends_on:
-      - neo4j
-      - redis
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - ~/.aws:/root/.aws:ro
@@ -42,6 +55,23 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/ready\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cloudscope-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
 
 volumes:
   neo4j_data:

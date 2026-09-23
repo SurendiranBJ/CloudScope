@@ -166,7 +166,7 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     event_time = dt.isoformat() if dt is not None else None
     timestamp_valid = dt is not None
 
-    username = raw_event.get('Username') or raw_event.get('username') or 'Unknown'
+    username = raw_event.get('Username') or raw_event.get('username') or raw_event.get('actor') or 'Unknown'
 
     # Parse nested CloudTrailEvent JSON string if present
     ct_json_str = raw_event.get('CloudTrailEvent', '{}')
@@ -232,6 +232,8 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
             target_name = target_arn.split('/')[-1]
         elif 'roleName' in req_params:
             target_name = req_params['roleName']
+        elif raw_event.get('target') or raw_event.get('target_name'):
+            target_name = raw_event.get('target') or raw_event.get('target_name')
         target_type = "Role"
     elif event_name in ['PutRolePolicy', 'AttachRolePolicy', 'DetachRolePolicy', 'DeleteRolePolicy', 'UpdateAssumeRolePolicy']:
         target_name = req_params.get('roleName', '')
@@ -287,6 +289,9 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
                 elif 'secretsmanager:' in raw_target:
                     target_type = "Secret"
                     target_name = raw_target.split(':secret:')[-1]
+
+    if not target_name and (raw_event.get('target') or raw_event.get('target_name')):
+        target_name = raw_event.get('target') or raw_event.get('target_name')
 
     activity_type = get_activity_type(event_name)
     is_high_risk = activity_type in ["ASSUMED_ROLE", "MODIFIED_POLICY", "CREATED_ACCESS_KEY"]
@@ -924,11 +929,14 @@ def correlate_activity_with_graph(
 
     observed_attack_count = sum(1 for f in correlated_findings if f["type"] == "OBSERVED_ATTACK_ACTIVITY")
     correlated_count = sum(1 for f in correlated_findings if f["is_correlated"])
+    observed_only_count = sum(1 for f in correlated_findings if f["type"] == "OBSERVED_ACTIVITY")
 
     metrics = {
         "static_attack_paths_count": len(active_attack_paths) if active_attack_paths else 0,
         "observed_events_count": len(normalized_events),
         "correlated_findings_count": correlated_count,
+        "correlated_activity_count": correlated_count,
+        "observed_activity_count": observed_only_count,
         "observed_attack_activity_count": observed_attack_count
     }
 

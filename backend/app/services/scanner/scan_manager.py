@@ -212,6 +212,7 @@ class ScanManager:
         self._service_status: Dict[str, str] = {}
         self._failed_regions: List[str] = []
         self._successful_regions: List[str] = []
+        self._phase_durations: Dict[str, float] = {}
 
     @property
     def is_running(self) -> bool:
@@ -233,6 +234,7 @@ class ScanManager:
             "service_status": self._service_status,
             "failed_regions": self._failed_regions,
             "successful_regions": self._successful_regions,
+            "phase_durations": self._phase_durations,
             "scan_mode": mode_state.get("mode"),
             "resolved_regions": mode_state.get("resolved_regions", []),
         }
@@ -313,6 +315,7 @@ class ScanManager:
             collector_failures: Dict[str, str] = {}
 
             # 1. AWS API Data Collection (Concurrently)
+            t_disc_start = time.time()
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {
                     executor.submit(func): name
@@ -424,6 +427,9 @@ class ScanManager:
             self.inventory.findings = collector_results.get("AccessAnalyzer", [])
             self.inventory.alerts = collector_results.get("CloudTrail", [])
 
+            discovery_duration = round(time.time() - t_disc_start, 2)
+            logger.info(f"[PERF] Phase 1 (Discovery) completed in {discovery_duration}s")
+
             logger.info(
                 f"[INFO] Discovered AWS Resources: Users={len(self.inventory.users)}, "
                 f"Roles={len(self.inventory.roles)}, Groups={len(self.inventory.groups)}, "
@@ -434,6 +440,7 @@ class ScanManager:
             )
 
             # 2. Build Policy Document Map (Customer-Managed + Inline + Attached AWS-Managed)
+            t_iam_start = time.time()
             policy_doc_map = {
                 p['name']: p['document']
                 for p in self.inventory.policies
@@ -568,7 +575,11 @@ class ScanManager:
                 ddb['riskScore'] = eval_res['score']
                 ddb['riskAssessment'] = eval_res
 
+            iam_analysis_duration = round(time.time() - t_iam_start, 2)
+            logger.info(f"[PERF] Phase 2 (IAM Analysis & Scoring) completed in {iam_analysis_duration}s")
+
             # 4. STEP 1 OF PIPELINE: Neo4j Configuration Sync (Idempotent MERGE, preserves ActivityEvent)
+            t_graph_start = time.time()
             neo4j_success = False
             try:
                 graph_builder.build_graph_in_neo4j(
@@ -591,7 +602,11 @@ class ScanManager:
                 logger.warning(f"Neo4j loader exception: {loader_err}. Building local NetworkX model.")
                 G = graph_loader.build_local_graph(self.inventory)
 
+            graph_construction_duration = round(time.time() - t_graph_start, 2)
+            logger.info(f"[PERF] Phase 3 (Graph Construction) completed in {graph_construction_duration}s")
+
             # 6. STEP 3 OF PIPELINE: Attack Path Engine Analysis on Graph
+            t_path_start = time.time()
             _policy_doc_map = {
                 p.get('name', ''): p.get('document', '{}')
                 for p in self.inventory.policies if p.get('name')
@@ -605,9 +620,11 @@ class ScanManager:
                 inventory=self.inventory,
                 policy_doc_map=_policy_doc_map,
             )
-            logger.info(f"[INFO] Attack Path Engine: {len(attack_paths)} paths detected")
+            path_analysis_duration = round(time.time() - t_path_start, 2)
+            logger.info(f"[PERF] Phase 4 (Path Analysis) completed in {path_analysis_duration}s: {len(attack_paths)} paths detected")
 
             # 7. STEP 4 OF PIPELINE: CloudTrail Activity Normalization & Correlation with Graph/Paths
+            t_ct_start = time.time()
             correlation_result = cloudtrail_correlator.correlate_activity_with_graph(
                 self.inventory.alerts,
                 self.inventory,
@@ -616,10 +633,14 @@ class ScanManager:
             )
             correlated_findings = correlation_result.get("correlated_findings", [])
             activity_metrics = correlation_result.get("metrics", {})
+            cloudtrail_correlation_duration = round(time.time() - t_ct_start, 2)
 
             nodes_count = G.number_of_nodes()
             edges_count = G.number_of_edges()
-            logger.info(f"[INFO] Graph & Activity Correlation complete: {nodes_count} nodes, {edges_count} edges, {len(correlated_findings)} correlated findings")
+            logger.info(
+                f"[PERF] Phase 5 (CloudTrail Correlation) completed in {cloudtrail_correlation_duration}s: "
+                f"{nodes_count} nodes, {edges_count} edges, {len(correlated_findings)} correlated findings"
+            )
 
             duration = round(time.time() - start_time, 2)
 
@@ -776,6 +797,7 @@ class ScanManager:
                     })
 
             # Critical Risks Findings list & Canonical Security Findings Reconciled
+            t_find_start = time.time()
             canonical_findings = finding_service.reconcile_scan_findings(
                 inventory=self.inventory,
                 attack_paths=attack_paths,
@@ -783,6 +805,29 @@ class ScanManager:
                 successful_regions=reconcilable_regions,
                 failed_regions=self._failed_regions,
                 scan_timestamp=scan_timestamp
+            )
+            finding_synthesis_duration = round(time.time() - t_find_start, 2)
+            logger.info(f"[PERF] Phase 6 (Finding Synthesis & Lifecycle) completed in {finding_synthesis_duration}s: {len(canonical_findings)} total findings")
+
+            phase_durations = {
+                "discovery": discovery_duration,
+                "iam_analysis": iam_analysis_duration,
+                "graph_construction": graph_construction_duration,
+                "path_analysis": path_analysis_duration,
+                "cloudtrail_correlation": cloudtrail_correlation_duration,
+                "finding_synthesis": finding_synthesis_duration,
+                "total": duration
+            }
+            self._phase_durations = phase_durations
+            logger.info(
+                f"[PERF] Scan {scan_id} Pipeline Timing: "
+                f"discovery={discovery_duration}s, "
+                f"iam_analysis={iam_analysis_duration}s, "
+                f"graph_construction={graph_construction_duration}s, "
+                f"path_analysis={path_analysis_duration}s, "
+                f"cloudtrail_correlation={cloudtrail_correlation_duration}s, "
+                f"finding_synthesis={finding_synthesis_duration}s | "
+                f"total={duration}s"
             )
 
             critical_risks = [
@@ -878,8 +923,10 @@ class ScanManager:
                     "scanned_regions": scanned_regions,
                     "scan_mode": resolved_scan_mode,
                     "successful_regions": reconcilable_regions,
-                    "failed_regions": self._failed_regions
+                    "failed_regions": self._failed_regions,
+                    "phase_durations": phase_durations
                 },
+                "phaseDurations": phase_durations,
                 "topRiskyIdentities": top_identities,
                 "resourceBreakdown": res_breakdown,
                 "scanId": scan_id,
@@ -910,7 +957,8 @@ class ScanManager:
                 "failedRegions": self._failed_regions,
                 "durationSeconds": duration,
                 "resourcesFound": resources_count,
-                "risksFound": total_findings_count
+                "risksFound": total_findings_count,
+                "phaseDurations": phase_durations
             }
 
             new_snapshot = {

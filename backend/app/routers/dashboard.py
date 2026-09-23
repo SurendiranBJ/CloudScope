@@ -82,6 +82,12 @@ def get_dashboard_summary():
             {"name": "Medium", "value": 0, "color": "#3B82F6"},
             {"name": "Low", "value": 0, "color": "#10B981"}
         ],
+        "activityMetrics": {
+            "staticAttackPaths": 0,
+            "observedSecurityEvents": 0,
+            "correlatedFindings": 0,
+            "observedAttackActivity": 0
+        },
         "recentAlerts": [],
         "criticalPaths": [],
         "recommendations": [

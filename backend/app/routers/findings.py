@@ -99,7 +99,11 @@ def get_finding_by_id(finding_id: str):
 @router.post("/{finding_id}/acknowledge", response_model=APIResponse[SecurityFinding])
 def acknowledge_finding(finding_id: str):
     """Transition finding status to ACKNOWLEDGED."""
-    updated = finding_service.acknowledge_finding(finding_id)
+    try:
+        updated = finding_service.acknowledge_finding(finding_id)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
@@ -114,7 +118,11 @@ def acknowledge_finding(finding_id: str):
 @router.post("/{finding_id}/resolve", response_model=APIResponse[SecurityFinding])
 def resolve_finding(finding_id: str):
     """Transition finding status to RESOLVED."""
-    updated = finding_service.resolve_finding(finding_id)
+    try:
+        updated = finding_service.resolve_finding(finding_id)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
@@ -129,13 +137,36 @@ def resolve_finding(finding_id: str):
 @router.post("/{finding_id}/suppress", response_model=APIResponse[SecurityFinding])
 def suppress_finding(finding_id: str):
     """Transition finding status to SUPPRESSED."""
-    updated = finding_service.suppress_finding(finding_id)
+    try:
+        updated = finding_service.suppress_finding(finding_id)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
     return APIResponse(
         success=True,
         message=f"Finding '{finding_id}' suppressed",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        data=updated
+    )
+
+
+@router.post("/{finding_id}/reopen", response_model=APIResponse[SecurityFinding])
+def reopen_finding(finding_id: str):
+    """Transition finding status back to OPEN."""
+    try:
+        updated = finding_service.reopen_finding(finding_id)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+
+    return APIResponse(
+        success=True,
+        message=f"Finding '{finding_id}' reopened",
         timestamp=datetime.utcnow().isoformat() + "Z",
         data=updated
     )

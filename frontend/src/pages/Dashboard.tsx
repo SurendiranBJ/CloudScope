@@ -206,6 +206,29 @@ export const Dashboard: React.FC = () => {
         </div>
       )}
 
+      {/* Initial Empty State Banner */}
+      {!data?.lastSuccessfulScanAt && stats.resources === 0 && (
+        <div className="p-6 bg-gradient-to-r from-blue-950/40 via-purple-950/30 to-gray-900/50 border border-blue-500/30 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl">
+          <div className="space-y-2 max-w-2xl">
+            <div className="flex items-center gap-2 text-blue-400">
+              <Cloud className="w-5 h-5" />
+              <span className="text-xs font-bold uppercase tracking-wider">Initial Setup & Discovery</span>
+            </div>
+            <h2 className="text-lg font-bold text-white">No AWS Environment Scan Discovered Yet</h2>
+            <p className="text-xs text-gray-300 leading-relaxed">
+              CloudScope operates in 100% read-only mode to evaluate AST IAM policy documents, build the multi-hop identity graph in Neo4j, compute lateral movement attack paths, and correlate live CloudTrail events.
+            </p>
+          </div>
+          <button
+            onClick={handleScanClick}
+            className="px-5 py-2.5 rounded-xl bg-enterprise-accent text-white font-semibold text-xs hover:bg-blue-600 transition-colors shadow-lg flex items-center gap-2 whitespace-nowrap"
+          >
+            <Cloud className="w-4 h-4" />
+            <span>Scan AWS Environment</span>
+          </button>
+        </div>
+      )}
+
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {kpis.map((kpi, idx) => {
@@ -231,6 +254,89 @@ export const Dashboard: React.FC = () => {
             </motion.div>
           );
         })}
+      </div>
+
+      {/* 4 Security States Correlation Section */}
+      <div className="bg-enterprise-card p-5 rounded-xl border border-enterprise-border shadow-lg space-y-4">
+        <div className="flex justify-between items-center flex-wrap gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-enterprise-accent" />
+              <span>Security State Correlation Model</span>
+            </h3>
+            <p className="text-[11px] text-enterprise-subtext mt-0.5">
+              Strictly distinguishes static potential entitlements from verified CloudTrail execution events.
+            </p>
+          </div>
+          {data?.lastScan?.duration_seconds && (
+            <div className="text-[11px] text-gray-400 font-mono flex items-center gap-3">
+              <span>Scan Duration: <strong className="text-white">{data.lastScan.duration_seconds}s</strong></span>
+              {data?.lastScan?.phase_durations && (
+                <span className="text-gray-500 hidden sm:inline">
+                  (Disc: {data.lastScan.phase_durations.discovery}s, IAM: {data.lastScan.phase_durations.iam_analysis}s, Graph: {data.lastScan.phase_durations.graph_construction}s, Path: {data.lastScan.phase_durations.path_analysis}s)
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* 1. POSSIBLE_CAPABILITY */}
+          <div className="p-4 rounded-xl bg-gray-900/60 border border-gray-800 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wider">Possible Capability</span>
+              <span className="text-[9px] px-2 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-500/30 font-semibold uppercase">Static</span>
+            </div>
+            <div className="text-2xl font-black text-white font-mono">
+              {data?.activityMetrics?.staticAttackPaths ?? stats.paths}
+            </div>
+            <p className="text-[10px] text-gray-400 leading-tight">
+              Static lateral movement paths & privilege escalation vectors permitted by IAM policies.
+            </p>
+          </div>
+
+          {/* 2. OBSERVED_ACTIVITY */}
+          <div className="p-4 rounded-xl bg-gray-900/60 border border-gray-800 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-purple-400 uppercase tracking-wider">Observed Activity</span>
+              <span className="text-[9px] px-2 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-500/30 font-semibold uppercase">Runtime</span>
+            </div>
+            <div className="text-2xl font-black text-white font-mono">
+              {data?.activityMetrics?.observedSecurityEvents ?? (data?.recentAlerts?.length || 0)}
+            </div>
+            <p className="text-[10px] text-gray-400 leading-tight">
+              Raw runtime events recorded in CloudTrail audit logs across monitored regions.
+            </p>
+          </div>
+
+          {/* 3. CORRELATED_ACTIVITY */}
+          <div className="p-4 rounded-xl bg-gray-900/60 border border-gray-800 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">Correlated Activity</span>
+              <span className="text-[9px] px-2 py-0.5 rounded bg-amber-950/60 text-amber-300 border border-amber-500/30 font-semibold uppercase">Static + Runtime</span>
+            </div>
+            <div className="text-2xl font-black text-white font-mono">
+              {data?.activityMetrics?.correlatedFindings ?? 0}
+            </div>
+            <p className="text-[10px] text-gray-400 leading-tight">
+              Events where actor possesses verified static authorization to target resource.
+            </p>
+          </div>
+
+          {/* 4. OBSERVED_ATTACK_ACTIVITY */}
+          <div className="p-4 rounded-xl bg-gray-900/60 border border-gray-800 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-red-400 uppercase tracking-wider">Observed Attack Activity</span>
+              <span className="text-[9px] px-2 py-0.5 rounded bg-red-950/60 text-red-300 border border-red-500/30 font-semibold uppercase">Active Vector</span>
+            </div>
+            <div className="text-2xl font-black text-white font-mono">
+              {data?.activityMetrics?.observedAttackActivity ?? 0}
+            </div>
+            <p className="text-[10px] text-gray-400 leading-tight">
+              Confirmed runtime activity executing an exact transition step along an attack path.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Main Charts & Analytics Grid */}

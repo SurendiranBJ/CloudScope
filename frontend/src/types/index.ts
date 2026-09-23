@@ -262,6 +262,24 @@ export interface DashboardData {
     graph_nodes_count: number;
     graph_edges_count: number;
     scanned_regions?: string[];
+    phase_durations?: {
+      discovery?: number;
+      iam_analysis?: number;
+      graph_construction?: number;
+      path_analysis?: number;
+      cloudtrail_correlation?: number;
+      finding_synthesis?: number;
+      total?: number;
+    };
+  };
+  phaseDurations?: {
+    discovery?: number;
+    iam_analysis?: number;
+    graph_construction?: number;
+    path_analysis?: number;
+    cloudtrail_correlation?: number;
+    finding_synthesis?: number;
+    total?: number;
   };
   topRiskyIdentities?: { name: string; type: 'User' | 'Role'; riskScore: number }[];
   resourceBreakdown?: { type: string; count: number }[];
