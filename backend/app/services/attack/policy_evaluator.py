@@ -1983,3 +1983,34 @@ def evaluate_assume_role_trust_with_evidence(
 
     return result
 
+
+def classify_action_category(action: str) -> str:
+    """Canonical classification of an IAM action into standard privilege tier.
+
+    Used for visualization aggregation and access level categorization.
+    Adheres to standard AWS IAM access level taxonomy (Admin, Write, Read, Execute, Delete, Assume, DB Connect).
+    """
+    act = (action or "").strip()
+    if not act:
+        return "ACCESS"
+    if act in ("*", "*:*") or "administratoraccess" in act.lower():
+        return "FULL ADMIN"
+    act_lower = act.lower()
+    if act_lower.startswith("sts:assumerole") or ":assumerole" in act_lower:
+        return "ASSUME_ROLE"
+    if act_lower.startswith("rds-db:connect"):
+        return "DB_CONNECT"
+    if act_lower.startswith("iam:") or "*admin*" in act_lower:
+        return "ADMIN"
+
+    verb = act_lower.split(":")[-1] if ":" in act_lower else act_lower
+    if any(verb.startswith(p) for p in ("delete", "remove", "drop", "purge", "terminate", "detach")):
+        return "DELETE"
+    if any(verb.startswith(p) for p in ("invoke", "run", "start", "execute", "trigger")):
+        return "EXECUTE"
+    if any(verb.startswith(p) for p in ("put", "create", "update", "modify", "post", "batchwrite", "attach", "set", "write")):
+        return "WRITE"
+    if any(verb.startswith(p) for p in ("get", "list", "describe", "view", "batchget", "read", "lookup", "head", "download")):
+        return "READ"
+    return "ACCESS"
+

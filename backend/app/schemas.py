@@ -191,6 +191,9 @@ class CytoscapeElementData(BaseModel):
     isActivity: Optional[bool] = None
     timestamp: Optional[str] = None
     sourceIp: Optional[str] = None
+    access_category: Optional[str] = None
+    actions: Optional[List[str]] = None
+    policy_names: Optional[List[str]] = None
 
 class CytoscapeElement(BaseModel):
     data: CytoscapeElementData

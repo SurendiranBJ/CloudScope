@@ -12,6 +12,54 @@ export interface CytoscapeElement {
     arn?: string;
     description?: string;
     policyType?: string;
+    edge_type?: string;
+    access_category?: string;
+    action?: string;
+    actions?: string[];
+    policy_name?: string;
+    policy_names?: string[];
+    policy_arn?: string;
+    statement_sid?: string;
+    effect?: string;
+    decision?: string;
+    region?: string;
+    why?: string;
+    evidence?: any;
+    isActivity?: boolean;
+    trustPolicy?: string;
+    policies?: string[];
+    diffStatus?: 'added' | 'removed';
+  };
+  classes?: string;
+}
+
+export interface EffectiveAccessRecord {
+  identity_id: string;
+  identity_name: string;
+  identity_type: 'User' | 'Role' | 'Group';
+  target_resource_id: string;
+  target_resource_name: string;
+  target_resource_type: string;
+  access_path: string[];
+  through_relationship: string[];
+  policy_names: string[];
+  policy_arns: string[];
+  evidence?: {
+    principal?: string;
+    principal_type?: string;
+    policy_arn?: string;
+    policy_name?: string;
+    statement_sid?: string;
+    effect?: string;
+    action?: string | string[];
+    resource?: string | string[];
+    matched_action?: string;
+    matched_resource?: string;
+    condition_status?: string;
+    decision?: string;
+    region?: string;
+    resource_arn?: string;
+    reason?: string;
   };
 }
 
@@ -52,3 +100,9 @@ export const getScanStatus = async (): Promise<ScanStatus> => {
   const res = await apiClient.get<APIResponse<ScanStatus>>('/scan/status');
   return res.data.data;
 };
+
+export const getEffectiveAccess = async (): Promise<EffectiveAccessRecord[]> => {
+  const res = await apiClient.get<APIResponse<EffectiveAccessRecord[]>>('/graph/effective-access');
+  return res.data.data;
+};
+

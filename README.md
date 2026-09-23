@@ -347,6 +347,35 @@ The scan pipeline instruments every execution phase with high-resolution monoton
 
 ---
 
+## 🧭 Identity Graph Analyst Visualization
+
+CloudScope features an interactive, high-readability Identity Graph designed specifically for security analysts to quickly comprehend complex IAM topologies without getting overwhelmed by statement-level hairballs:
+
+- **Deterministic 3-Column Hierarchical Layout**:
+  - **Column 1 (Left)**: IAM Principals & Identities (`IAM Users`, `IAM Groups`).
+  - **Column 2 (Center)**: Execution & Privilege Boundaries (`IAM Roles`).
+  - **Column 3 (Right)**: Reachable Cloud Assets & Workloads (`S3`, `EC2`, `Lambda`, `RDS`, `Secrets Manager`, etc.).
+  - Remains stable across browser reloads and minimizes edge crossings.
+
+- **Aggregated Effective-Access Abstraction**:
+  - Replaces individual statement clutter (`ALLOWS`, `ALLOWS_WRITE`, etc.) with consolidated, typed effective-access edges (e.g., `READ / WRITE`, `FULL ADMIN`, `ASSUME_ROLE`).
+  - Edge labels display canonical access categories computed by the backend evaluation engine.
+
+- **Analyst Workflows & Modes**:
+  - **Identity Overview (Default)**: Top-down view of all identities, roles, and connected resources.
+  - **Resource Detail**: Select a sensitive resource to isolate inbound access paths and identify which identities possess reachability.
+  - **Attack Path**: Filters the graph down to high-risk privilege escalation and lateral movement attack chains.
+
+- **Neighborhood Focus Mode**:
+  - Isolate connected topologies with `1-Hop` or `2-Hop` depth filtering when investigating a selected principal or target asset.
+
+- **Complete Technical Evidence Disclosure**:
+  - Clicking any node displays ARN, type, risk score, and policy attachments.
+  - Clicking any edge reveals comprehensive evidence in the side panel: aggregated access category, searchable list of exact IAM actions, policy origins, statement Sids, evaluation decisions, and correlated CloudTrail activity.
+  - Toggleable policy diamonds allow progressive disclosure of raw statement-level diamond nodes on demand.
+
+---
+
 ## 🧪 Testing & Verification
 
 ### Local Commands to Match CI

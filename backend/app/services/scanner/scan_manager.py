@@ -26,6 +26,7 @@ from app.services.graph import graph_builder, graph_loader
 from app.database import execute_write
 from app.cache import cache
 from app.services.findings.finding_service import finding_service
+from app.services.attack.policy_evaluator import classify_action_category
 
 logger = logging.getLogger("scanner")
 
@@ -895,7 +896,8 @@ class ScanManager:
                             "decision": attr.get('decision', 'ALLOWED'),
                             "region": attr.get('region', ''),
                             "why": attr.get('why', ''),
-                            "evidence": attr.get('evidence', {})
+                            "evidence": attr.get('evidence', {}),
+                            "access_category": attr.get('access_category') or classify_action_category(attr.get('action', ''))
                         }
                     })
 
@@ -1073,6 +1075,17 @@ class ScanManager:
                 "phaseDurations": phase_durations
             }
 
+            try:
+                from app.services.simulation.effective_access import compute_effective_access
+                all_res = (
+                    self.inventory.s3 + self.inventory.secrets + self.inventory.rds +
+                    self.inventory.dynamodb + running_ec2 + self.inventory.lambdas
+                )
+                effective_access_records = compute_effective_access(self.inventory, _policy_doc_map, all_res)
+            except Exception as eff_err:
+                logger.warning(f"Failed to compute effective access snapshot: {eff_err}")
+                effective_access_records = []
+
             new_snapshot = {
                 "v1:users": self.inventory.users,
                 "v1:roles": self.inventory.roles,
@@ -1091,6 +1104,7 @@ class ScanManager:
                 "v1:attack-paths": attack_paths,
                 "v1:global_posture": global_posture,
                 "v1:graph": cytoscape_elements,
+                "v1:effective_access": effective_access_records,
                 "v1:risks": critical_risks,
                 "v1:findings": [f.model_dump() for f in canonical_findings],
                 "v1:dashboard": dashboard_summary,

@@ -124,6 +124,27 @@ def test_graph_endpoint():
     assert len(res_json["data"]) == 1
 
 
+def test_graph_effective_access_endpoint():
+    cache.set("v1:effective_access", [{
+        "identity_id": "aws:user:alice",
+        "identity_name": "alice",
+        "identity_type": "User",
+        "target_resource_id": "my-bucket",
+        "target_resource_name": "my-bucket",
+        "target_resource_type": "S3",
+        "access_path": ["alice", "AdminPolicy", "my-bucket"],
+        "through_relationship": ["HAS_POLICY", "ALLOWS"],
+        "policy_names": ["AdminPolicy"],
+        "policy_arns": []
+    }])
+    response = client.get("/api/v1/graph/effective-access")
+    assert response.status_code == 200
+    res_json = response.json()
+    assert res_json["success"] is True
+    assert len(res_json["data"]) == 1
+    assert res_json["data"][0]["identity_name"] == "alice"
+
+
 def test_attack_paths_endpoint():
     cache.set("v1:attack-paths", [{
         "id": "path-1",

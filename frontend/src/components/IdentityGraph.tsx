@@ -1,28 +1,39 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import type { FC } from 'react';
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { 
   ZoomIn, ZoomOut, Maximize2, List, Download, 
-  Layers, ShieldAlert, Sparkles, ChevronDown
+  ShieldAlert, ChevronDown
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { getGraphElements } from '../api/graph';
+import { getGraphElements, getEffectiveAccess } from '../api/graph';
+import type { CytoscapeElement, EffectiveAccessRecord } from '../api/graph';
 import { formatRegion } from '../utils/regionNames';
+import type { NodeData, EdgeData } from './NodeDetailsPanel';
 
-// Register dagre extension
+// Register dagre layout extension
 cytoscape.use(dagre);
 
+export type AnalystMode = 'identity_overview' | 'resource_detail' | 'attack_path';
+export type FocusDepth = '1-hop' | '2-hop' | 'all';
+
 export interface IdentityGraphProps {
-  onNodeSelect?: (nodeData: any) => void;
+  onNodeSelect?: (nodeData: NodeData | null) => void;
+  onEdgeSelect?: (edgeData: EdgeData | null) => void;
   highlightedNodeIds?: string[];
   searchQuery?: string;
   showLabels?: boolean;
   showEdgeLabels?: boolean;
   highlightRisky?: boolean;
   securityFilter?: 'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only';
-  showAllPolicies?: boolean;
+  showPolicies?: boolean;
+  analystMode?: AnalystMode;
+  selectedResourceId?: string | null;
+  focusDepth?: FocusDepth;
   customElements?: any[];
   graphMode?: 'current' | 'desired' | 'diff';
+  activeAttackPath?: string[];
 }
 
 export const formatShortLabel = (label?: string, id?: string): string => {
@@ -37,62 +48,120 @@ export const formatShortLabel = (label?: string, id?: string): string => {
     const parts = clean.split(':');
     clean = parts[parts.length - 1] || clean;
   }
-  if (clean.length > 20) {
-    return clean.substring(0, 18) + '...';
+  if (clean.length > 22) {
+    return clean.substring(0, 20) + '...';
   }
   return clean;
 };
 
-const SIX_LAYER_DEFINITIONS = [
-  { rank: 0, title: '1. USERS', color: '#3B82F6', description: 'IAM Identities' },
-  { rank: 1, title: '2. GROUPS', color: '#6366F1', description: 'IAM Group Clusters' },
-  { rank: 2, title: '3. POLICIES', color: '#14B8A6', description: 'Contextual Policies & AST Rules' },
-  { rank: 3, title: '4. ROLES', color: '#8B5CF6', description: 'Privileged Roles' },
-  { rank: 4, title: '5. RESOURCES', color: '#10B981', description: 'S3, EC2, Lambda, RDS, DynamoDB' },
-  { rank: 5, title: '6. SENSITIVE ASSETS', color: '#EF4444', description: 'Secrets Manager' }
+// Canonical category determination
+export const getActionCategory = (actions: string[]): string => {
+  if (!actions || actions.length === 0) return 'ACCESS';
+  const acts = actions.map(a => a.toLowerCase().trim());
+  if (acts.some(a => a === '*' || a === '*:*' || a.includes('administratoraccess'))) {
+    return 'FULL ADMIN';
+  }
+  if (acts.some(a => a.startsWith('sts:assumerole') || a.includes(':assumerole'))) {
+    return 'ASSUME_ROLE';
+  }
+  if (acts.some(a => a.startsWith('rds-db:connect'))) {
+    return 'DB_CONNECT';
+  }
+  if (acts.some(a => a.startsWith('iam:') || a.includes('admin'))) {
+    return 'ADMIN';
+  }
+
+  const hasWrite = acts.some(a => {
+    const v = a.split(':').pop() || a;
+    return /^(put|create|update|modify|post|batchwrite|attach|set|write)/.test(v);
+  });
+  const hasDelete = acts.some(a => {
+    const v = a.split(':').pop() || a;
+    return /^(delete|remove|drop|purge|terminate|detach)/.test(v);
+  });
+  const hasRead = acts.some(a => {
+    const v = a.split(':').pop() || a;
+    return /^(get|list|describe|view|batchget|read|lookup|head|download)/.test(v);
+  });
+  const hasExec = acts.some(a => {
+    const v = a.split(':').pop() || a;
+    return /^(invoke|run|start|execute|trigger)/.test(v);
+  });
+
+  if (hasWrite && hasRead) return 'READ / WRITE';
+  if (hasWrite) return 'WRITE';
+  if (hasDelete) return 'DELETE';
+  if (hasExec) return 'EXECUTE';
+  if (hasRead) return 'READ';
+  return 'ACCESS';
+};
+
+const COLUMN_DEFINITIONS = [
+  { col: 1, title: '1. USERS & GROUPS', color: '#3B82F6', desc: 'IAM Principals' },
+  { col: 2, title: '2. ROLES & TRUST', color: '#8B5CF6', desc: 'Privileged Roles' },
+  { col: 3, title: '3. CLOUD RESOURCES', color: '#10B981', desc: 'S3, EC2, Lambda, RDS, Secrets' }
 ];
 
-export const IdentityGraph: React.FC<IdentityGraphProps> = ({
+export const IdentityGraph: FC<IdentityGraphProps> = ({
   onNodeSelect,
+  onEdgeSelect,
   highlightedNodeIds = [],
   searchQuery = '',
   showLabels = true,
-  showEdgeLabels = false,
+  showEdgeLabels = true,
   highlightRisky = false,
   securityFilter = 'all',
-  showAllPolicies = false,
+  showPolicies = false,
+  analystMode = 'identity_overview',
+  selectedResourceId = null,
+  focusDepth = 'all',
   customElements,
-  graphMode = 'current'
+  graphMode = 'current',
+  activeAttackPath = []
 }) => {
+  void graphMode;
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
-  const [isLegendOpen, setIsLegendOpen] = useState(false);
-  const [isLayerGuideOpen, setIsLayerGuideOpen] = useState(true);
-  const [selectedEdgeData, setSelectedEdgeData] = useState<any>(null);
-  const [activeSelectedNodeId, setActiveSelectedNodeId] = useState<string | null>(null);
-  void graphMode;
 
-  const { data } = useQuery({
+  const [isLegendOpen, setIsLegendOpen] = useState(false);
+  const [activeSelectedNodeId, setActiveSelectedNodeId] = useState<string | null>(null);
+  const [activeSelectedEdgeId, setActiveSelectedEdgeId] = useState<string | null>(null);
+  void activeSelectedEdgeId;
+
+  // Fetch raw elements
+  const { data: rawElementsData } = useQuery<CytoscapeElement[]>({
     queryKey: ['graphElements'],
     queryFn: getGraphElements,
-    refetchInterval: 10000,
+    refetchInterval: 12000,
     enabled: !customElements
   });
 
-  const rawElements = customElements || data || [];
+  // Fetch precomputed effective access
+  const { data: effectiveAccessData } = useQuery<EffectiveAccessRecord[]>({
+    queryKey: ['effectiveAccess'],
+    queryFn: getEffectiveAccess,
+    refetchInterval: 15000,
+    staleTime: 10000
+  });
 
-  // Filter state for categories
+  const rawElements = useMemo(() => {
+    return customElements || rawElementsData || [];
+  }, [customElements, rawElementsData]);
+
+  // Filter state for category pills
   const [activeFilters, setActiveFilters] = useState<Record<string, boolean>>({
     User: true,
     Group: true,
-    Policy: true,
     Role: true,
+    Policy: true,
     S3: true,
     EC2: true,
     Lambda: true,
     RDS: true,
     DynamoDB: true,
-    Secrets: true
+    Secrets: true,
+    KMS: true,
+    APIGateway: true
   });
 
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string; visible: boolean }>({
@@ -103,150 +172,281 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
   });
 
   const filterColors: Record<string, string> = {
-    User: '#3B82F6', // Blue
-    Group: '#6366F1', // Indigo
-    Policy: '#14B8A6', // Teal
-    Role: '#8B5CF6', // Purple
-    S3: '#F59E0B', // Amber
-    EC2: '#10B981', // Green
-    Lambda: '#EC4899', // Pink
-    RDS: '#0EA5E9', // Sky Blue
-    DynamoDB: '#A855F7', // Violet
-    Secrets: '#EF4444', // Red
-    Secret: '#EF4444'
+    User: '#3B82F6',
+    Group: '#6366F1',
+    Role: '#8B5CF6',
+    Policy: '#14B8A6',
+    S3: '#F59E0B',
+    EC2: '#10B981',
+    Lambda: '#EC4899',
+    RDS: '#0EA5E9',
+    DynamoDB: '#A855F7',
+    Secrets: '#EF4444',
+    Secret: '#EF4444',
+    KMS: '#EAB308',
+    APIGateway: '#06B6D4'
   };
 
-  // Build Topology mapping
-  const graphTopology = useMemo(() => {
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 1. TOPOLOGY & EFFECTIVE-ACCESS AGGREGATION ENGINE
+  // ─────────────────────────────────────────────────────────────────────────────
+  const transformedGraph = useMemo(() => {
+    const rawNodes = rawElements.filter(e => !e.data.source);
+    const rawEdges = rawElements.filter(e => !!e.data.source);
+
+    // Map nodes by ID
+    const nodeMap = new Map<string, any>();
+    rawNodes.forEach(n => {
+      nodeMap.set(n.data.id, { ...n.data });
+    });
+
+    // Structural Maps
     const groupToUsers: Record<string, string[]> = {};
     const userToGroups: Record<string, string[]> = {};
-    const groupToPolicies: Record<string, string[]> = {};
-    const userToPolicies: Record<string, string[]> = {};
-    const roleToPolicies: Record<string, string[]> = {};
-    const policyToResources: Record<string, string[]> = {};
-    const userToRoles: Record<string, string[]> = {};
-    const roleToResources: Record<string, string[]> = {};
-    const allAttachedPolicies = new Set<string>();
+    const identityToPolicies: Record<string, string[]> = {};
+    const policyToAllows: Record<string, any[]> = {};
 
-    rawElements.forEach((el: any) => {
-      if (el.data.source && el.data.target) {
-        const src = el.data.source;
-        const tgt = el.data.target;
-        const lbl = el.data.label;
+    rawEdges.forEach(e => {
+      const src = e.data.source!;
+      const tgt = e.data.target!;
+      const lbl = e.data.label || e.data.edge_type || '';
 
-        if (lbl === 'MEMBER_OF') {
-          if (!groupToUsers[tgt]) groupToUsers[tgt] = [];
-          if (!groupToUsers[tgt].includes(src)) groupToUsers[tgt].push(src);
+      if (lbl === 'MEMBER_OF') {
+        groupToUsers[tgt] = groupToUsers[tgt] || [];
+        if (!groupToUsers[tgt].includes(src)) groupToUsers[tgt].push(src);
 
-          if (!userToGroups[src]) userToGroups[src] = [];
-          if (!userToGroups[src].includes(tgt)) userToGroups[src].push(tgt);
-        } else if (lbl === 'HAS_POLICY') {
-          allAttachedPolicies.add(tgt);
-          if (src.includes(':group:')) {
-            if (!groupToPolicies[src]) groupToPolicies[src] = [];
-            if (!groupToPolicies[src].includes(tgt)) groupToPolicies[src].push(tgt);
-          } else if (src.includes(':user:')) {
-            if (!userToPolicies[src]) userToPolicies[src] = [];
-            if (!userToPolicies[src].includes(tgt)) userToPolicies[src].push(tgt);
-          } else if (src.includes(':role:')) {
-            if (!roleToPolicies[src]) roleToPolicies[src] = [];
-            if (!roleToPolicies[src].includes(tgt)) roleToPolicies[src].push(tgt);
-          }
-        } else if (lbl === 'ATTACHED_TO' || lbl === 'EXECUTES_WITH') {
-          // Resource execution attachment to Role: EC2 -[ATTACHED_TO]-> Role, Lambda -[EXECUTES_WITH]-> Role
-          if (!roleToResources[tgt]) roleToResources[tgt] = [];
-          if (!roleToResources[tgt].includes(src)) roleToResources[tgt].push(src);
-        } else if (lbl === 'ALLOWS' || lbl === 'CAN_ACCESS') {
-          if (!policyToResources[src]) policyToResources[src] = [];
-          if (!policyToResources[src].includes(tgt)) policyToResources[src].push(tgt);
-        } else if (lbl === 'CAN_ASSUME' || lbl === 'ASSUMED_ROLE') {
-          if (!userToRoles[src]) userToRoles[src] = [];
-          if (!userToRoles[src].includes(tgt)) userToRoles[src].push(tgt);
-        }
+        userToGroups[src] = userToGroups[src] || [];
+        if (!userToGroups[src].includes(tgt)) userToGroups[src].push(tgt);
+      } else if (lbl === 'HAS_POLICY') {
+        identityToPolicies[src] = identityToPolicies[src] || [];
+        if (!identityToPolicies[src].includes(tgt)) identityToPolicies[src].push(tgt);
+      } else if (lbl === 'ALLOWS' || lbl === 'DB_CONNECT' || lbl === 'CAN_ACCESS') {
+        policyToAllows[src] = policyToAllows[src] || [];
+        policyToAllows[src].push(e.data);
       }
     });
 
-    return { 
-      groupToUsers, userToGroups, groupToPolicies, 
-      userToPolicies, roleToPolicies, policyToResources, 
-      userToRoles, roleToResources, allAttachedPolicies 
-    };
-  }, [rawElements]);
+    // Result arrays
+    const finalNodes: any[] = [];
+    const finalEdges: any[] = [];
+    const edgeAggregator = new Map<string, {
+      id: string;
+      source: string;
+      target: string;
+      sourceType: string;
+      targetType: string;
+      sourceArn?: string;
+      targetArn?: string;
+      label: string;
+      edge_type: string;
+      access_category: string;
+      actions: Set<string>;
+      policy_names: Set<string>;
+      statement_sids: Set<string>;
+      decision: string;
+      why: string;
+      isActivity: boolean;
+      region?: string;
+    }>();
 
-  // Contextual Policy Relevance Calculator (Zero Heuristics: based purely on graph relationships)
-  const getRelevantPolicyIds = useCallback((selectedId: string | null, pathNodeIds: string[]): Set<string> => {
-    // 1. Attack path mode: only policies participating in the attack path
-    if (pathNodeIds && pathNodeIds.length > 0) {
-      const pathSet = new Set<string>();
-      pathNodeIds.forEach(id => {
-        if (id.includes(':policy:') || id.includes('policy')) {
-          pathSet.add(id);
-        }
+    // Determine nodes to include
+    rawNodes.forEach(n => {
+      const type = n.data.type || 'Resource';
+      // In default overview, hide Policy nodes unless showPolicies is toggled
+      if (type === 'Policy' && !showPolicies) {
+        return;
+      }
+      finalNodes.push({
+        data: {
+          ...n.data,
+          shortLabel: formatShortLabel(n.data.label, n.data.id)
+        },
+        classes: n.classes || ''
       });
-      return pathSet;
+    });
+
+    // 1. Process Structural / Identity Edges
+    rawEdges.forEach(e => {
+      const src = e.data.source!;
+      const tgt = e.data.target!;
+      const lbl = e.data.label || e.data.edge_type || '';
+
+      if (lbl === 'MEMBER_OF' || lbl === 'CAN_ASSUME' || lbl === 'ATTACHED_TO' || lbl === 'EXECUTES_WITH') {
+        finalEdges.push({
+          data: {
+            ...e.data,
+            id: `str-${src}-${tgt}-${lbl}`,
+            label: lbl,
+            edge_type: lbl,
+            access_category: lbl
+          },
+          classes: e.classes || ''
+        });
+      } else if (showPolicies && (lbl === 'HAS_POLICY' || lbl === 'ALLOWS' || lbl === 'DB_CONNECT')) {
+        // In advanced showPolicies mode, include raw policy edges
+        finalEdges.push({
+          data: {
+            ...e.data,
+            id: e.data.id || `raw-${src}-${tgt}-${lbl}`,
+            label: e.data.action ? formatShortLabel(e.data.action) : lbl,
+            edge_type: lbl,
+            access_category: e.data.access_category || (e.data.action ? getActionCategory([e.data.action]) : lbl)
+          },
+          classes: e.classes || ''
+        });
+      }
+    });
+
+    // 2. Synthesize Aggregated Effective-Access Edges (When showPolicies is false or as overlay)
+    if (!showPolicies) {
+      // First: derive from backend policy chains (Identity -> HAS_POLICY -> Policy -> ALLOWS -> Resource)
+      Object.entries(identityToPolicies).forEach(([identityId, policies]) => {
+        policies.forEach(policyId => {
+          const allowsList = policyToAllows[policyId] || [];
+          allowsList.forEach(allowEdge => {
+            const resourceId = allowEdge.target;
+            if (!nodeMap.has(identityId) || !nodeMap.has(resourceId)) return;
+
+            const aggKey = `${identityId}|${resourceId}`;
+            let entry = edgeAggregator.get(aggKey);
+            if (!entry) {
+              const srcNode = nodeMap.get(identityId);
+              const tgtNode = nodeMap.get(resourceId);
+              entry = {
+                id: `agg-${identityId}-${resourceId}`,
+                source: identityId,
+                target: resourceId,
+                sourceType: srcNode?.type || 'Identity',
+                targetType: tgtNode?.type || 'Resource',
+                sourceArn: srcNode?.arn,
+                targetArn: tgtNode?.arn,
+                label: 'ACCESS',
+                edge_type: 'EFFECTIVE_ACCESS',
+                access_category: 'ACCESS',
+                actions: new Set<string>(),
+                policy_names: new Set<string>(),
+                statement_sids: new Set<string>(),
+                decision: 'ALLOWED',
+                why: '',
+                isActivity: false,
+                region: tgtNode?.region || allowEdge.region
+              };
+              edgeAggregator.set(aggKey, entry);
+            }
+
+            if (allowEdge.action) entry.actions.add(allowEdge.action);
+            if (allowEdge.policy_name) entry.policy_names.add(allowEdge.policy_name);
+            if (allowEdge.statement_sid) entry.statement_sids.add(allowEdge.statement_sid);
+            if (allowEdge.isActivity) entry.isActivity = true;
+          });
+        });
+      });
+
+      // Second: supplement with precomputed effective access records from backend
+      if (effectiveAccessData && effectiveAccessData.length > 0) {
+        effectiveAccessData.forEach(rec => {
+          const identId = rec.identity_id;
+          const resId = `aws:${rec.target_resource_type.toLowerCase()}:${rec.target_resource_name}`;
+          const altResId = `aws:${rec.target_resource_type.toLowerCase()}:${rec.target_resource_id}`;
+          
+          const targetId = nodeMap.has(resId) ? resId : nodeMap.has(altResId) ? altResId : null;
+          if (!targetId || !nodeMap.has(identId)) return;
+
+          const aggKey = `${identId}|${targetId}`;
+          let entry = edgeAggregator.get(aggKey);
+          if (!entry) {
+            const srcNode = nodeMap.get(identId);
+            const tgtNode = nodeMap.get(targetId);
+            entry = {
+              id: `agg-${identId}-${targetId}`,
+              source: identId,
+              target: targetId,
+              sourceType: srcNode?.type || rec.identity_type,
+              targetType: tgtNode?.type || rec.target_resource_type,
+              sourceArn: srcNode?.arn,
+              targetArn: tgtNode?.arn,
+              label: 'ACCESS',
+              edge_type: 'EFFECTIVE_ACCESS',
+              access_category: 'ACCESS',
+              actions: new Set<string>(),
+              policy_names: new Set<string>(),
+              statement_sids: new Set<string>(),
+              decision: rec.evidence?.decision || 'ALLOWED',
+              why: rec.evidence?.reason || '',
+              isActivity: false,
+              region: tgtNode?.region || rec.evidence?.region
+            };
+            edgeAggregator.set(aggKey, entry);
+          }
+
+          if (rec.evidence?.matched_action) entry.actions.add(rec.evidence.matched_action);
+          if (rec.policy_names) rec.policy_names.forEach(p => entry?.policy_names.add(p));
+          if (rec.evidence?.statement_sid) entry.statement_sids.add(rec.evidence.statement_sid);
+        });
+      }
+
+      // Convert aggregated map to final edges
+      edgeAggregator.forEach(agg => {
+        const actionList = Array.from(agg.actions);
+        const policyList = Array.from(agg.policy_names);
+        const sidList = Array.from(agg.statement_sids);
+        const category = getActionCategory(actionList);
+
+        finalEdges.push({
+          data: {
+            id: agg.id,
+            source: agg.source,
+            target: agg.target,
+            sourceType: agg.sourceType,
+            targetType: agg.targetType,
+            sourceArn: agg.sourceArn,
+            targetArn: agg.targetArn,
+            label: category,
+            edge_type: 'EFFECTIVE_ACCESS',
+            access_category: category,
+            actions: actionList,
+            action: actionList[0] || '*',
+            policy_names: policyList,
+            policy_name: policyList[0] || 'IAM Policy',
+            statement_sids: sidList,
+            statement_sid: sidList[0] || 'Statement',
+            decision: agg.decision,
+            region: agg.region,
+            why: `Effective ${category} permissions granting ${actionList.length} action(s) via ${policyList.length} policy source(s).`,
+            isActivity: agg.isActivity
+          },
+          classes: agg.isActivity ? 'edge-activity' : ''
+        });
+      });
     }
 
-    // 2. Focused on specific node
-    if (selectedId) {
-      const relevant = new Set<string>();
-      const type = (selectedId.split(':')[1] || '').toLowerCase();
+    return {
+      nodes: finalNodes,
+      edges: finalEdges,
+      nodeMap,
+      groupToUsers,
+      userToGroups
+    };
+  }, [rawElements, showPolicies, effectiveAccessData]);
 
-      if (type === 'user' || selectedId.includes(':user:')) {
-        // Direct user policies
-        (graphTopology.userToPolicies[selectedId] || []).forEach(p => relevant.add(p));
-        
-        // Inherited group policies
-        const groups = graphTopology.userToGroups[selectedId] || [];
-        groups.forEach(gId => {
-          (graphTopology.groupToPolicies[gId] || []).forEach(p => relevant.add(p));
-        });
-
-        // Reachable role policies
-        const roles = graphTopology.userToRoles[selectedId] || [];
-        roles.forEach(rId => {
-          (graphTopology.roleToPolicies[rId] || []).forEach(p => relevant.add(p));
-        });
-
-        return relevant;
-      }
-
-      if (type === 'group' || selectedId.includes(':group:')) {
-        // Group policies only
-        (graphTopology.groupToPolicies[selectedId] || []).forEach(p => relevant.add(p));
-        return relevant;
-      }
-
-      if (type === 'role' || selectedId.includes(':role:')) {
-        // Role policies only
-        (graphTopology.roleToPolicies[selectedId] || []).forEach(p => relevant.add(p));
-        return relevant;
-      }
-
-      if (type === 'policy' || selectedId.includes(':policy:')) {
-        return new Set([selectedId]);
-      }
-    }
-
-    // 3. Default Overview: Show policies attached to active identities (hide unattached/orphan policies)
-    return graphTopology.allAttachedPolicies;
-  }, [graphTopology]);
-
+  // Compute node counts for filter pills
   const counts = useMemo(() => {
     const tally: Record<string, number> = {
       User: 0,
       Group: 0,
-      Policy: 0,
       Role: 0,
+      Policy: 0,
       S3: 0,
       EC2: 0,
       Lambda: 0,
       RDS: 0,
       DynamoDB: 0,
-      Secrets: 0
+      Secrets: 0,
+      KMS: 0,
+      APIGateway: 0
     };
 
-    const nodeElements = rawElements.filter((e: any) => !e.data.source);
-    nodeElements.forEach((n: any) => {
+    transformedGraph.nodes.forEach((n: any) => {
       const type = n.data.type || 'Resource';
       if (tally[type] !== undefined) {
         tally[type]++;
@@ -256,69 +456,181 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
     });
 
     return tally;
-  }, [rawElements]);
+  }, [transformedGraph.nodes]);
 
-  const handleFilterToggle = (type: string) => {
-    setActiveFilters((prev) => {
-      const next = { ...prev, [type]: !prev[type] };
-      applyFiltersAndPathways(next, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies);
-      return next;
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 2. DETERMINISTIC HIERARCHICAL 3-COLUMN LAYOUT
+  // ─────────────────────────────────────────────────────────────────────────────
+  const computeDeterministicLayout = useCallback((cy: cytoscape.Core) => {
+    const visibleNodes = cy.nodes().filter(n => n.style('display') !== 'none');
+    const positions: Record<string, { x: number; y: number }> = {};
+
+    // Group nodes by column category
+    const col1Nodes: cytoscape.NodeSingular[] = []; // Users & Groups
+    const col2Nodes: cytoscape.NodeSingular[] = []; // Roles
+    const col25Nodes: cytoscape.NodeSingular[] = []; // Policies (if enabled)
+    const col3Nodes: cytoscape.NodeSingular[] = []; // Resources
+
+    visibleNodes.forEach(node => {
+      const type = (node.data('type') || '').toLowerCase();
+      if (type === 'user' || type === 'group') {
+        col1Nodes.push(node);
+      } else if (type === 'role') {
+        col2Nodes.push(node);
+      } else if (type === 'policy') {
+        col25Nodes.push(node);
+      } else {
+        col3Nodes.push(node);
+      }
     });
-  };
 
-  // Helper function to update node visibility, policy relevance, and contextual isolation
-  const applyFiltersAndPathways = useCallback((
-    filters: typeof activeFilters,
-    pathNodeIds: string[],
-    search: string,
-    secFilter: typeof securityFilter,
-    selectedId: string | null,
-    displayAllPolicies: boolean
-  ) => {
+    // Deterministic sorting function (type then label/id)
+    const nodeSorter = (a: cytoscape.NodeSingular, b: cytoscape.NodeSingular) => {
+      const typeA = (a.data('type') || '').toLowerCase();
+      const typeB = (b.data('type') || '').toLowerCase();
+      if (typeA !== typeB) return typeA.localeCompare(typeB);
+      const nameA = (a.data('label') || a.id()).toLowerCase();
+      const nameB = (b.data('label') || b.id()).toLowerCase();
+      return nameA.localeCompare(nameB);
+    };
+
+    col1Nodes.sort(nodeSorter);
+    col2Nodes.sort(nodeSorter);
+    col25Nodes.sort(nodeSorter);
+    col3Nodes.sort(nodeSorter);
+
+    // Coordinate Anchors
+    const X_COL1 = 120;
+    const X_COL2 = 500;
+    const X_COL25 = 750;
+    const X_COL3 = showPolicies ? 1020 : 880;
+
+    const Y_START = 80;
+    const Y_GAP = 75;
+
+    // Position Column 1: Users & Groups
+    // Clustered: Groups first with member users placed adjacent
+    const placedCol1 = new Set<string>();
+    let col1Y = Y_START;
+
+    col1Nodes.forEach(n => {
+      if (placedCol1.has(n.id())) return;
+      positions[n.id()] = { x: X_COL1, y: col1Y };
+      placedCol1.add(n.id());
+      col1Y += Y_GAP;
+    });
+
+    // Position Column 2: Roles
+    let col2Y = Y_START + 20;
+    col2Nodes.forEach(n => {
+      positions[n.id()] = { x: X_COL2, y: col2Y };
+      col2Y += Y_GAP + 10;
+    });
+
+    // Position Column 2.5: Policies (if enabled)
+    if (showPolicies && col25Nodes.length > 0) {
+      let col25Y = Y_START + 10;
+      col25Nodes.forEach(n => {
+        positions[n.id()] = { x: X_COL25, y: col25Y };
+        col25Y += Y_GAP;
+      });
+    }
+
+    // Position Column 3: Resources
+    let col3Y = Y_START;
+    col3Nodes.forEach(n => {
+      positions[n.id()] = { x: X_COL3, y: col3Y };
+      col3Y += Y_GAP;
+    });
+
+    return {
+      name: 'preset',
+      positions,
+      fit: true,
+      padding: 60,
+      animate: true,
+      animationDuration: 300
+    };
+  }, [showPolicies]);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 3. VISIBILITY, FOCUS & PATHWAY APPLICATION
+  // ─────────────────────────────────────────────────────────────────────────────
+  const applyGraphFilters = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return;
 
     cy.batch(() => {
-      const q = search.trim().toLowerCase();
-      let hasSearchMatch = false;
+      const q = searchQuery.trim().toLowerCase();
+      const pathIds = activeAttackPath.length > 0 ? activeAttackPath : highlightedNodeIds;
 
-      // Calculate contextual relevant policies
-      const relevantPolicies = getRelevantPolicyIds(selectedId, pathNodeIds);
+      // Determine focus neighborhood if node selected
+      let allowedFocusNodeIds: Set<string> | null = null;
 
-      cy.nodes().forEach((node) => {
+      if (analystMode === 'resource_detail' && selectedResourceId) {
+        // Mode B: Resource Detail mode -> only show selected resource and accessing principals
+        allowedFocusNodeIds = new Set<string>([selectedResourceId]);
+        const resNode = cy.getElementById(selectedResourceId);
+        if (resNode.length > 0) {
+          resNode.incomers().nodes().forEach(n => {
+            allowedFocusNodeIds?.add(n.id());
+          });
+          // 2nd hop: Users that assume these roles
+          resNode.incomers().nodes().incomers().nodes().forEach(n => {
+            allowedFocusNodeIds?.add(n.id());
+          });
+        }
+      } else if (analystMode === 'attack_path') {
+        // Mode C: Attack path isolation
+        allowedFocusNodeIds = new Set<string>(pathIds);
+      } else if (activeSelectedNodeId && focusDepth !== 'all') {
+        // Focus depth mode (1-hop or 2-hop)
+        const target = cy.getElementById(activeSelectedNodeId);
+        if (target.length > 0) {
+          allowedFocusNodeIds = new Set<string>([activeSelectedNodeId]);
+          const hop1 = target.neighborhood().nodes();
+          hop1.forEach(n => {
+            allowedFocusNodeIds?.add(n.id());
+          });
+
+          if (focusDepth === '2-hop') {
+            hop1.neighborhood().nodes().forEach(n => {
+              allowedFocusNodeIds?.add(n.id());
+            });
+          }
+        }
+      }
+
+      cy.nodes().forEach(node => {
         const type = node.data('type') || 'Resource';
         const label = (node.data('label') || '').toLowerCase();
         const arn = (node.data('arn') || '').toLowerCase();
         const id = node.id().toLowerCase();
         const riskScore = node.data('riskScore') || 0;
 
-        // 1. Category filter
+        // Category filter
         const categoryKey = type === 'Secret' ? 'Secrets' : type;
-        const passesCategory = filters[categoryKey] !== false;
+        const passesCategory = activeFilters[categoryKey] !== false;
 
-        // 2. Search query matching name, ARN, or type
-        const passesSearch = q === '' || label.includes(q) || arn.includes(q) || id.includes(q) || type.toLowerCase().includes(q);
+        // Search match
+        const passesSearch = q === '' || label.includes(q) || arn.includes(q) || id.includes(q);
 
-        // 3. Security severity filter
-        let passesSecurity = true;
-        if (secFilter === 'critical') passesSecurity = riskScore >= 80;
-        else if (secFilter === 'high') passesSecurity = riskScore >= 60;
-        else if (secFilter === 'medium') passesSecurity = riskScore >= 40 && riskScore < 60;
-        else if (secFilter === 'low') passesSecurity = riskScore < 40;
-        else if (secFilter === 'attack_paths_only') {
-          passesSecurity = pathNodeIds.includes(node.id());
+        // Security Severity
+        let passesSeverity = true;
+        if (securityFilter === 'critical') passesSeverity = riskScore >= 80;
+        else if (securityFilter === 'high') passesSeverity = riskScore >= 60;
+        else if (securityFilter === 'medium') passesSeverity = riskScore >= 40 && riskScore < 60;
+        else if (securityFilter === 'low') passesSeverity = riskScore < 40;
+        else if (securityFilter === 'attack_paths_only') {
+          passesSeverity = pathIds.includes(node.id());
         }
 
-        // 4. Policy Relevance Filter: Hide unattached or contextually irrelevant policies unless displayAllPolicies is enabled
-        let passesPolicyRelevance = true;
-        if (type === 'Policy' && !displayAllPolicies) {
-          passesPolicyRelevance = relevantPolicies.has(node.id());
-        }
+        // Focus / Neighborhood filter
+        const passesFocus = allowedFocusNodeIds === null || allowedFocusNodeIds.has(node.id());
 
-        if (passesCategory && passesSearch && passesSecurity && passesPolicyRelevance) {
+        if (passesCategory && passesSearch && passesSeverity && passesFocus) {
           node.style('display', 'element');
           if (q !== '' && passesSearch) {
-            hasSearchMatch = true;
             node.addClass('search-match');
           } else {
             node.removeClass('search-match');
@@ -329,252 +641,48 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
         }
       });
 
-      // 5. INTERACTIVE TRACE & HIGHLIGHT MODES
-      if (pathNodeIds && pathNodeIds.length > 0) {
-        // ATTACK PATH ISOLATION
+      // Highlight attack path or selected neighborhood
+      if (analystMode === 'attack_path' && pathIds.length > 0) {
         cy.elements().addClass('dimmed').removeClass('highlighted');
-
-        pathNodeIds.forEach((id) => {
-          const node = cy.getElementById(id);
-          if (node.length > 0) {
-            node.removeClass('dimmed').addClass('highlighted');
-          }
+        pathIds.forEach(id => {
+          cy.getElementById(id).removeClass('dimmed').addClass('highlighted');
         });
 
-        for (let i = 0; i < pathNodeIds.length - 1; i++) {
-          const source = pathNodeIds[i];
-          const target = pathNodeIds[i + 1];
-          cy.edges().forEach((edge) => {
-            if (
-              (edge.source().id() === source && edge.target().id() === target) ||
-              (edge.source().id() === target && edge.target().id() === source)
-            ) {
-              edge.removeClass('dimmed').addClass('highlighted');
+        for (let i = 0; i < pathIds.length - 1; i++) {
+          const s = pathIds[i];
+          const t = pathIds[i + 1];
+          cy.edges().forEach(e => {
+            if ((e.source().id() === s && e.target().id() === t) || (e.source().id() === t && e.target().id() === s)) {
+              e.removeClass('dimmed').addClass('highlighted');
             }
           });
         }
-      } else if (selectedId) {
-        // CONTEXTUAL TRACE (User, Group, Role, Policy)
-        const targetNode = cy.getElementById(selectedId);
-        if (targetNode.length > 0) {
+      } else if (activeSelectedNodeId) {
+        const target = cy.getElementById(activeSelectedNodeId);
+        if (target.length > 0) {
           cy.elements().addClass('dimmed').removeClass('highlighted');
-          targetNode.removeClass('dimmed').addClass('highlighted');
-
-          const type = (targetNode.data('type') || '').toLowerCase();
-          if (type === 'group') {
-            const memberIds = graphTopology.groupToUsers[selectedId] || [];
-            memberIds.forEach(mId => {
-              const mNode = cy.getElementById(mId);
-              mNode.removeClass('dimmed').addClass('highlighted');
-            });
-            targetNode.connectedEdges().removeClass('dimmed').addClass('highlighted');
-            const downstream = targetNode.outgoers();
-            downstream.removeClass('dimmed').addClass('highlighted');
-            downstream.outgoers().removeClass('dimmed').addClass('highlighted');
-            downstream.outgoers().outgoers().removeClass('dimmed').addClass('highlighted');
-          } else if (type === 'user') {
-            const groupIds = graphTopology.userToGroups[selectedId] || [];
-            groupIds.forEach(gId => {
-              const gNode = cy.getElementById(gId);
-              gNode.removeClass('dimmed').addClass('highlighted');
-              gNode.outgoers().removeClass('dimmed').addClass('highlighted');
-              gNode.outgoers().outgoers().removeClass('dimmed').addClass('highlighted');
-            });
-            targetNode.connectedEdges().removeClass('dimmed').addClass('highlighted');
-            const downstream = targetNode.outgoers();
-            downstream.removeClass('dimmed').addClass('highlighted');
-            downstream.outgoers().removeClass('dimmed').addClass('highlighted');
-          } else if (type === 'role') {
-            targetNode.incomers().removeClass('dimmed').addClass('highlighted');
-            targetNode.outgoers().removeClass('dimmed').addClass('highlighted');
-            targetNode.connectedEdges().removeClass('dimmed').addClass('highlighted');
-          } else {
-            targetNode.neighborhood().removeClass('dimmed');
-            targetNode.connectedEdges().removeClass('dimmed').addClass('highlighted');
-          }
+          target.removeClass('dimmed').addClass('highlighted');
+          target.neighborhood().removeClass('dimmed');
+          target.connectedEdges().removeClass('dimmed').addClass('highlighted');
         }
       } else {
-        // OVERVIEW: Clean state with subtle edges
         cy.elements().removeClass('dimmed').removeClass('highlighted');
       }
 
-      if (q !== '' && hasSearchMatch) {
-        const matches = cy.nodes('.search-match');
-        if (matches.length > 0) {
-          cy.animate({
-            center: { eles: matches },
-            zoom: Math.min(1.35, cy.zoom() * 1.1),
-            duration: 350
-          });
-        }
+      if (highlightRisky) {
+        cy.edges().forEach(e => {
+          const cat = e.data('access_category') || '';
+          if (cat === 'FULL ADMIN' || cat === 'ADMIN' || e.data('isRisky')) {
+            e.addClass('highlighted');
+          }
+        });
       }
     });
-  }, [graphTopology, getRelevantPolicyIds]);
+  }, [searchQuery, activeAttackPath, highlightedNodeIds, analystMode, selectedResourceId, activeSelectedNodeId, focusDepth, activeFilters, securityFilter]);
 
-  // Compute Clean 6-Layer Security Architecture Layout Coordinates
-  const getLayoutOptions = useCallback((cyInstance?: cytoscape.Core) => {
-    const activeCy = cyInstance || cyRef.current;
-    if (!activeCy) {
-      return { name: 'dagre', rankDir: 'TB', nodeSep: 70, rankSep: 140, fit: true };
-    }
-
-    const visibleNodes = activeCy.nodes().filter(n => n.style('display') !== 'none');
-    const positions: Record<string, { x: number; y: number }> = {};
-
-    const users = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'user');
-    const groups = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'group');
-    const policies = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'policy');
-    const roles = visibleNodes.filter(n => (n.data('type') || '').toLowerCase() === 'role');
-    const resources = visibleNodes.filter(n => {
-      const t = (n.data('type') || '').toLowerCase();
-      return t === 's3' || t === 'ec2' || t === 'lambda' || t === 'rds' || t === 'dynamodb' || t === 'resource';
-    });
-    const secrets = visibleNodes.filter(n => {
-      const t = (n.data('type') || '').toLowerCase();
-      return t === 'secrets' || t === 'secret';
-    });
-
-    // 1. Group & Member User Spatial Clustering (Zero crossing lines)
-    const placedUserIds = new Set<string>();
-    const groupClusterWidths: number[] = [];
-    const groupCenters: Record<string, number> = {};
-
-    groups.forEach((groupNode) => {
-      const memberIds = graphTopology.groupToUsers[groupNode.id()] || [];
-      const visibleMembers = users.filter(u => memberIds.includes(u.id()));
-      visibleMembers.forEach(u => {
-        placedUserIds.add(u.id());
-      });
-
-      const memberCount = Math.max(1, visibleMembers.length);
-      const clusterWidth = Math.max(160, memberCount * 90);
-      groupClusterWidths.push(clusterWidth);
-    });
-
-    const totalClusterSpan = groupClusterWidths.reduce((a, b) => a + b, 0) + Math.max(0, groups.length - 1) * 140;
-    let currentX = -totalClusterSpan / 2;
-
-    groups.forEach((groupNode, gIdx) => {
-      const width = groupClusterWidths[gIdx];
-      const groupCenterX = currentX + width / 2;
-      groupCenters[groupNode.id()] = groupCenterX;
-
-      // LAYER 2: GROUP (Y = 240px)
-      positions[groupNode.id()] = {
-        x: groupCenterX,
-        y: 240
-      };
-
-      // LAYER 1: USERS BELONGING TO THIS GROUP (Y = 100px - directly above group)
-      const memberIds = graphTopology.groupToUsers[groupNode.id()] || [];
-      const visibleMembers = users.filter(u => memberIds.includes(u.id()));
-      const mCount = visibleMembers.length;
-      const mSpacing = 85;
-      const mStartX = groupCenterX - ((mCount - 1) * mSpacing) / 2;
-
-      visibleMembers.forEach((userNode, uIdx) => {
-        positions[userNode.id()] = {
-          x: mCount === 1 ? groupCenterX : mStartX + uIdx * mSpacing,
-          y: 100
-        };
-      });
-
-      currentX += width + 140; // Cluster separation gap
-    });
-
-    // Unassigned Users (Independent column)
-    const unassignedUsers = users.filter(u => !placedUserIds.has(u.id()));
-    if (unassignedUsers.length > 0) {
-      const uStartX = currentX + 60;
-      const uSpacing = 85;
-      unassignedUsers.forEach((userNode, uIdx) => {
-        positions[userNode.id()] = {
-          x: uStartX + uIdx * uSpacing,
-          y: 100
-        };
-      });
-    }
-
-    // 2. LAYER 3: POLICIES (Y = 380px)
-    const placedPolicies = new Set<string>();
-    policies.forEach((pNode) => {
-      let assignedX = 0;
-      let foundGroup = false;
-
-      for (const [gId, gPolicies] of Object.entries(graphTopology.groupToPolicies)) {
-        if (gPolicies.includes(pNode.id()) && groupCenters[gId] !== undefined) {
-          assignedX = groupCenters[gId];
-          foundGroup = true;
-          break;
-        }
-      }
-
-      if (foundGroup) {
-        positions[pNode.id()] = { x: assignedX, y: 380 };
-        placedPolicies.add(pNode.id());
-      }
-    });
-
-    const remainingPolicies = policies.filter(p => !placedPolicies.has(p.id()));
-    const rCount = remainingPolicies.length;
-    const pSpacing = 110;
-    const pStartX = -((rCount - 1) * pSpacing) / 2;
-    remainingPolicies.forEach((pNode, idx) => {
-      positions[pNode.id()] = {
-        x: pStartX + idx * pSpacing,
-        y: 380
-      };
-    });
-
-    // 3. LAYER 4: ROLES (Y = 520px)
-    const roleCount = roles.length;
-    const roleSpacing = 120;
-    const roleStartX = -((roleCount - 1) * roleSpacing) / 2;
-    roles.forEach((rNode, i) => {
-      positions[rNode.id()] = {
-        x: roleStartX + i * roleSpacing,
-        y: 520
-      };
-    });
-
-    // 4. LAYER 5: RESOURCES (Y = 660px)
-    const resCount = resources.length;
-    const resSpacing = 105;
-    const resStartX = -((resCount - 1) * resSpacing) / 2;
-    resources.forEach((resNode, i) => {
-      positions[resNode.id()] = {
-        x: resStartX + i * resSpacing,
-        y: 660
-      };
-    });
-
-    // 5. LAYER 6: SENSITIVE ASSETS / SECRETS (Y = 800px)
-    const secCount = secrets.length;
-    const secSpacing = 120;
-    const secStartX = -((secCount - 1) * secSpacing) / 2;
-    secrets.forEach((secNode, i) => {
-      positions[secNode.id()] = {
-        x: secStartX + i * secSpacing,
-        y: 800
-      };
-    });
-
-    return {
-      name: 'preset',
-      positions,
-      fit: true,
-      padding: 60,
-      animate: true,
-      animationDuration: 350
-    };
-  }, [graphTopology]);
-
-  // Update visibility & pathway highlights on state changes
-  useEffect(() => {
-    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies);
-  }, [highlightedNodeIds, searchQuery, activeFilters, securityFilter, activeSelectedNodeId, showAllPolicies, applyFiltersAndPathways]);
-
-  // Initializing Cytoscape Graph
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 4. CYTOSCAPE INITIALIZATION & EVENT HANDLERS
+  // ─────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -582,67 +690,78 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       cyRef.current.destroy();
     }
 
+    const allElements = [
+      ...transformedGraph.nodes,
+      ...transformedGraph.edges
+    ];
+
     const cy = cytoscape({
       container: containerRef.current,
-      elements: JSON.parse(JSON.stringify(rawElements)),
-      minZoom: 0.1,
-      maxZoom: 3,
-      wheelSensitivity: 0.2,
+      elements: JSON.parse(JSON.stringify(allElements)),
+      minZoom: 0.15,
+      maxZoom: 2.8,
+      wheelSensitivity: 0.22,
       style: [
-        // Base Node Style with Short Readable Label
+        // Base Node Style with Human-Readable Short Label
         {
           selector: 'node',
           style: {
             'content': ((ele: cytoscape.NodeSingular) => {
               if (!showLabels) return '';
-              return formatShortLabel(ele.data('label') || ele.id());
+              return ele.data('shortLabel') || formatShortLabel(ele.data('label'), ele.id());
             }) as any,
-            'font-family': 'Inter, sans-serif',
+            'font-family': 'Inter, system-ui, sans-serif',
             'font-size': '11px',
             'font-weight': 'bold',
-            'color': '#F3F4F6',
+            'color': '#F8FAFC',
             'text-valign': 'bottom',
-            'text-margin-y': 8,
+            'text-margin-y': 7,
             'background-color': '#1E293B',
             'border-width': '2px',
-            'border-color': '#4B5563',
-            'width': '42px',
-            'height': '42px',
-            'transition-property': 'background-color, border-color, border-width, opacity, width, height',
-            'transition-duration': 0.25,
+            'border-color': '#475569',
+            'width': '44px',
+            'height': '44px',
             'text-background-color': '#0F172A',
-            'text-background-opacity': 0.85,
+            'text-background-opacity': 0.88,
             'text-background-padding': '3px',
             'text-background-shape': 'roundrectangle',
             'text-border-width': 1,
             'text-border-color': '#334155',
-            'text-border-opacity': 0.6
+            'transition-property': 'background-color, border-color, border-width, opacity, width, height',
+            'transition-duration': 0.2
           }
         },
-        // Layer 1: Users (Blue Circle)
+        // Types
         {
           selector: 'node[type="User"]',
           style: {
             'background-color': filterColors.User,
             'border-color': '#60A5FA',
             'shape': 'ellipse',
-            'width': '40px',
-            'height': '40px'
+            'width': '42px',
+            'height': '42px'
           }
         },
-        // Layer 2: Groups (Indigo Rounded Container)
         {
           selector: 'node[type="Group"]',
           style: {
             'background-color': filterColors.Group,
             'border-color': '#818CF8',
-            'border-width': '3px',
             'shape': 'round-rectangle',
             'width': '52px',
             'height': '44px'
           }
         },
-        // Layer 3: Policies (Teal Diamond)
+        {
+          selector: 'node[type="Role"]',
+          style: {
+            'background-color': filterColors.Role,
+            'border-color': '#C084FC',
+            'shape': 'hexagon',
+            'width': '46px',
+            'height': '46px'
+          }
+        },
         {
           selector: 'node[type="Policy"]',
           style: {
@@ -653,24 +772,14 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'height': '40px'
           }
         },
-        // Layer 4: Roles (Purple Hexagon)
-        {
-          selector: 'node[type="Role"]',
-          style: {
-            'background-color': filterColors.Role,
-            'border-color': '#A78BFA',
-            'shape': 'hexagon',
-            'width': '46px',
-            'height': '46px'
-          }
-        },
-        // Layer 5: Resources (S3, EC2, Lambda, RDS, DynamoDB)
         {
           selector: 'node[type="S3"]',
           style: {
             'background-color': filterColors.S3,
             'border-color': '#FBBF24',
-            'shape': 'barrel'
+            'shape': 'barrel',
+            'width': '46px',
+            'height': '44px'
           }
         },
         {
@@ -678,7 +787,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           style: {
             'background-color': filterColors.EC2,
             'border-color': '#34D399',
-            'shape': 'round-rectangle'
+            'shape': 'round-rectangle',
+            'width': '46px',
+            'height': '44px'
           }
         },
         {
@@ -686,7 +797,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           style: {
             'background-color': filterColors.Lambda,
             'border-color': '#F472B6',
-            'shape': 'ellipse'
+            'shape': 'ellipse',
+            'width': '44px',
+            'height': '44px'
           }
         },
         {
@@ -694,7 +807,9 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           style: {
             'background-color': filterColors.RDS,
             'border-color': '#38BDF8',
-            'shape': 'database' as cytoscape.Css.NodeShape
+            'shape': 'database' as any,
+            'width': '44px',
+            'height': '48px'
           }
         },
         {
@@ -702,72 +817,105 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           style: {
             'background-color': filterColors.DynamoDB,
             'border-color': '#C084FC',
-            'shape': 'database' as cytoscape.Css.NodeShape
+            'shape': 'database' as any,
+            'width': '44px',
+            'height': '48px'
           }
         },
-        // Layer 6: Sensitive Assets (Secrets Red Ellipse)
         {
           selector: 'node[type="Secrets"], node[type="Secret"]',
           style: {
             'background-color': filterColors.Secrets,
             'border-color': '#F87171',
-            'shape': 'ellipse'
+            'shape': 'ellipse',
+            'width': '44px',
+            'height': '44px'
           }
         },
-        // Base Clean Edge Styling (Low default density to prevent spider web)
+        // Base Aggregated Edge Styling (Clean Left-to-Right arrows)
         {
           selector: 'edge',
           style: {
-            'label': ((edge: cytoscape.EdgeSingular) => {
-              if (showEdgeLabels) return edge.data('label') || '';
-              if (edge.hasClass('highlighted') || edge.hasClass('selected')) return edge.data('label') || '';
-              return '';
+            'label': ((e: cytoscape.EdgeSingular) => {
+              if (!showEdgeLabels && !e.hasClass('highlighted') && !e.hasClass('selected')) return '';
+              return e.data('access_category') || e.data('label') || '';
             }) as any,
             'font-family': 'Inter, monospace',
             'font-size': '9px',
             'font-weight': 'bold',
             'color': '#CBD5E1',
             'text-background-color': '#0F172A',
-            'text-background-opacity': 0.85,
+            'text-background-opacity': 0.88,
             'text-background-padding': '2px',
             'text-background-shape': 'roundrectangle',
-            'width': 1.5,
+            'text-rotation': 'autorotate',
+            'text-margin-y': -7,
+            'width': 2,
             'line-color': '#475569',
-            'line-style': 'solid',
             'target-arrow-color': '#475569',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
-            'text-rotation': 'autorotate',
-            'text-margin-y': -8,
-            'opacity': 0.35,
+            'opacity': 0.6,
             'transition-property': 'line-color, target-arrow-color, width, opacity',
-            'transition-duration': 0.25
+            'transition-duration': 0.2
           }
         },
-        // Direct Vertical MEMBER_OF Connectors (User -> Group)
+        // Effective Access Aggregated Edges
+        {
+          selector: 'edge[edge_type = "EFFECTIVE_ACCESS"]',
+          style: {
+            'line-color': '#0EA5E9',
+            'target-arrow-color': '#0EA5E9',
+            'width': 2.2,
+            'opacity': 0.75
+          }
+        },
+        {
+          selector: 'edge[access_category = "FULL ADMIN"], edge[access_category = "ADMIN"]',
+          style: {
+            'line-color': '#EF4444',
+            'target-arrow-color': '#EF4444',
+            'width': 3,
+            'opacity': 0.85
+          }
+        },
+        {
+          selector: 'edge[access_category = "READ / WRITE"]',
+          style: {
+            'line-color': '#10B981',
+            'target-arrow-color': '#10B981',
+            'width': 2.5,
+            'opacity': 0.8
+          }
+        },
+        {
+          selector: 'edge[access_category = "WRITE"], edge[access_category = "DELETE"]',
+          style: {
+            'line-color': '#F59E0B',
+            'target-arrow-color': '#F59E0B',
+            'width': 2.2,
+            'opacity': 0.8
+          }
+        },
+        {
+          selector: 'edge[access_category = "READ"]',
+          style: {
+            'line-color': '#38BDF8',
+            'target-arrow-color': '#38BDF8',
+            'width': 2,
+            'opacity': 0.75
+          }
+        },
+        // Hierarchy / Structural Edges
         {
           selector: 'edge[label = "MEMBER_OF"]',
           style: {
             'line-color': '#818CF8',
             'target-arrow-color': '#818CF8',
-            'line-style': 'solid',
-            'width': 2,
-            'curve-style': 'straight',
-            'opacity': 0.85
-          }
-        },
-        // Policy attachment edges (User/Group/Role -> Policy)
-        {
-          selector: 'edge[label = "HAS_POLICY"]',
-          style: {
-            'line-color': '#14B8A6',
-            'target-arrow-color': '#14B8A6',
-            'line-style': 'solid',
             'width': 2,
             'opacity': 0.85
           }
         },
-        // Role assumption edges (User/Role -> Role)
         {
           selector: 'edge[label = "CAN_ASSUME"]',
           style: {
@@ -778,119 +926,33 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
             'opacity': 0.85
           }
         },
-        // Policy allows resource access (Policy -> S3/EC2/Lambda/Secrets/RDS/DynamoDB)
         {
-          selector: 'edge[label = "ALLOWS"]',
+          selector: 'edge[label = "ATTACHED_TO"], edge[label = "EXECUTES_WITH"]',
           style: {
-            'line-color': '#10B981',
-            'target-arrow-color': '#10B981',
-            'line-style': 'solid',
-            'width': 2.5,
-            'opacity': 0.9
-          }
-        },
-        // EC2 instance profile attachment (EC2 -> Role)
-        {
-          selector: 'edge[label = "ATTACHED_TO"]',
-          style: {
-            'line-color': '#06B6D4',
-            'target-arrow-color': '#06B6D4',
+            'line-color': '#2DD4BF',
+            'target-arrow-color': '#2DD4BF',
             'line-style': 'dashed',
             'width': 2,
             'opacity': 0.85
           }
         },
-        // Lambda execution role (Lambda -> Role)
+        // Selected / Highlighted states
         {
-          selector: 'edge[label = "EXECUTES_WITH"]',
-          style: {
-            'line-color': '#F472B6',
-            'target-arrow-color': '#F472B6',
-            'line-style': 'dashed',
-            'width': 2,
-            'opacity': 0.85
-          }
-        },
-        // Dynamic Activity Edges
-        {
-          selector: 'edge[label = "ASSUMED_ROLE"], edge[label = "MODIFIED_CONFIG"]',
-          style: {
-            'line-color': '#F59E0B',
-            'target-arrow-color': '#F59E0B',
-            'line-style': 'dashed',
-            'width': 2.5,
-            'opacity': 0.9
-          }
-        },
-        // Diff Overlay Styling
-        {
-          selector: 'edge.diff-added, edge[diffStatus = "added"]',
-          style: {
-            'line-color': '#10B981',
-            'target-arrow-color': '#10B981',
-            'line-style': 'dashed',
-            'width': 3.5,
-            'opacity': 1,
-            'color': '#34D399',
-            'z-index': 997,
-          }
-        },
-        {
-          selector: 'edge.diff-removed, edge[diffStatus = "removed"]',
-          style: {
-            'line-color': '#EF4444',
-            'target-arrow-color': '#EF4444',
-            'line-style': 'dashed',
-            'width': 3.5,
-            'opacity': 0.7,
-            'color': '#F87171',
-            'z-index': 997,
-          }
-        },
-        {
-          selector: 'node.diff-added, node[diffStatus = "added"]',
-          style: {
-            'border-color': '#10B981',
-            'border-width': '4px',
-            'border-style': 'solid',
-          }
-        },
-        {
-          selector: 'node.diff-removed, node[diffStatus = "removed"]',
-          style: {
-            'border-color': '#EF4444',
-            'border-width': '4px',
-            'border-style': 'dashed',
-            'opacity': 0.6,
-          }
-        },
-        // Focused / Selected States
-        {
-          selector: 'node.highlighted',
+          selector: 'node.highlighted, node.selected',
           style: {
             'border-width': '4px',
-            'border-color': '#FBBF24',
+            'border-color': '#F59E0B',
             'opacity': 1,
             'z-index': 999
           }
         },
         {
-          selector: 'node.search-match',
-          style: {
-            'border-width': '4px',
-            'border-color': '#38BDF8',
-            'opacity': 1,
-            'z-index': 999
-          }
-        },
-        {
-          selector: 'edge.highlighted',
+          selector: 'edge.highlighted, edge.selected',
           style: {
             'line-color': '#EF4444',
             'target-arrow-color': '#EF4444',
-            'width': 2.5,
+            'width': 3,
             'opacity': 1,
-            'line-style': 'solid',
             'z-index': 998
           }
         },
@@ -905,97 +967,96 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
           style: {
             'opacity': 0.04
           }
-        },
-        {
-          selector: 'edge.risky',
-          style: {
-            'line-color': '#EF4444',
-            'target-arrow-color': '#EF4444',
-            'width': 2,
-            'line-style': 'solid',
-            'opacity': 0.95
-          }
         }
       ]
     });
 
     cyRef.current = cy;
 
-    // Apply layout
-    const initialLayout = cy.layout(getLayoutOptions(cy) as any);
-    initialLayout.run();
+    // Run deterministic layout
+    const layoutConfig = computeDeterministicLayout(cy);
+    cy.layout(layoutConfig as any).run();
 
-    // Apply risky path highlighting if toggled
-    if (highlightRisky) {
-      cy.edges().forEach(edge => {
-        if (edge.data('isRisky')) {
-          edge.addClass('risky');
-        }
-      });
-    } else {
-      cy.edges().removeClass('risky');
-    }
-
-    // Node click handler: Triggers contextual identity / group / role trace
+    // Node click handler
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       const nId = node.id();
-      
       setActiveSelectedNodeId(nId);
+      setActiveSelectedEdgeId(null);
+      cy.edges().removeClass('selected');
+      cy.nodes().removeClass('selected');
+      node.addClass('selected');
+
+      if (onEdgeSelect) onEdgeSelect(null);
       if (onNodeSelect) {
-        onNodeSelect(node.data());
+        onNodeSelect({
+          id: nId,
+          label: node.data('label') || nId,
+          type: node.data('type') || 'Resource',
+          riskScore: node.data('riskScore') || 0,
+          arn: node.data('arn'),
+          region: node.data('region'),
+          description: node.data('description'),
+          trustPolicy: node.data('trustPolicy'),
+          policies: node.data('policies'),
+          effectiveAccess: []
+        });
       }
     });
 
-    // Edge click handler: Captures full provenance metadata
+    // Edge click handler: Provides complete aggregated evidence to side panel
     cy.on('tap', 'edge', (evt) => {
       const edge = evt.target;
+      const d = edge.data();
+      setActiveSelectedEdgeId(edge.id());
       cy.edges().removeClass('selected');
       edge.addClass('selected');
-      const d = edge.data();
-      setSelectedEdgeData({
-        source: edge.source().data('label') || edge.source().id(),
-        target: edge.target().data('label') || edge.target().id(),
-        sourceType: edge.source().data('type') || 'Resource',
-        targetType: edge.target().data('type') || 'Resource',
-        label: d.label || d.edge_type || 'Relationship',
-        edge_type: d.edge_type || d.label || 'Relationship',
-        provenance_source: d.provenance_source || d.source || 'IAM',
-        policy_name: d.policy_name,
-        policy_arn: d.policy_arn,
-        statement_sid: d.statement_sid,
-        effect: d.effect || (d.decision === 'ALLOWED' ? 'Allow' : ''),
-        action: d.action,
-        resource: d.resource,
-        resource_arn: d.resource_arn,
-        region: d.region,
-        decision: d.decision || 'ALLOWED',
-        condition_status: d.condition_status,
-        why: d.why,
-        evidence: d.evidence
-      });
+
+      if (onNodeSelect) onNodeSelect(null);
+      if (onEdgeSelect) {
+        onEdgeSelect({
+          source: edge.source().data('label') || edge.source().id(),
+          target: edge.target().data('label') || edge.target().id(),
+          sourceType: edge.source().data('type') || 'Identity',
+          targetType: edge.target().data('type') || 'Resource',
+          sourceArn: edge.source().data('arn'),
+          targetArn: edge.target().data('arn'),
+          label: d.label || d.access_category || 'Relationship',
+          edge_type: d.edge_type || 'EFFECTIVE_ACCESS',
+          access_category: d.access_category || d.label,
+          actions: d.actions || (d.action ? [d.action] : []),
+          action: d.action,
+          policy_names: d.policy_names || (d.policy_name ? [d.policy_name] : []),
+          policy_name: d.policy_name,
+          statement_sids: d.statement_sids || (d.statement_sid ? [d.statement_sid] : []),
+          statement_sid: d.statement_sid,
+          decision: d.decision || 'ALLOWED',
+          region: d.region || edge.target().data('region'),
+          why: d.why,
+          isActivity: d.isActivity
+        });
+      }
     });
 
-    // Hover tooltip events
+    // Hover tooltip
     cy.on('mouseover', 'node', (evt) => {
       const node = evt.target;
       const label = node.data('label') || node.id();
       const type = node.data('type') || 'Resource';
       const arn = node.data('arn');
       const region = node.data('region');
-      const renderedPos = node.renderedPosition();
-      
-      const tooltipLines = [
+      const pos = node.renderedPosition();
+
+      const lines = [
         `${label} (${type})`,
-        ...(type.toLowerCase() === 'group' ? [`👥 Members: ${(graphTopology.groupToUsers[node.id()] || []).length}`] : []),
         ...(arn ? [arn] : []),
         ...(region ? [`📍 ${formatRegion(region)}`] : [])
       ];
 
       setTooltip({
-        x: renderedPos.x,
-        y: renderedPos.y - 30,
-        text: tooltipLines.join('\n'),
+        x: pos.x,
+        y: pos.y - 25,
+        text: lines.join('\n'),
         visible: true
       });
     });
@@ -1008,35 +1069,33 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       setTooltip(prev => ({ ...prev, visible: false }));
     });
 
-    // Background click handler to clear selection
+    // Background click resets selection
     cy.on('tap', (evt) => {
       if (evt.target === cy) {
         setActiveSelectedNodeId(null);
-        setSelectedEdgeData(null);
+        setActiveSelectedEdgeId(null);
+        cy.elements().removeClass('selected');
         if (onNodeSelect) onNodeSelect(null);
+        if (onEdgeSelect) onEdgeSelect(null);
       }
     });
-    
+
+    applyGraphFilters();
+    cy.fit(undefined, 60);
+
     const handleReset = () => {
       setActiveSelectedNodeId(null);
-      setSelectedEdgeData(null);
-      if (onNodeSelect) onNodeSelect(null);
+      setActiveSelectedEdgeId(null);
       cy.elements().removeClass('dimmed').removeClass('highlighted').removeClass('selected');
-      cy.layout(getLayoutOptions(cy) as any).run();
-    };
-    
-    window.addEventListener('graph:reset', handleReset);
-
-    const handleResize = () => {
-      cy.resize();
-    };
-    window.addEventListener('resize', handleResize);
-
-    applyFiltersAndPathways(activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies);
-
-    cy.ready(() => {
+      if (onNodeSelect) onNodeSelect(null);
+      if (onEdgeSelect) onEdgeSelect(null);
+      cy.layout(computeDeterministicLayout(cy) as any).run();
       cy.fit(undefined, 60);
-    });
+    };
+
+    window.addEventListener('graph:reset', handleReset);
+    const handleResize = () => cy.resize();
+    window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('graph:reset', handleReset);
@@ -1044,323 +1103,175 @@ export const IdentityGraph: React.FC<IdentityGraphProps> = ({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [rawElements, showLabels, showEdgeLabels, highlightRisky, onNodeSelect, getLayoutOptions, applyFiltersAndPathways, activeFilters, highlightedNodeIds, searchQuery, securityFilter, activeSelectedNodeId, showAllPolicies, graphTopology]);
+  }, [transformedGraph, showLabels, showEdgeLabels, computeDeterministicLayout, onNodeSelect, onEdgeSelect, applyGraphFilters]);
 
-  // Controls API
+
+  // Re-apply filters when filters or mode changes
+  useEffect(() => {
+    applyGraphFilters();
+  }, [applyGraphFilters]);
+
+  // Zoom & Fit Controls
   const handleZoomIn = () => {
     const cy = cyRef.current;
     if (!cy) return;
-    const currentZoom = cy.zoom();
-    cy.zoom({
-      level: Math.min(3, currentZoom * 1.25),
-      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
-    });
+    cy.zoom({ level: Math.min(2.8, cy.zoom() * 1.25), renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
   };
 
   const handleZoomOut = () => {
     const cy = cyRef.current;
     if (!cy) return;
-    const currentZoom = cy.zoom();
-    cy.zoom({
-      level: Math.max(0.1, currentZoom / 1.25),
-      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 }
-    });
+    cy.zoom({ level: Math.max(0.15, cy.zoom() / 1.25), renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
   };
 
   const handleFit = () => {
     cyRef.current?.fit(undefined, 60);
   };
 
-  const handleExportImage = () => {
+  const handleExportPng = () => {
     if (!cyRef.current) return;
     const png = cyRef.current.png({ bg: '#0B1120', full: true });
     const a = document.createElement('a');
     a.href = png;
-    a.download = 'cloudscope-identity-architecture.png';
+    a.download = `cloudscope-identity-graph-${analystMode}.png`;
     a.click();
   };
 
   return (
     <div className="w-full h-full relative bg-[#0B1120] overflow-hidden select-none">
       
-      {/* Subtle Horizontal Layer Guideline Markers */}
-      <div className="absolute inset-0 pointer-events-none z-0 flex flex-col justify-between py-10 px-8 opacity-20">
-        {SIX_LAYER_DEFINITIONS.map(layer => (
-          <div key={layer.rank} className="flex items-center gap-4 w-full">
-            <span className="text-[10px] font-mono font-bold tracking-widest text-gray-500 uppercase whitespace-nowrap">{layer.title}</span>
-            <div className="flex-1 h-[1px] bg-gradient-to-r from-gray-700/60 via-gray-800/30 to-transparent" />
+      {/* 3-Column Layout Guide Guidelines */}
+      <div className="absolute inset-0 pointer-events-none z-0 flex justify-between px-20 py-8 opacity-15">
+        {COLUMN_DEFINITIONS.map(col => (
+          <div key={col.col} className="flex flex-col items-center h-full">
+            <span className="text-[11px] font-mono font-bold tracking-widest text-gray-400 uppercase">
+              {col.title}
+            </span>
+            <div className="w-[1px] h-full bg-gradient-to-b from-gray-700 via-gray-800 to-transparent mt-2" />
           </div>
         ))}
       </div>
 
-      {/* Visual Architectural Layer Track (Left Guide Rail) */}
-      {isLayerGuideOpen && (
-        <div className="absolute left-4 top-16 z-10 hidden xl:flex flex-col gap-2 p-3 rounded-xl bg-[#0F172A]/90 backdrop-blur-md border border-gray-800 shadow-2xl pointer-events-auto">
-          <div className="flex items-center justify-between gap-3 pb-1.5 border-b border-gray-800">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400 flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-blue-400" />
-              Security Architecture
-            </span>
-            <button 
-              onClick={() => setIsLayerGuideOpen(false)}
-              className="text-gray-500 hover:text-gray-300 text-[10px]"
-              title="Hide Layer Guide"
-            >
-              ✕
-            </button>
-          </div>
-          <div className="space-y-1.5 pt-1">
-            {SIX_LAYER_DEFINITIONS.map(layer => (
-              <div key={layer.rank} className="flex items-center gap-2 text-xs">
-                <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: layer.color }} />
-                <span className="font-mono text-[11px] font-semibold text-gray-300">{layer.title}</span>
-                <span className="text-[10px] text-gray-500 ml-auto hidden 2xl:inline">({layer.description})</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="pt-2 mt-1 border-t border-gray-800 flex items-center justify-between gap-2">
-            <span className="text-[9px] text-gray-500 font-mono">
-              {activeSelectedNodeId ? 'Mode: Focused Trace' : 'Mode: Security Overview'}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Floating Category Filter Pills */}
-      <div className="absolute top-4 left-4 right-4 z-10 flex flex-wrap items-center gap-2">
-        {Object.keys(activeFilters).map((filterKey) => {
+      {/* Floating Filter Pills Bar */}
+      <div className="absolute top-4 left-4 right-4 z-10 flex flex-wrap items-center gap-1.5">
+        {Object.keys(activeFilters).map(filterKey => {
+          if (filterKey === 'Policy' && !showPolicies) return null;
           const color = filterColors[filterKey] || '#64748B';
           const active = activeFilters[filterKey];
           const count = counts[filterKey] || 0;
           return (
             <button
               key={filterKey}
-              onClick={() => handleFilterToggle(filterKey)}
-              className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium transition-all duration-150 border ${
+              onClick={() => setActiveFilters(prev => ({ ...prev, [filterKey]: !prev[filterKey] }))}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all border ${
                 active
-                  ? 'bg-[#1E293B] text-white border-gray-700 shadow-sm'
-                  : 'bg-transparent text-gray-500 border-transparent hover:text-gray-300'
+                  ? 'bg-gray-900/90 text-white border-gray-700 shadow-sm'
+                  : 'bg-gray-950/40 text-gray-500 border-gray-900 hover:text-gray-300'
               }`}
             >
-              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
               <span>{filterKey}</span>
-              <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${active ? 'bg-gray-800 text-gray-300' : 'bg-transparent text-gray-600'}`}>{count}</span>
+              <span className={`px-1 rounded-full text-[10px] ${active ? 'bg-gray-800 text-gray-300' : 'text-gray-600'}`}>
+                {count}
+              </span>
             </button>
           );
         })}
-        
+
         <div className="flex-1" />
-        
-        {/* Floating Zoom & Export Controls */}
-        <div className="flex items-center gap-1.5 bg-[#1E293B]/90 backdrop-blur border border-gray-700 rounded-lg p-1 shadow-lg">
-          <button onClick={handleZoomIn} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Zoom In"><ZoomIn className="w-4 h-4" /></button>
-          <button onClick={handleZoomOut} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
-          <button onClick={handleFit} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Fit to Screen"><Maximize2 className="w-4 h-4" /></button>
-          <div className="w-[1px] h-4 bg-gray-700 mx-1"></div>
-          <button onClick={handleExportImage} className="p-1 hover:bg-gray-700 rounded text-gray-300 transition-colors" title="Export Security Architecture PNG"><Download className="w-4 h-4" /></button>
+
+        {/* Zoom & Fit Action Buttons */}
+        <div className="flex items-center gap-1 bg-gray-900/90 backdrop-blur border border-gray-700 rounded-lg p-1 shadow-lg">
+          <button onClick={handleZoomIn} className="p-1 hover:bg-gray-800 rounded text-gray-300" title="Zoom In">
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={handleZoomOut} className="p-1 hover:bg-gray-800 rounded text-gray-300" title="Zoom Out">
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={handleFit} className="p-1 hover:bg-gray-800 rounded text-gray-300" title="Fit to Screen">
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+          <div className="w-[1px] h-3.5 bg-gray-700 mx-0.5" />
+          <button onClick={handleExportPng} className="p-1 hover:bg-gray-800 rounded text-gray-300" title="Export PNG">
+            <Download className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
-      {/* Selected Edge Info Banner */}
-      {selectedEdgeData && (
-        <div className="absolute top-16 right-4 z-10 bg-[#0F172A]/95 backdrop-blur-md border border-blue-500/50 rounded-lg px-4 py-2 text-xs shadow-2xl flex items-center gap-3">
-          <Sparkles className="w-4 h-4 text-blue-400" />
-          <div>
-            <span className="text-gray-400 font-mono text-[10px]">RELATIONSHIP: </span>
-            <span className="font-semibold text-blue-400 font-mono">{selectedEdgeData.label}</span>
-            <div className="text-[11px] text-gray-300 mt-0.5">
-              {selectedEdgeData.source} <span className="text-gray-500">→</span> {selectedEdgeData.target}
-            </div>
-          </div>
-          <button onClick={() => setSelectedEdgeData(null)} className="text-gray-500 hover:text-gray-300 text-xs ml-2">✕</button>
-        </div>
-      )}
-
-      {/* Legend Overlay */}
-      <div className="absolute bottom-6 left-6 z-10">
-        {!isLegendOpen ? (
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={() => setIsLegendOpen(true)}
-              className="flex items-center gap-2 bg-[#0F172A]/90 backdrop-blur-md border border-gray-800 hover:border-gray-600 rounded-lg px-4 py-2 text-xs font-semibold text-gray-300 shadow-xl transition-colors"
-            >
-              <List className="w-4 h-4" />
-              <span>Show Legend</span>
-            </button>
-            {!isLayerGuideOpen && (
-              <button 
-                onClick={() => setIsLayerGuideOpen(true)}
-                className="flex items-center gap-2 bg-[#0F172A]/90 backdrop-blur-md border border-gray-800 hover:border-gray-600 rounded-lg px-3 py-2 text-xs font-medium text-gray-400 shadow-xl transition-colors"
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>Show Layers</span>
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="bg-[#0F172A]/95 backdrop-blur-md border border-gray-800 rounded-xl p-4 w-56 shadow-2xl">
-            <div className="flex justify-between items-center mb-3 border-b border-gray-800 pb-2">
-              <h4 className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
-                <ShieldAlert className="w-3.5 h-3.5 text-blue-400" />
-                <span>Security Legend</span>
-              </h4>
-              <button 
-                onClick={() => setIsLegendOpen(false)}
-                className="text-gray-500 hover:text-gray-300 transition-colors"
-              >
-                <ChevronDown className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-2">
-              {Object.keys(activeFilters).map((filterKey) => {
-                 const color = filterColors[filterKey] || '#64748B';
-                 let shapeClass = "w-3 h-3 rounded-full";
-                 if (filterKey === 'Role' || filterKey === 'Policy') shapeClass = "w-3 h-3 rotate-45 transform bg-opacity-90";
-                 if (filterKey === 'S3') shapeClass = "w-3 h-3 rounded-sm";
-                 if (filterKey === 'EC2' || filterKey === 'Group') shapeClass = "w-3.5 h-2.5 rounded-sm";
-                 
-                 return (
-                   <div key={filterKey} className="flex items-center gap-2">
-                     <div className={`${shapeClass}`} style={{ backgroundColor: color }} />
-                     <span className="text-[11px] text-gray-400">{filterKey}</span>
-                   </div>
-                 );
-              })}
-              
-              <div className="pt-2 mt-2 border-t border-gray-800 space-y-1.5">
-                <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t-2 border-indigo-400 border-solid" />
-                   <span className="text-[9px] text-indigo-400 font-mono tracking-wider">MEMBER_OF (Group)</span>
-                </div>
-                <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t border-slate-500 border-solid" />
-                   <span className="text-[9px] text-gray-400 font-mono tracking-wider">Access / Policy</span>
-                </div>
-                <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t-2 border-amber-400 border-dashed" />
-                   <span className="text-[9px] text-amber-400 font-mono tracking-wider">Activity (ASSUMED_ROLE)</span>
-                </div>
-                <div className="flex items-center gap-2">
-                   <div className="w-4 h-0 border-t-2 border-red-500 border-solid" />
-                   <span className="text-[9px] text-red-400 font-mono tracking-wider">Attack Path</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Hover Tooltip Overlay */}
+      {/* Tooltip */}
       {tooltip.visible && (
         <div
-          className="absolute z-50 pointer-events-none bg-[#0F172A]/95 border border-gray-700 text-gray-200 text-xs px-3 py-1.5 rounded-lg shadow-2xl backdrop-blur-md transition-opacity duration-150 transform -translate-x-1/2 -translate-y-full flex flex-col gap-0.5 max-w-sm"
-          style={{
-            left: `${tooltip.x}px`,
-            top: `${tooltip.y}px`
-          }}
+          className="absolute z-50 pointer-events-none bg-gray-900/95 border border-gray-700 text-gray-200 text-xs px-3 py-1.5 rounded-lg shadow-2xl backdrop-blur-md transform -translate-x-1/2 -translate-y-full flex flex-col gap-0.5 max-w-sm"
+          style={{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }}
         >
           {tooltip.text.split('\n').map((line, i) => (
-            <span
-              key={i}
-              className={i === 0 ? 'font-semibold text-white truncate' : 'text-[10px] text-gray-400 truncate'}
-            >
+            <span key={i} className={i === 0 ? 'font-bold text-white truncate' : 'text-[10px] text-gray-400 truncate'}>
               {line}
             </span>
           ))}
         </div>
       )}
 
-      {/* Edge Provenance Overlay Card */}
-      {selectedEdgeData && (
-        <div className="absolute bottom-6 right-6 z-40 w-96 bg-[#0F172A]/95 border border-cyan-500/40 rounded-xl p-4 shadow-2xl backdrop-blur-md text-white space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-150">
-          <div className="flex items-center justify-between border-b border-gray-800 pb-2">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
-                {selectedEdgeData.provenance_source || 'IAM'}
+      {/* Security Legend Toggle */}
+      <div className="absolute bottom-5 left-5 z-10">
+        {!isLegendOpen ? (
+          <button 
+            onClick={() => setIsLegendOpen(true)}
+            className="flex items-center gap-2 bg-gray-900/90 backdrop-blur border border-gray-800 hover:border-gray-700 rounded-lg px-3.5 py-1.5 text-xs font-semibold text-gray-300 shadow-xl transition-colors"
+          >
+            <List className="w-3.5 h-3.5" />
+            <span>Show Legend</span>
+          </button>
+        ) : (
+          <div className="bg-gray-900/95 backdrop-blur border border-gray-800 rounded-xl p-4 w-60 shadow-2xl space-y-3">
+            <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+              <span className="text-xs font-bold text-gray-200 flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 text-blue-400" />
+                <span>Identity Graph Legend</span>
               </span>
-              <span className="font-bold text-sm text-cyan-300">
-                {selectedEdgeData.edge_type || selectedEdgeData.label}
-              </span>
-            </div>
-            <button
-              onClick={() => setSelectedEdgeData(null)}
-              className="text-gray-400 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-800 transition-colors"
-              title="Close details"
-            >
-              ✕
-            </button>
-          </div>
-
-          <div className="text-xs space-y-2">
-            <div>
-              <span className="text-gray-400 block text-[10px] uppercase">Why This Relationship Exists:</span>
-              <p className="text-gray-200 mt-0.5 font-medium leading-relaxed">
-                {selectedEdgeData.why || `Semantic relationship connecting ${selectedEdgeData.source} to ${selectedEdgeData.target}.`}
-              </p>
+              <button onClick={() => setIsLegendOpen(false)} className="text-gray-500 hover:text-gray-300">
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
             </div>
 
-            {selectedEdgeData.policy_name && (
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-gray-800">
-                <div>
-                  <span className="text-gray-400 block text-[10px] uppercase">Policy:</span>
-                  <span className="text-gray-200 font-mono text-[11px] truncate block" title={selectedEdgeData.policy_name}>
-                    {selectedEdgeData.policy_name}
-                  </span>
-                </div>
-                {selectedEdgeData.statement_sid && (
-                  <div>
-                    <span className="text-gray-400 block text-[10px] uppercase">Statement Sid:</span>
-                    <span className="text-gray-200 font-mono text-[11px]">
-                      {selectedEdgeData.statement_sid}
-                    </span>
-                  </div>
-                )}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-xs">
+                <div className="w-3 h-3 rounded-full bg-blue-500" />
+                <span className="text-gray-300">IAM User</span>
               </div>
-            )}
+              <div className="flex items-center gap-2 text-xs">
+                <div className="w-3.5 h-2.5 rounded-sm bg-indigo-500" />
+                <span className="text-gray-300">IAM Group</span>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <div className="w-3 h-3 rotate-45 bg-purple-500" />
+                <span className="text-gray-300">IAM Role</span>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <div className="w-3 h-3 rounded-sm bg-amber-500" />
+                <span className="text-gray-300">Cloud Resources</span>
+              </div>
+            </div>
 
-            {(selectedEdgeData.action || selectedEdgeData.resource) && (
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-gray-800">
-                {selectedEdgeData.action && (
-                  <div>
-                    <span className="text-gray-400 block text-[10px] uppercase">Action:</span>
-                    <span className="text-amber-400 font-mono text-[11px]">
-                      {selectedEdgeData.action}
-                    </span>
-                  </div>
-                )}
-                {selectedEdgeData.resource && (
-                  <div>
-                    <span className="text-gray-400 block text-[10px] uppercase">Resource:</span>
-                    <span className="text-emerald-400 font-mono text-[11px] truncate block" title={selectedEdgeData.resource_arn || selectedEdgeData.resource}>
-                      {selectedEdgeData.resource}
-                    </span>
-                  </div>
-                )}
+            <div className="pt-2 border-t border-gray-800 space-y-1 text-[11px] font-mono">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 bg-emerald-500" />
+                <span className="text-emerald-400">Effective Access</span>
               </div>
-            )}
-
-            <div className="flex items-center justify-between pt-1 border-t border-gray-800 text-[11px]">
-              <div>
-                <span className="text-gray-400 mr-1.5">Decision:</span>
-                <span className={`font-bold px-1.5 py-0.5 rounded text-[10px] ${
-                  selectedEdgeData.decision === 'ALLOWED' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400'
-                }`}>
-                  {selectedEdgeData.decision || 'ALLOWED'}
-                </span>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 bg-purple-500 border-dashed" />
+                <span className="text-purple-400">CAN_ASSUME</span>
               </div>
-              {selectedEdgeData.region && (
-                <div>
-                  <span className="text-gray-400 mr-1.5">Region:</span>
-                  <span className="font-mono text-gray-300">{formatRegion(selectedEdgeData.region)}</span>
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-0.5 bg-red-500" />
+                <span className="text-red-400">Critical / Admin</span>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Graph Area */}
+      {/* Main Graph Canvas */}
       <div ref={containerRef} className="w-full h-full" />
     </div>
   );
