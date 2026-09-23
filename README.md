@@ -1,5 +1,7 @@
 # CloudScope — AWS Cloud Security Posture Management & Identity Attack Path Analysis
 
+[![CloudScope CI](https://github.com/SurendiranBJ/CloudScope/actions/workflows/ci.yml/badge.svg?branch=sura)](https://github.com/SurendiranBJ/CloudScope/actions/workflows/ci.yml)
+
 CloudScope is a Cloud Security Posture Management (CSPM) and Cloud Infrastructure Entitlement Management (CIEM) platform built for Amazon Web Services (AWS). It evaluates effective permissions using Abstract Syntax Tree (AST) IAM policy document analysis, models multi-hop identity and resource relationships in **Neo4j** and **NetworkX**, identifies lateral movement and privilege escalation attack vectors, and delivers evidence-based security posture scores via an interactive **React** interface.
 
 ---
@@ -347,17 +349,46 @@ The scan pipeline instruments every execution phase with high-resolution monoton
 
 ## 🧪 Testing & Verification
 
-Run the full automated test suite:
+### Local Commands to Match CI
+
+The developer can reproduce the exact GitHub Actions CI execution locally:
+
+#### Backend Automated Testing
 ```bash
 cd backend
-python -m pytest tests/ -v
+python -m pytest tests/ -v --tb=short
 ```
 
-Build the frontend production bundle:
+#### Frontend Dependency Installation & Production Build
 ```bash
 cd frontend
+npm ci
 npm run build
 ```
+
+---
+
+## 🚀 Continuous Integration (GitHub Actions)
+
+CloudScope uses automated CI configured in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) to continuously validate changes across both backend and frontend layers:
+
+- **Triggers**:
+  - `push` to the `sura` branch.
+  - `pull_request` targeting `sura`.
+  - Manual execution via `workflow_dispatch`.
+
+- **Independent Parallel Jobs**:
+  1. **`backend-tests`** (`ubuntu-latest`, Python 3.11):
+     - Sets up Python 3.11 with pip dependency caching.
+     - Upgrades `pip` and installs dependencies from `backend/requirements.txt` and `backend/requirements-dev.txt`.
+     - Executes the full 320+ test suite covering Phases 1 through 6 via `python -m pytest tests/ -v --tb=short`.
+  2. **`frontend-build`** (`ubuntu-latest`, Node.js 20):
+     - Sets up Node.js 20 with npm caching from `frontend/package-lock.json`.
+     - Installs clean dependencies via `npm ci`.
+     - Compiles TypeScript and builds the production bundle via `npm run build`.
+
+- **Validation Requirement**: Both `backend-tests` and `frontend-build` must pass for the CI workflow to be green. A change should not be considered validated until the GitHub Actions workflow passes.
+- **AWS Credential Isolation**: Normal CI jobs never configure or access real AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or `AWS_SESSION_TOKEN`). All security evaluation, attack path, and graph construction tests run in hermetic environments using verified in-memory models and stubs.
 
 ---
 
