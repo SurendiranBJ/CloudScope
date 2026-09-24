@@ -1014,7 +1014,7 @@ def evaluate_policy_allows_resources_with_provenance(
 
         if is_allowed and not is_denied and allow_stmt_evidence:
             matched_resources.append(res)
-            allow_stmt_evidence["decision"] = "ALLOWED"
+            allow_stmt_evidence["decision"] = "ALLOW"
             act_val = allow_stmt_evidence.get("action", "*")
             allow_stmt_evidence["action"] = act_val
             allow_stmt_evidence["relationship_type"] = classify_resource_relationship(res_type, act_val)
