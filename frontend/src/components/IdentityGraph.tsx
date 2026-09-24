@@ -57,10 +57,11 @@ const formatShortLabel = (label?: string, id?: string): string => {
 };
 
 // Canonical action category classification
-const getActionCategory = (actions: string[]): string => {
+const getActionCategory = (actions: string[], targetType?: string): string => {
   if (!actions || actions.length === 0) return 'ACCESS';
   const acts = actions.map(a => a.toLowerCase().trim());
   if (acts.some(a => a === '*' || a === '*:*' || a.includes('administratoraccess'))) {
+    if (targetType === 'Lambda') return 'CAN_MANAGE / INVOKE';
     return 'FULL ADMIN';
   }
   if (acts.some(a => a.startsWith('sts:assumerole') || a.includes(':assumerole'))) {
@@ -68,6 +69,16 @@ const getActionCategory = (actions: string[]): string => {
   }
   if (acts.some(a => a.startsWith('rds-db:connect'))) {
     return 'DB_CONNECT';
+  }
+  if (targetType === 'Lambda') {
+    const hasInvoke = acts.some(a => a.includes('invoke'));
+    const hasManage = acts.some(a => {
+      const v = a.split(':').pop() || a;
+      return /^(put|create|update|modify|delete|publish|add|remove|tag|untag)/.test(v);
+    });
+    if (hasInvoke && hasManage) return 'CAN_MANAGE / INVOKE';
+    if (hasInvoke) return 'CAN_INVOKE';
+    if (hasManage) return 'CAN_MANAGE';
   }
   if (acts.some(a => a.startsWith('iam:') || a.includes('admin'))) {
     return 'ADMIN';
@@ -426,28 +437,49 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         const actionList = Array.from(agg.actions);
         const policyList = Array.from(agg.policy_names);
         const sidList = Array.from(agg.statement_sids);
-        const category = getActionCategory(actionList);
+        const category = getActionCategory(actionList, agg.targetType);
+        const relType = category === 'CAN_INVOKE'
+          ? 'CAN_INVOKE'
+          : category === 'CAN_MANAGE' || category === 'CAN_MANAGE / INVOKE'
+            ? 'CAN_MANAGE'
+            : 'EFFECTIVE_ACCESS';
 
         finalEdges.push({
           data: {
             id: agg.id,
             source: agg.source,
+            sourceId: agg.source,
             target: agg.target,
+            targetId: agg.target,
             sourceType: agg.sourceType,
             targetType: agg.targetType,
             sourceArn: agg.sourceArn,
             targetArn: agg.targetArn,
             label: category,
-            edge_type: 'EFFECTIVE_ACCESS',
+            edge_type: relType,
+            relationshipType: relType,
             access_category: category,
             actions: actionList,
             action: actionList[0] || '',
             policy_names: policyList,
             policy_name: policyList[0] || '',
+            policies: policyList,
             statement_sids: sidList,
             statement_sid: sidList[0] || '',
+            statementSids: sidList,
             decision: agg.decision,
             why: agg.why,
+            provenance: agg.why || `Effective relationship (${category}) from '${agg.source}' to '${agg.target}'`,
+            evidence: {
+              sourceId: agg.source,
+              targetId: agg.target,
+              relationshipType: relType,
+              decision: agg.decision,
+              actions: actionList,
+              policies: policyList,
+              statementSids: sidList,
+              why: agg.why
+            },
             isActivity: agg.isActivity,
             region: agg.region
           }

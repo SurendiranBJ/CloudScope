@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Tuple, Optional
 
 from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
+    evaluate_policy_allows_resources_with_provenance,
     evaluate_assume_role_trust,
     evaluate_assume_role_trust_with_evidence,
     check_resource_explicitly_denied,
@@ -96,7 +97,14 @@ def compute_effective_access(
             doc = policy_doc_map.get(pname) or policy_doc_map.get(pname.replace("[inline] ", ""))
             if not doc:
                 continue
-            matched = evaluate_policy_allows_resources(doc, all_resources, principal=user, account_id=account_id)
+            matched, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
+                policy_name=pname,
+                policy_arn=parn,
+                document=doc,
+                resources=all_resources,
+                principal=user,
+                account_id=account_id
+            )
             # 1. Deny precedence: remove any resource explicitly denied by ANY of user's applicable policies
             matched = [
                 res for res in matched
@@ -105,6 +113,27 @@ def compute_effective_access(
             # 2. Filter through Permissions Boundary if attached to user
             matched = _filter_by_permissions_boundary(user, matched, policy_doc_map, account_id)
             for res in matched:
+                item_ident = res.get('id') if res.get('type') == 'EC2' else (res.get('name') or res.get('id'))
+                prov = prov_map.get(str(item_ident), {})
+                ev = {
+                    "principal": uname,
+                    "principal_type": "User",
+                    "policy_arn": parn,
+                    "policy_name": pname,
+                    "statement_sid": prov.get("statement_sid", ""),
+                    "effect": prov.get("effect", "Allow"),
+                    "action": [prov.get("action", "*")],
+                    "resource": [res.get("arn", "")],
+                    "matched_action": prov.get("action", "*"),
+                    "matched_resource": res.get("arn", ""),
+                    "relationship_type": prov.get("relationship_type", "EFFECTIVE_ACCESS"),
+                    "condition_status": prov.get("condition_status", "satisfied"),
+                    "decision": prov.get("decision", "ALLOWED"),
+                    "source": " -> ".join(rel_chain),
+                    "region": res.get("region", ""),
+                    "resource_arn": res.get("arn", ""),
+                    "reason": prov.get("why") or f"Matched Allow statement in policy '{pname}'",
+                }
                 result.append(_build_record(
                     identity_id=_user_id(uname),
                     identity_name=uname,
@@ -114,6 +143,7 @@ def compute_effective_access(
                     rel_chain=rel_chain,
                     policy_names=[pname],
                     policy_arns=[parn] if parn else [],
+                    evidence=ev,
                 ))
 
     # ── Chain 3: Multi-hop role assumptions (User → Role* and Role → Role*) ─
@@ -174,7 +204,14 @@ def compute_effective_access(
             role_applicable_docs = get_effective_identity_policy_documents(curr_role_principal, policy_doc_map)
             role_docs = role_policy_map.get(curr_role, [])
             for pname, doc, parn in role_docs:
-                matched = evaluate_policy_allows_resources(doc, all_resources, principal=curr_role_principal, account_id=account_id)
+                matched, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
+                    policy_name=pname,
+                    policy_arn=parn,
+                    document=doc,
+                    resources=all_resources,
+                    principal=curr_role_principal,
+                    account_id=account_id
+                )
                 # 1. Deny precedence across role's applicable policies
                 matched = [
                     res for res in matched
@@ -187,6 +224,27 @@ def compute_effective_access(
                     # Provenance: User -> RoleA -> RoleB -> Policy -> Resource
                     full_node_path = [uname] + role_chain + [pname, res.get("name", res.get("id", ""))]
                     rel_chain = (["CAN_ASSUME"] * len(role_chain)) + ["HAS_POLICY", "ALLOWS"]
+                    item_ident = res.get('id') if res.get('type') == 'EC2' else (res.get('name') or res.get('id'))
+                    prov = prov_map.get(str(item_ident), {})
+                    ev = {
+                        "principal": uname,
+                        "principal_type": "User",
+                        "policy_arn": parn,
+                        "policy_name": pname,
+                        "statement_sid": prov.get("statement_sid", ""),
+                        "effect": prov.get("effect", "Allow"),
+                        "action": [prov.get("action", "*")],
+                        "resource": [res.get("arn", "")],
+                        "matched_action": prov.get("action", "*"),
+                        "matched_resource": res.get("arn", ""),
+                        "relationship_type": prov.get("relationship_type", "EFFECTIVE_ACCESS"),
+                        "condition_status": prov.get("condition_status", "satisfied"),
+                        "decision": prov.get("decision", "ALLOWED"),
+                        "source": " -> ".join(rel_chain),
+                        "region": res.get("region", ""),
+                        "resource_arn": res.get("arn", ""),
+                        "reason": prov.get("why") or f"Matched Allow statement in assumed role policy '{pname}'",
+                    }
                     result.append(_build_record(
                         identity_id=_user_id(uname),
                         identity_name=uname,
@@ -196,6 +254,7 @@ def compute_effective_access(
                         rel_chain=rel_chain,
                         policy_names=[pname],
                         policy_arns=[parn] if parn else [],
+                        evidence=ev,
                     ))
 
             # Expand next hops if depth < MAX_ROLE_HOPS
@@ -259,13 +318,41 @@ def compute_effective_access(
         rname = role["name"]
         role_applicable_docs = get_effective_identity_policy_documents(role, policy_doc_map)
         for pname, doc, parn in role_policy_map.get(rname, []):
-            matched = evaluate_policy_allows_resources(doc, all_resources, principal=role, account_id=account_id)
+            matched, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
+                policy_name=pname,
+                policy_arn=parn,
+                document=doc,
+                resources=all_resources,
+                principal=role,
+                account_id=account_id
+            )
             matched = [
                 res for res in matched
                 if not check_resource_explicitly_denied(role_applicable_docs, res, principal=role, account_id=account_id)
             ]
             matched = _filter_by_permissions_boundary(role, matched, policy_doc_map, account_id)
             for res in matched:
+                item_ident = res.get('id') if res.get('type') == 'EC2' else (res.get('name') or res.get('id'))
+                prov = prov_map.get(str(item_ident), {})
+                ev = {
+                    "principal": rname,
+                    "principal_type": "Role",
+                    "policy_arn": parn,
+                    "policy_name": pname,
+                    "statement_sid": prov.get("statement_sid", ""),
+                    "effect": prov.get("effect", "Allow"),
+                    "action": [prov.get("action", "*")],
+                    "resource": [res.get("arn", "")],
+                    "matched_action": prov.get("action", "*"),
+                    "matched_resource": res.get("arn", ""),
+                    "relationship_type": prov.get("relationship_type", "EFFECTIVE_ACCESS"),
+                    "condition_status": prov.get("condition_status", "satisfied"),
+                    "decision": prov.get("decision", "ALLOWED"),
+                    "source": "HAS_POLICY -> ALLOWS",
+                    "region": res.get("region", ""),
+                    "resource_arn": res.get("arn", ""),
+                    "reason": prov.get("why") or f"Matched Allow statement in role policy '{pname}'",
+                }
                 result.append(_build_record(
                     identity_id=_role_id(rname),
                     identity_name=rname,
@@ -275,6 +362,7 @@ def compute_effective_access(
                     rel_chain=["HAS_POLICY", "ALLOWS"],
                     policy_names=[pname],
                     policy_arns=[parn] if parn else [],
+                    evidence=ev,
                 ))
 
     logger.info(f"Effective access computed: {len(result)} access records")

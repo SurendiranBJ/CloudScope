@@ -170,6 +170,133 @@ def has_service_action(stmt_actions: List[str], not_actions: List[str], service_
     return False
 
 
+def match_resource_specific_action(action: str, res_type: str) -> bool:
+    """Check if an action specifically grants access to the given cloud resource type.
+    
+    Prevents false-positive access where an account-level or infrastructure-level action
+    (e.g. ec2:DescribeSecurityGroups or s3:ListAllMyBuckets) is incorrectly attributed
+    as direct access to a specific resource instance.
+    """
+    a = action.lower().strip()
+    if a in ("*", "*:*"):
+        return True
+
+    t = res_type.upper()
+    if t == "S3":
+        if a in ("s3:*", "s3:*object*", "s3:*bucket*"):
+            return True
+        if a.startswith("s3:"):
+            account_only = {"s3:listallmybuckets", "s3:getaccountpublicaccessblock", "s3:putaccountpublicaccessblock"}
+            if a in account_only:
+                return False
+            return True
+        return False
+
+    elif t == "EC2":
+        if a in ("ec2:*", "ec2:*instance*"):
+            return True
+        if a.startswith("ec2-instance-connect:"):
+            return True
+        if a.startswith("ec2:"):
+            non_instance_prefixes = (
+                "ec2:describesecuritygroups",
+                "ec2:describesubnets",
+                "ec2:describevpcs",
+                "ec2:describeroutetables",
+                "ec2:describeinternetgateways",
+                "ec2:describenetworkacls",
+                "ec2:describekeypairs",
+                "ec2:describevpcendpoints",
+                "ec2:getsecuritygroupsforvpc",
+                "ec2:describeflowlogs",
+                "ec2:describenatgateways",
+                "ec2:describeavailabilityzones",
+                "ec2:describeregions",
+                "ec2:describevpngateways",
+                "ec2:describecustomergateways",
+                "ec2:describevpnconnections",
+            )
+            if any(a.startswith(p) for p in non_instance_prefixes):
+                return False
+            return True
+        return False
+
+    elif t == "LAMBDA":
+        if a in ("lambda:*", "lambda:*function*"):
+            return True
+        if a.startswith("lambda:"):
+            non_function = {"lambda:listfunctions", "lambda:listeventsourcemappings", "lambda:listlayers", "lambda:listlayerversions"}
+            if a in non_function:
+                return False
+            return True
+        return False
+
+    elif t in ("SECRETS", "SECRET"):
+        if a in ("secretsmanager:*", "secretsmanager:*secret*"):
+            return True
+        if a.startswith("secretsmanager:"):
+            non_secret = {"secretsmanager:listsecrets", "secretsmanager:getrandompassword"}
+            if a in non_secret:
+                return False
+            return True
+        return False
+
+    elif t == "RDS":
+        if a in ("rds:*", "rds-db:*", "rds:*instance*", "rds:*cluster*"):
+            return True
+        if a.startswith("rds-db:connect"):
+            return True
+        if a.startswith("rds:"):
+            non_db = {"rds:describeevents", "rds:describeeventsubscriptions", "rds:describedbparametergroups", "rds:describedbsubnetgroups"}
+            if a in non_db:
+                return False
+            return True
+        return False
+
+    elif t == "DYNAMODB":
+        if a in ("dynamodb:*", "dynamodb:*table*", "dynamodb:*item*"):
+            return True
+        if a.startswith("dynamodb:"):
+            if a in ("dynamodb:listtables", "dynamodb:listbackups", "dynamodb:liststreams"):
+                return False
+            return True
+        return False
+
+    return False
+
+
+def find_statement_matched_action(
+    actions: List[str],
+    not_actions: List[str],
+    res_type: str,
+    service_prefix: str
+) -> Optional[str]:
+    """Find the specific action that matches the resource type, or None if no match."""
+    if not_actions:
+        if any(na.lower().strip() in (f"{service_prefix}:*", "*", "*:*") for na in not_actions):
+            return None
+        return f"{service_prefix}:*"
+
+    for action in actions:
+        if match_resource_specific_action(action, res_type):
+            return action
+    return None
+
+
+def classify_resource_relationship(res_type: str, action: str) -> str:
+    """Classify the semantic relationship label for access to a given resource type."""
+    t = res_type.upper()
+    act = action.lower().strip()
+    if t == "LAMBDA":
+        if "invoke" in act or act in ("lambda:*", "*", "*:*"):
+            return "CAN_INVOKE"
+        return "CAN_MANAGE"
+    if t == "RDS" and "connect" in act:
+        return "DB_CONNECT"
+    return "ALLOWS"
+
+
+
 def _matches_single_resource_pattern(pattern: str, target_res: Any) -> bool:
     """Match a single pattern string against an inventory resource object or ARN string."""
     p_clean = pattern.strip()
@@ -696,9 +823,9 @@ def evaluate_policy_allows_resources(
             resources = stmt["Resource"]
             not_resources = stmt.get("NotResource", [])
 
-            # Check if this statement applies to this resource's service
-            service_matches = has_service_action(actions, not_actions, service_prefix)
-            if not service_matches:
+            # Check if this statement applies to this resource's service & resource-specific actions
+            matched_act = find_statement_matched_action(actions, not_actions, res_type, service_prefix)
+            if not matched_act:
                 continue
 
             # Check if this statement applies to this resource's ARN
@@ -811,9 +938,9 @@ def evaluate_policy_allows_resources_with_provenance(
             not_resources = stmt.get("NotResource", [])
             sid = stmt.get("Sid") or "Statement"
 
-            # Check if this statement applies to this resource's service
-            service_matches = has_service_action(actions, not_actions, service_prefix)
-            if not service_matches:
+            # Check if this statement applies to this resource's service & resource-specific actions
+            matched_act = find_statement_matched_action(actions, not_actions, res_type, service_prefix)
+            if not matched_act:
                 continue
 
             # Check if this statement applies to this resource's ARN
@@ -826,9 +953,8 @@ def evaluate_policy_allows_resources_with_provenance(
                     break
 
             if resource_matches:
-                # Find the matched action
-                actions_list = actions if isinstance(actions, list) else [actions]
-                matched_action = actions_list[0] if actions_list else "*"
+                # Use the exact matched action for this resource
+                matched_action = matched_act
 
                 # Evaluate Condition block
                 condition_status = "NONE"
@@ -888,10 +1014,12 @@ def evaluate_policy_allows_resources_with_provenance(
 
         if is_allowed and not is_denied and allow_stmt_evidence:
             matched_resources.append(res)
-            allow_stmt_evidence["decision"] = "ALLOW"
-            allow_stmt_evidence["action"] = allow_stmt_evidence.get("action", "*")
+            allow_stmt_evidence["decision"] = "ALLOWED"
+            act_val = allow_stmt_evidence.get("action", "*")
+            allow_stmt_evidence["action"] = act_val
+            allow_stmt_evidence["relationship_type"] = classify_resource_relationship(res_type, act_val)
             sid_val = allow_stmt_evidence.get("statement_sid", "Statement")
-            allow_stmt_evidence["why"] = f"Statement '{sid_val}' in policy '{policy_name}' allows access"
+            allow_stmt_evidence["why"] = f"Statement '{sid_val}' in policy '{policy_name}' allows '{act_val}' on {res_type} '{res_ident}'"
             provenance_map[res_key] = allow_stmt_evidence
 
     if is_dict_call:
