@@ -11,6 +11,7 @@ import { getGraphElements, getEffectiveAccess } from '../api/graph';
 import type { CytoscapeElement, EffectiveAccessRecord } from '../api/graph';
 import { formatRegion } from '../utils/regionNames';
 import type { NodeData, EdgeData } from './NodeDetailsPanel';
+import { ENTITY_STYLES, CANONICAL_FILTER_COLORS, normalizeGraphType } from '../constants/graphStyles';
 
 // Register dagre layout extension
 cytoscape.use(dagre);
@@ -181,22 +182,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
     visible: false
   });
 
-  // Filter colors
-  const filterColors: Record<string, string> = {
-    User: '#3B82F6',
-    Group: '#6366F1',
-    Role: '#8B5CF6',
-    Policy: '#14B8A6',
-    S3: '#F59E0B',
-    EC2: '#10B981',
-    Lambda: '#EC4899',
-    RDS: '#0EA5E9',
-    DynamoDB: '#A855F7',
-    Secrets: '#EF4444',
-    Secret: '#EF4444',
-    KMS: '#EAB308',
-    APIGateway: '#F97316'
-  };
+
 
   // ─────────────────────────────────────────────────────────────────────────────
   // 1. CANONICAL DEDUPLICATION & EFFECTIVE ACCESS AGGREGATION
@@ -654,138 +640,138 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         {
           selector: 'node[type = "User"]',
           style: {
-            'background-color': '#3B82F6', // Blue
-            'border-color': '#60A5FA',
+            'background-color': ENTITY_STYLES.User.backgroundColor,
+            'border-color': ENTITY_STYLES.User.borderColor,
             'shape': 'ellipse',
-            'width': '42px',
-            'height': '42px'
+            'width': ENTITY_STYLES.User.width,
+            'height': ENTITY_STYLES.User.height
           }
         },
         {
           selector: 'node[type = "Group"]',
           style: {
-            'background-color': '#6366F1', // Indigo
-            'border-color': '#818CF8',
-            'border-width': '3px',
+            'background-color': ENTITY_STYLES.Group.backgroundColor,
+            'border-color': ENTITY_STYLES.Group.borderColor,
+            'border-width': ENTITY_STYLES.Group.borderWidth || '3px',
             'shape': 'round-rectangle',
-            'width': '52px',
-            'height': '42px'
+            'width': ENTITY_STYLES.Group.width,
+            'height': ENTITY_STYLES.Group.height
           }
         },
         {
           selector: 'node[type = "Role"]',
           style: {
-            'background-color': '#8B5CF6', // Purple
-            'border-color': '#A78BFA',
+            'background-color': ENTITY_STYLES.Role.backgroundColor,
+            'border-color': ENTITY_STYLES.Role.borderColor,
             'shape': 'hexagon',
-            'width': '46px',
-            'height': '46px'
+            'width': ENTITY_STYLES.Role.width,
+            'height': ENTITY_STYLES.Role.height
           }
         },
         {
           selector: 'node[type = "Policy"]',
           style: {
-            'background-color': '#14B8A6', // Teal
-            'border-color': '#2DD4BF',
+            'background-color': ENTITY_STYLES.Policy.backgroundColor,
+            'border-color': ENTITY_STYLES.Policy.borderColor,
             'shape': 'diamond',
-            'width': '42px',
-            'height': '42px'
+            'width': ENTITY_STYLES.Policy.width,
+            'height': ENTITY_STYLES.Policy.height
           }
         },
         // Cloud Compute & Workloads
         {
           selector: 'node[type = "EC2"]',
           style: {
-            'background-color': '#10B981', // Emerald
-            'border-color': '#34D399',
+            'background-color': ENTITY_STYLES.EC2.backgroundColor,
+            'border-color': ENTITY_STYLES.EC2.borderColor,
             'shape': 'round-rectangle',
-            'width': '44px',
-            'height': '44px'
+            'width': ENTITY_STYLES.EC2.width,
+            'height': ENTITY_STYLES.EC2.height
           }
         },
         {
           selector: 'node[type = "Lambda"]',
           style: {
-            'background-color': '#EC4899', // Pink
-            'border-color': '#F472B6',
+            'background-color': ENTITY_STYLES.Lambda.backgroundColor,
+            'border-color': ENTITY_STYLES.Lambda.borderColor,
             'shape': 'ellipse',
-            'width': '42px',
-            'height': '42px'
+            'width': ENTITY_STYLES.Lambda.width,
+            'height': ENTITY_STYLES.Lambda.height
           }
         },
         // Cloud Storage
         {
           selector: 'node[type = "S3"]',
           style: {
-            'background-color': '#F59E0B', // Amber
-            'border-color': '#FBBF24',
+            'background-color': ENTITY_STYLES.S3.backgroundColor,
+            'border-color': ENTITY_STYLES.S3.borderColor,
             'shape': 'barrel',
-            'width': '44px',
-            'height': '44px'
+            'width': ENTITY_STYLES.S3.width,
+            'height': ENTITY_STYLES.S3.height
           }
         },
         // Cloud Databases
         {
           selector: 'node[type = "RDS"], node[type = "Aurora"]',
           style: {
-            'background-color': '#0EA5E9', // Sky Blue
-            'border-color': '#38BDF8',
+            'background-color': ENTITY_STYLES.RDS.backgroundColor,
+            'border-color': ENTITY_STYLES.RDS.borderColor,
             'shape': 'round-rectangle',
-            'width': '46px',
-            'height': '44px'
+            'width': ENTITY_STYLES.RDS.width,
+            'height': ENTITY_STYLES.RDS.height
           }
         },
         {
           selector: 'node[type = "DynamoDB"]',
           style: {
-            'background-color': '#A855F7', // Purple
-            'border-color': '#C084FC',
+            'background-color': ENTITY_STYLES.DynamoDB.backgroundColor,
+            'border-color': ENTITY_STYLES.DynamoDB.borderColor,
             'shape': 'round-rectangle',
-            'width': '44px',
-            'height': '44px'
+            'width': ENTITY_STYLES.DynamoDB.width,
+            'height': ENTITY_STYLES.DynamoDB.height
           }
         },
         // Security & Secrets
         {
           selector: 'node[type = "Secrets"], node[type = "Secret"]',
           style: {
-            'background-color': '#EF4444', // Red
-            'border-color': '#F87171',
-            'border-width': '3px',
+            'background-color': ENTITY_STYLES.Secrets.backgroundColor,
+            'border-color': ENTITY_STYLES.Secrets.borderColor,
+            'border-width': ENTITY_STYLES.Secrets.borderWidth || '3px',
             'shape': 'ellipse',
-            'width': '42px',
-            'height': '42px'
+            'width': ENTITY_STYLES.Secrets.width,
+            'height': ENTITY_STYLES.Secrets.height
           }
         },
         {
           selector: 'node[type = "KMS"]',
           style: {
-            'background-color': '#EAB308', // Yellow
-            'border-color': '#FACC15',
+            'background-color': ENTITY_STYLES.KMS.backgroundColor,
+            'border-color': ENTITY_STYLES.KMS.borderColor,
             'shape': 'diamond',
-            'width': '44px',
-            'height': '44px'
+            'width': ENTITY_STYLES.KMS.width,
+            'height': ENTITY_STYLES.KMS.height
           }
         },
         // Application & Network
         {
           selector: 'node[type = "APIGateway"], node[type = "API"]',
           style: {
-            'background-color': '#F97316', // Orange
-            'border-color': '#FB923C',
+            'background-color': ENTITY_STYLES.APIGateway.backgroundColor,
+            'border-color': ENTITY_STYLES.APIGateway.borderColor,
             'shape': 'round-rectangle',
-            'width': '44px',
-            'height': '44px'
+            'width': ENTITY_STYLES.APIGateway.width,
+            'height': ENTITY_STYLES.APIGateway.height
           }
         },
         {
           selector: 'node[type = "VPC"], node[type = "Subnet"], node[type = "SecurityGroup"]',
           style: {
-            'background-color': '#059669', // Dark Emerald
-            'border-color': '#10B981',
+            'background-color': ENTITY_STYLES.VPC.backgroundColor,
+            'border-color': ENTITY_STYLES.VPC.borderColor,
             'shape': 'round-rectangle',
-            'width': '44px',
-            'height': '44px'
+            'width': ENTITY_STYLES.VPC.width,
+            'height': ENTITY_STYLES.VPC.height
           }
         },
 
@@ -1224,7 +1210,8 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
             <Filter className="w-3 h-3 text-gray-500" /> Universe:
           </span>
           {Object.entries(categoryCounts).map(([type, count]) => {
-            const color = filterColors[type] || '#6B7280';
+            const normalized = normalizeGraphType(type);
+            const color = CANONICAL_FILTER_COLORS[normalized] || CANONICAL_FILTER_COLORS[type] || '#6B7280';
             const isActive = activeFilters[type] !== false;
             return (
               <button

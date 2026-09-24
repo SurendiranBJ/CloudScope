@@ -37,6 +37,7 @@ import { postCopilotMessage } from '../api/copilot';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import type { AttackPath, AttackPathNode } from '../types';
+import { ENTITY_STYLES, normalizeGraphType, getGraphEntityStyle } from '../constants/graphStyles';
 
 // Register dagre layout
 cytoscape.use(dagre);
@@ -272,7 +273,7 @@ export const AttackPaths: FC = () => {
       const matchesSeverity = severityFilter === 'all' || g.severity === severityFilter;
 
       const matchesType = resourceTypeFilter === 'all' || 
-        g.targets.some(t => t.type.toLowerCase() === resourceTypeFilter.toLowerCase());
+        g.targets.some(t => normalizeGraphType(t.type).toLowerCase() === normalizeGraphType(resourceTypeFilter).toLowerCase());
 
       return matchesSearch && matchesSeverity && matchesType;
     });
@@ -494,8 +495,8 @@ export const AttackPaths: FC = () => {
         {
           selector: 'node[type="User"]',
           style: {
-            'background-color': '#3B82F6', // Blue
-            'border-color': '#60A5FA',
+            'background-color': ENTITY_STYLES.User.backgroundColor,
+            'border-color': ENTITY_STYLES.User.borderColor,
             'shape': 'ellipse',
             'width': '42px',
             'height': '42px'
@@ -504,8 +505,8 @@ export const AttackPaths: FC = () => {
         {
           selector: 'node[type="Group"]',
           style: {
-            'background-color': '#6366F1', // Indigo
-            'border-color': '#818CF8',
+            'background-color': ENTITY_STYLES.Group.backgroundColor,
+            'border-color': ENTITY_STYLES.Group.borderColor,
             'border-width': '3px',
             'shape': 'round-rectangle',
             'width': '52px',
@@ -515,8 +516,8 @@ export const AttackPaths: FC = () => {
         {
           selector: 'node[type="Policy"]',
           style: {
-            'background-color': '#14B8A6', // Teal
-            'border-color': '#2DD4BF',
+            'background-color': ENTITY_STYLES.Policy.backgroundColor,
+            'border-color': ENTITY_STYLES.Policy.borderColor,
             'shape': 'diamond',
             'width': '42px',
             'height': '42px'
@@ -525,8 +526,8 @@ export const AttackPaths: FC = () => {
         {
           selector: 'node[type="Role"]',
           style: {
-            'background-color': '#8B5CF6', // Purple
-            'border-color': '#A78BFA',
+            'background-color': ENTITY_STYLES.Role.backgroundColor,
+            'border-color': ENTITY_STYLES.Role.borderColor,
             'shape': 'hexagon',
             'width': '46px',
             'height': '46px'
@@ -535,48 +536,48 @@ export const AttackPaths: FC = () => {
         {
           selector: 'node[type="S3"]',
           style: {
-            'background-color': '#F59E0B', // Amber
-            'border-color': '#FBBF24',
+            'background-color': ENTITY_STYLES.S3.backgroundColor,
+            'border-color': ENTITY_STYLES.S3.borderColor,
             'shape': 'barrel'
           }
         },
         {
           selector: 'node[type="EC2"]',
           style: {
-            'background-color': '#10B981', // Emerald
-            'border-color': '#34D399',
+            'background-color': ENTITY_STYLES.EC2.backgroundColor,
+            'border-color': ENTITY_STYLES.EC2.borderColor,
             'shape': 'round-rectangle'
           }
         },
         {
           selector: 'node[type="Lambda"]',
           style: {
-            'background-color': '#EC4899', // Pink
-            'border-color': '#F472B6',
+            'background-color': ENTITY_STYLES.Lambda.backgroundColor,
+            'border-color': ENTITY_STYLES.Lambda.borderColor,
             'shape': 'ellipse'
           }
         },
         {
           selector: 'node[type="RDS"]',
           style: {
-            'background-color': '#0EA5E9', // Sky Blue
-            'border-color': '#38BDF8',
+            'background-color': ENTITY_STYLES.RDS.backgroundColor,
+            'border-color': ENTITY_STYLES.RDS.borderColor,
             'shape': 'database' as cytoscape.Css.NodeShape
           }
         },
         {
           selector: 'node[type="DynamoDB"]',
           style: {
-            'background-color': '#06B6D4', // Cyan
-            'border-color': '#22D3EE',
+            'background-color': ENTITY_STYLES.DynamoDB.backgroundColor,
+            'border-color': ENTITY_STYLES.DynamoDB.borderColor,
             'shape': 'database' as cytoscape.Css.NodeShape
           }
         },
         {
           selector: 'node[type="Secrets"], node[type="Secret"]',
           style: {
-            'background-color': '#EF4444', // Red
-            'border-color': '#F87171',
+            'background-color': ENTITY_STYLES.Secrets.backgroundColor,
+            'border-color': ENTITY_STYLES.Secrets.borderColor,
             'border-width': '3px',
             'shape': 'ellipse'
           }
@@ -1096,13 +1097,17 @@ Explain why this shared privilege path introduces high blast radius across multi
           <div ref={containerRef} className="w-full flex-1 relative bg-[#0B1120] rounded-lg" />
 
           {/* Canvas Helper Legend */}
-          <div className="absolute bottom-6 left-6 z-10 bg-gray-900/90 backdrop-blur-md border border-gray-700 rounded-lg px-3 py-1.5 text-[10px] flex items-center gap-3 text-gray-300">
-            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500" /><span>User</span></div>
-            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded bg-indigo-500" /><span>Group</span></div>
-            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rotate-45 bg-teal-500" /><span>Policy</span></div>
-            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-purple-500" /><span>Role</span></div>
-            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded bg-amber-500" /><span>Resource</span></div>
-            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500" /><span>Secret</span></div>
+          <div className="absolute bottom-6 left-6 z-10 bg-gray-900/90 backdrop-blur-md border border-gray-700 rounded-lg px-3 py-1.5 text-[10px] flex items-center gap-3 text-gray-300 flex-wrap max-w-2xl">
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ENTITY_STYLES.User.backgroundColor }} /><span>User</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded" style={{ backgroundColor: ENTITY_STYLES.Group.backgroundColor }} /><span>Group</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rotate-45" style={{ backgroundColor: ENTITY_STYLES.Policy.backgroundColor }} /><span>Policy</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: ENTITY_STYLES.Role.backgroundColor }} /><span>Role</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded" style={{ backgroundColor: ENTITY_STYLES.S3.backgroundColor }} /><span>S3</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded" style={{ backgroundColor: ENTITY_STYLES.EC2.backgroundColor }} /><span>EC2</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ENTITY_STYLES.Lambda.backgroundColor }} /><span>Lambda</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded" style={{ backgroundColor: ENTITY_STYLES.RDS.backgroundColor }} /><span>RDS</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded" style={{ backgroundColor: ENTITY_STYLES.DynamoDB.backgroundColor }} /><span>DynamoDB</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ENTITY_STYLES.Secrets.backgroundColor }} /><span>Secrets</span></div>
           </div>
         </div>
       )}
@@ -1423,33 +1428,15 @@ Explain why this shared privilege path introduces high blast radius across multi
                           : (group.targets.length > 0
                               ? findExactEdgeLabel(group, node.id || node.name, group.targets[0].id || group.targets[0].name)
                               : '');
+                        const nodeStyle = getGraphEntityStyle(node.type);
 
                         return (
                           <div key={node.id || node.name} className="flex flex-col items-center w-full">
                             {/* Node Box */}
-                            <div className={`px-4 py-2 rounded-xl border flex items-center gap-3 shadow-md min-w-[240px] justify-center ${
-                              (node.type as string) === 'User'
-                                ? 'bg-blue-950/40 border-blue-500/50 text-blue-100'
-                                : (node.type as string) === 'Group'
-                                ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-100'
-                                : (node.type as string) === 'Policy'
-                                ? 'bg-teal-950/40 border-teal-500/50 text-teal-100'
-                                : (node.type as string) === 'Role'
-                                ? 'bg-purple-950/40 border-purple-500/50 text-purple-100'
-                                : 'bg-slate-900 border-gray-700 text-gray-200'
-                            }`}>
+                            <div className={`px-4 py-2 rounded-xl border flex items-center gap-3 shadow-md min-w-[240px] justify-center ${nodeStyle.cardBgBorder}`}>
                               <span
-                                className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
-                                  (node.type as string) === 'User'
-                                    ? 'bg-blue-400'
-                                    : (node.type as string) === 'Group'
-                                    ? 'bg-indigo-400'
-                                    : (node.type as string) === 'Policy'
-                                    ? 'bg-teal-400'
-                                    : (node.type as string) === 'Role'
-                                    ? 'bg-purple-400'
-                                    : 'bg-amber-400'
-                                }`}
+                                className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm"
+                                style={{ backgroundColor: nodeStyle.dotBg }}
                               />
                               <div className="text-center">
                                 <p className="font-bold text-xs text-white leading-tight font-mono">{node.name}</p>
@@ -1491,47 +1478,27 @@ Explain why this shared privilege path introduces high blast radius across multi
                       {/* Target Resources Grid */}
                       <div className="flex flex-wrap items-center justify-center gap-3 mt-3 w-full">
                         {group.targets.map((target) => {
-                          const t = target.type as string;
-                          const isCritical = t === 'Secrets' || t === 'Secret' || t === 'RDS';
-                          const isCompute = t === 'EC2' || t === 'Lambda';
-                          const isDatabase = t === 'RDS' || t === 'DynamoDB' || t === 'AuroraDBUser';
-                          const isRole = t === 'Role';
-
-                          const cardBgBorder = isCritical
-                            ? 'bg-red-950/50 border-red-500/70 text-red-100 ring-1 ring-red-500/30'
-                            : t === 'EC2'
-                            ? 'bg-emerald-950/40 border-emerald-500/60 text-emerald-100'
-                            : t === 'Lambda'
-                            ? 'bg-pink-950/40 border-pink-500/60 text-pink-100'
-                            : isDatabase
-                            ? 'bg-sky-950/40 border-sky-500/60 text-sky-100'
-                            : isRole
-                            ? 'bg-purple-950/40 border-purple-500/60 text-purple-100'
-                            : 'bg-amber-950/30 border-amber-500/50 text-amber-100';
-
-                          const dotColor = isCritical
-                            ? 'bg-red-400 animate-pulse'
-                            : t === 'EC2'
-                            ? 'bg-emerald-400'
-                            : t === 'Lambda'
-                            ? 'bg-pink-400'
-                            : isDatabase
-                            ? 'bg-sky-400'
-                            : isRole
-                            ? 'bg-purple-400'
-                            : 'bg-amber-400';
+                          const normType = normalizeGraphType(target.type);
+                          const targetStyle = getGraphEntityStyle(target.type);
+                          const isCritical = normType === 'Secrets' || (normType === 'RDS' && (target.riskScore ?? 0) >= 80);
+                          const isCompute = normType === 'EC2' || normType === 'Lambda';
 
                           return (
                             <div
                               key={target.id || target.name}
-                              className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-transform hover:scale-105 ${cardBgBorder}`}
+                              className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-transform hover:scale-105 ${targetStyle.cardBgBorder}`}
                             >
-                              <span className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${dotColor}`} />
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
+                                  normType === 'Secrets' ? 'animate-pulse' : ''
+                                }`}
+                                style={{ backgroundColor: targetStyle.dotBg }}
+                              />
                               <div>
                                 <p className="font-bold text-xs text-white leading-tight font-mono">{target.name}</p>
                                 <div className="flex items-center gap-1.5 mt-0.5">
                                   <span className="text-[9px] text-gray-300 font-mono">
-                                    Type: <strong className="text-white uppercase">{target.type}</strong>
+                                    Type: <strong className="text-white uppercase">{target.type || normType}</strong>
                                   </span>
                                   {isCritical && (
                                     <span className="text-[8px] text-red-400 font-bold bg-red-950 px-1 rounded uppercase">CRITICAL</span>
