@@ -96,6 +96,9 @@ class AttackPath(BaseModel):
     risk_factors: Optional[Dict[str, Any]] = None
     correlation_status: Optional[str] = None
     observed_activity: Optional[List[Dict[str, Any]]] = None
+    target_type: Optional[str] = None
+    target_category: Optional[str] = None
+    targetCategory: Optional[str] = None
 
 class FindingRemediation(BaseModel):
     title: str

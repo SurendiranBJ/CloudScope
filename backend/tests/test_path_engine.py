@@ -194,3 +194,148 @@ class TestFindAttackPaths:
         # First path must have higher or equal riskScore than second
         assert paths[0]["riskScore"] >= paths[1]["riskScore"]
         assert paths[0]["destination"] == "res-high"
+
+    def test_target_discovery_all_cloud_resource_types(self):
+        """Verify attack paths ending at ALL cloud resource types are discovered:
+        1. User -> Policy -> Lambda (COMPUTE_RESOURCE)
+        2. User -> Policy -> EC2 (COMPUTE_RESOURCE)
+        3. User -> Policy -> S3 (DATA_RESOURCE)
+        4. User -> Role -> Policy -> RDS (DATA_RESOURCE)
+        5. User -> Role -> Policy -> Secrets (CREDENTIAL_RESOURCE)
+        6. User -> Policy -> DynamoDB (DATA_RESOURCE)
+        """
+        G = nx.DiGraph()
+        G.add_node("usr-001", label="alice", type="User", riskScore=20)
+        G.add_node("rol-001", label="DataRole", type="Role", riskScore=70)
+        G.add_node("pol-compute", label="ComputePolicy", type="Policy", riskScore=40)
+        G.add_node("pol-data", label="DataPolicy", type="Policy", riskScore=60)
+
+        # Resources
+        G.add_node("lambda-001", label="ProcessOrderFunction", type="Lambda", riskScore=30)
+        G.add_node("ec2-001", label="WebServerInstance", type="EC2", riskScore=45)
+        G.add_node("s3-001", label="DataArchiveBucket", type="S3", riskScore=50)
+        G.add_node("rds-001", label="ProductionPostgres", type="RDS", riskScore=80)
+        G.add_node("sec-001", label="StripeApiKey", type="Secrets", riskScore=90)
+        G.add_node("dyn-001", label="SessionsTable", type="DynamoDB", riskScore=40)
+
+        # Direct policy edges to compute & S3 & DynamoDB
+        G.add_edge("usr-001", "pol-compute", label="HAS_POLICY")
+        G.add_edge("pol-compute", "lambda-001", label="ALLOWS")
+        G.add_edge("pol-compute", "ec2-001", label="ALLOWS")
+        G.add_edge("pol-compute", "s3-001", label="ALLOWS")
+        G.add_edge("pol-compute", "dyn-001", label="ALLOWS")
+
+        # AssumeRole chain to RDS and Secrets
+        G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
+        G.add_edge("rol-001", "pol-data", label="HAS_POLICY")
+        G.add_edge("pol-data", "rds-001", label="ALLOWS")
+        G.add_edge("pol-data", "sec-001", label="ALLOWS")
+
+        paths = find_attack_paths(G)
+
+        # 1. Lambda path discovered
+        lambda_paths = [p for p in paths if p["destination"] == "lambda-001"]
+        assert len(lambda_paths) == 1, "Expected path to Lambda"
+        assert lambda_paths[0]["target_type"] == "Lambda"
+        assert lambda_paths[0]["target_category"] == "COMPUTE_RESOURCE"
+        assert lambda_paths[0]["pathType"] == "compute_resource_access"
+
+        # 2. EC2 path discovered
+        ec2_paths = [p for p in paths if p["destination"] == "ec2-001"]
+        assert len(ec2_paths) == 1, "Expected path to EC2"
+        assert ec2_paths[0]["target_type"] == "EC2"
+        assert ec2_paths[0]["target_category"] == "COMPUTE_RESOURCE"
+        assert ec2_paths[0]["pathType"] == "compute_resource_access"
+
+        # 3. S3 path discovered
+        s3_paths = [p for p in paths if p["destination"] == "s3-001"]
+        assert len(s3_paths) == 1, "Expected path to S3"
+        assert s3_paths[0]["target_type"] == "S3"
+        assert s3_paths[0]["target_category"] == "DATA_RESOURCE"
+
+        # 4. RDS path discovered
+        rds_paths = [p for p in paths if p["destination"] == "rds-001"]
+        assert len(rds_paths) == 1, "Expected path to RDS"
+        assert rds_paths[0]["target_type"] == "RDS"
+        assert rds_paths[0]["target_category"] == "DATA_RESOURCE"
+        assert rds_paths[0]["pathType"] == "sensitive_resource_access"
+
+        # 5. Secrets path discovered
+        sec_paths = [p for p in paths if p["destination"] == "sec-001"]
+        assert len(sec_paths) == 1, "Expected path to Secrets"
+        assert sec_paths[0]["target_type"] == "Secrets"
+        assert sec_paths[0]["target_category"] == "CREDENTIAL_RESOURCE"
+        assert sec_paths[0]["pathType"] == "sensitive_resource_access"
+
+        # 6. DynamoDB path discovered
+        dyn_paths = [p for p in paths if p["destination"] == "dyn-001"]
+        assert len(dyn_paths) == 1, "Expected path to DynamoDB"
+        assert dyn_paths[0]["target_type"] == "DynamoDB"
+        assert dyn_paths[0]["target_category"] == "DATA_RESOURCE"
+
+    def test_lambda_workload_start_with_explicit_evidence(self):
+        """Verify Lambda is accepted as an attack starting point ONLY when it has
+        explicit structural evidence of an execution role with attached policies,
+        and not when unconfigured/dormant."""
+        G = nx.DiGraph()
+        # Lambda 1: Configured workload with execution role & policy
+        G.add_node("lambda-workload", label="ReportGenerator", type="Lambda", riskScore=40)
+        G.add_node("rol-exec", label="ReportExecRole", type="Role", riskScore=60,
+                   assume_role_policy='{"Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]}')
+        G.add_node("pol-s3", label="ReportS3Policy", type="Policy")
+        G.add_node("s3-target", label="CompanyReports", type="S3", riskScore=50)
+
+        G.add_edge("lambda-workload", "rol-exec", label="EXECUTES_WITH")
+        G.add_edge("rol-exec", "pol-s3", label="HAS_POLICY")
+        G.add_edge("pol-s3", "s3-target", label="ALLOWS")
+
+        # Lambda 2: Unconfigured Lambda without an execution role
+        G.add_node("lambda-dormant", label="DormantFunction", type="Lambda", riskScore=20)
+
+        paths = find_attack_paths(G)
+
+        # Workload Lambda -> Role -> Policy -> S3 must be found
+        workload_paths = [p for p in paths if p["source"] == "lambda-workload"]
+        assert len(workload_paths) == 1
+        assert workload_paths[0]["destination"] == "s3-target"
+        assert workload_paths[0]["orderedRelationships"] == ["EXECUTES_WITH", "HAS_POLICY", "ALLOWS"]
+
+        # Dormant Lambda must NOT be considered an attack start
+        dormant_paths = [p for p in paths if p["source"] == "lambda-dormant"]
+        assert len(dormant_paths) == 0
+
+    def test_lambda_execution_role_s3_not_attributed_to_invoking_user(self):
+        """Preserve difference between direct access and execution-role access:
+        Carol invoking FirstLambda does NOT collapse into Carol having direct S3 access."""
+        G = nx.DiGraph()
+        G.add_node("carol-no-mfa", label="carol-no-mfa", type="User", riskScore=25)
+        G.add_node("pol-invoke", label="CarolInvokePolicy", type="Policy")
+        G.add_node("fn-first", label="FirstLambda", type="Lambda", riskScore=30)
+        G.add_node("rol-exec", label="LambdaExecutionRole", type="Role", riskScore=70,
+                   assume_role_policy='{"Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]}')
+        G.add_node("pol-s3", label="S3FullAccessPolicy", type="Policy")
+        G.add_node("s3-bucket", label="production-data-bucket", type="S3", riskScore=75)
+
+        # Carol -> Policy -> FirstLambda
+        G.add_edge("carol-no-mfa", "pol-invoke", label="HAS_POLICY")
+        G.add_edge("pol-invoke", "fn-first", label="ALLOWS")
+
+        # FirstLambda -> Role -> Policy -> S3
+        G.add_edge("fn-first", "rol-exec", label="EXECUTES_WITH")
+        G.add_edge("rol-exec", "pol-s3", label="HAS_POLICY")
+        G.add_edge("pol-s3", "s3-bucket", label="ALLOWS")
+
+        paths = find_attack_paths(G)
+
+        # Carol has path to FirstLambda
+        carol_to_lambda = [p for p in paths if p["source"] == "carol-no-mfa" and p["destination"] == "fn-first"]
+        assert len(carol_to_lambda) == 1
+
+        # Carol does NOT have a valid semantic path directly to s3-bucket without valid transitions
+        carol_to_s3 = [p for p in paths if p["source"] == "carol-no-mfa" and p["destination"] == "s3-bucket"]
+        assert len(carol_to_s3) == 0, "Carol must not receive direct path to S3"
+
+        # The workload path from FirstLambda -> s3-bucket is present independently
+        lambda_to_s3 = [p for p in paths if p["source"] == "fn-first" and p["destination"] == "s3-bucket"]
+        assert len(lambda_to_s3) == 1
+

@@ -44,6 +44,94 @@ for _res in RESOURCE_TYPES:
     if _res != "AuroraDBUser":
         VALID_TRANSITIONS[("Policy", _res)] = {"ALLOWS"}
 
+# Standardized Target Architectural Categories
+TARGET_CATEGORIES: Dict[str, str] = {
+    "S3": "DATA_RESOURCE",
+    "RDS": "DATA_RESOURCE",
+    "DynamoDB": "DATA_RESOURCE",
+    "EC2": "COMPUTE_RESOURCE",
+    "Lambda": "COMPUTE_RESOURCE",
+    "Secrets": "CREDENTIAL_RESOURCE",
+    "Secret": "CREDENTIAL_RESOURCE",
+    "AuroraDBUser": "DATABASE_AUTH",
+    "Role": "IDENTITY_TARGET",
+}
+
+
+def get_target_category(target_type: str) -> str:
+    """Classify target entity into a standardized architectural category for display/filtering."""
+    return TARGET_CATEGORIES.get(target_type, "UNKNOWN")
+
+
+def _is_valid_lambda_workload_start(node_id: str, G: nx.DiGraph) -> bool:
+    """Determine whether a Lambda function qualifies as a workload attack-path starting point.
+
+    Design Decision (Workload Identity Analysis):
+    A serverless Lambda function is NOT considered an attack starting point simply because it exists.
+    It becomes an entry/starting point for workload compromise analysis ONLY when there is explicit
+    evidence of credentialed workload execution:
+    1. The Lambda function has an outbound EXECUTES_WITH relationship to an active IAM Role.
+    2. The execution Role exists in the graph and has attached IAM policies (HAS_POLICY).
+    3. The execution Role trust policy (if present) confirms service assumption by lambda.amazonaws.com.
+
+    This models compromised workload vectors (e.g. function code injection, SSRF, vulnerable dependencies)
+    without creating phantom starts for unconfigured or dormant functions.
+    """
+    for _, target_id in G.out_edges(node_id):
+        edge_data = G.get_edge_data(node_id, target_id, default={})
+        rel = (
+            edge_data.get("relationship")
+            or edge_data.get("label")
+            or edge_data.get("type")
+            or ""
+        )
+        if rel == "EXECUTES_WITH" and G.has_node(target_id) and G.nodes[target_id].get("type") == "Role":
+            role_attr = G.nodes[target_id]
+            # Check for attached policies on the execution role
+            has_policies = any(
+                (
+                    G.get_edge_data(target_id, p_id, default={}).get("relationship")
+                    or G.get_edge_data(target_id, p_id, default={}).get("label")
+                    or G.get_edge_data(target_id, p_id, default={}).get("type")
+                ) == "HAS_POLICY"
+                for _, p_id in G.out_edges(target_id)
+            )
+            if not has_policies:
+                continue
+
+            # Verify trust policy allows lambda.amazonaws.com if present
+            trust_policy = role_attr.get("assume_role_policy") or role_attr.get("trustPolicy") or {}
+            trusts_lambda = True
+            if trust_policy:
+                try:
+                    import json
+                    if isinstance(trust_policy, str) and trust_policy.startswith("{"):
+                        trust_policy = json.loads(trust_policy)
+                    from app.services.attack.policy_evaluator import parse_policy_document
+                    stmts = parse_policy_document(trust_policy)
+                    if stmts:
+                        trusts_lambda = False
+                        for stmt in stmts:
+                            if stmt.get("Effect") == "Allow":
+                                princ = stmt.get("Principal", {})
+                                if princ == "*":
+                                    trusts_lambda = True
+                                    break
+                                if isinstance(princ, dict):
+                                    svc = princ.get("Service", "")
+                                    if svc == "*" or "lambda.amazonaws.com" in svc or (
+                                        isinstance(svc, list) and any("lambda.amazonaws.com" in s for s in svc)
+                                    ):
+                                        trusts_lambda = True
+                                        break
+                except Exception:
+                    trusts_lambda = True
+
+            if trusts_lambda:
+                return True
+
+    return False
+
 
 def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
     """Validate that every successive node-type transition along path adheres
@@ -57,6 +145,8 @@ def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
     for n in path:
         if G.nodes[n].get("is_canonical") is False:
             return False
+
+    source_type = G.nodes[path[0]].get("type", "")
 
     for i in range(len(path) - 1):
         u, v = path[i], path[i + 1]
@@ -74,6 +164,18 @@ def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
         allowed_rels = VALID_TRANSITIONS.get((u_type, v_type))
         if not allowed_rels or rel_label not in allowed_rels:
             return False
+
+        # Workload transitions (EC2/Lambda -> Role via ATTACHED_TO / EXECUTES_WITH)
+        # are valid ONLY when the workload entity (EC2/Lambda) is the starting point of the path.
+        # Once an identity path reaches a resource via ALLOWS, that resource is a terminal target,
+        # not an identity bridge. An invoking user does NOT acquire the execution role's permissions.
+        if rel_label in {"EXECUTES_WITH", "ATTACHED_TO"}:
+            if i > 0:
+                return False
+            # A compute workload simply binding to its own configured execution role / instance profile
+            # in 1 hop is not an attack path; it must reach a target resource or assume another role.
+            if len(path) == 2 and source_type in {"EC2", "Lambda"}:
+                return False
 
     return True
 
@@ -110,7 +212,9 @@ def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) 
 
     if has_assume_role:
         # Reaching resources via AssumeRole
-        if target_type in ['Secrets', 'Secret', 'RDS']:
+        if target_type in ['EC2', 'Lambda']:
+            return "compute_resource_access"
+        if target_type in ['Secrets', 'Secret', 'RDS', 'DynamoDB', 'AuroraDBUser']:
             return "sensitive_resource_access"
         if target_type == 'S3':
             target_details = target_node.get('details', {})
@@ -121,7 +225,10 @@ def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) 
             return "privilege_escalation"
         return "lateral_movement"
 
-    if target_type in ['Secrets', 'Secret', 'RDS', 'AuroraDBUser']:
+    if target_type in ['EC2', 'Lambda']:
+        return "compute_resource_access"
+
+    if target_type in ['Secrets', 'Secret', 'RDS', 'DynamoDB', 'AuroraDBUser']:
         return "sensitive_resource_access"
 
     if target_type == 'S3':
@@ -155,10 +262,12 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
     t_type = target_attr.get('type', '')
     if t_type in ['Secrets', 'Secret']:
         target_sensitivity_bonus += 35
-    elif t_type in ['RDS', 'AuroraDBUser']:
+    elif t_type in ['RDS', 'AuroraDBUser', 'DynamoDB']:
         target_sensitivity_bonus += 30
     elif t_type == 'S3':
         target_sensitivity_bonus += 25
+    elif t_type in ['EC2', 'Lambda']:
+        target_sensitivity_bonus += 20
     elif t_type == 'Role' and target_risk >= 60:
         target_sensitivity_bonus += 30
 
@@ -455,18 +564,21 @@ def find_attack_paths(
     if not G or G.number_of_nodes() == 0:
         return []
 
-    # Starting points (Users and Compute) - canonical nodes only
+    # Starting points (Users, EC2, and verified Lambda workloads) - canonical nodes only
     starts = [
         n for n, attr in G.nodes(data=True)
-        if attr.get('type') in ['User', 'EC2']
+        if (
+            attr.get('type') in ['User', 'EC2']
+            or (attr.get('type') == 'Lambda' and _is_valid_lambda_workload_start(n, G))
+        )
         and attr.get('is_canonical') is not False
     ]
 
-    # Target points (Sensitive data stores and high-privilege roles) - canonical nodes only
+    # Target points (All canonical cloud resources and elevated roles) - canonical nodes only
     targets = [
         n for n, attr in G.nodes(data=True)
         if (
-            attr.get('type') in ['S3', 'Secrets', 'Secret', 'RDS', 'DynamoDB']
+            attr.get('type') in RESOURCE_TYPES
             or (attr.get('type') == 'Role' and attr.get('riskScore', 0) >= 40)
         )
         and attr.get('is_canonical') is not False
@@ -566,6 +678,8 @@ def find_attack_paths(
             mitre.append("T1078 - Valid Accounts")
         if source_type == 'EC2' and 'ATTACHED_TO' in ordered_relationships:
             mitre.append("T1078.004 - Cloud Administration via Instance Profile")
+        if source_type == 'Lambda' and 'EXECUTES_WITH' in ordered_relationships:
+            mitre.append("T1078.004 - Cloud Administration via Lambda Execution Role")
         if 'CAN_ASSUME' in ordered_relationships:
             mitre.append("T1548.003 - Subvert Trust Controls: AssumeRole")
         if 'ASSUMED_ROLE' in ordered_relationships:
@@ -578,6 +692,10 @@ def find_attack_paths(
             mitre.append("T1078 - Valid Accounts: Database IAM Authentication")
         if target_type in ['RDS', 'DynamoDB', 'AuroraDBUser'] and ('ALLOWS' in ordered_relationships or 'DB_CONNECT' in ordered_relationships or 'BELONGS_TO' in ordered_relationships):
             mitre.append("T1530 - Data from Cloud Database")
+        if target_type == 'EC2' and 'ALLOWS' in ordered_relationships:
+            mitre.append("T1578 - Modify Cloud Compute Infrastructure: EC2")
+        if target_type == 'Lambda' and 'ALLOWS' in ordered_relationships:
+            mitre.append("T1648 - Serverless Execution: Lambda")
 
         source_label = source_attr.get('label', source)
         target_label = target_attr.get('label', target)
@@ -601,6 +719,12 @@ def find_attack_paths(
             recommendations.append(f"Enable S3 Block Public Access and bucket encryption on '{target_label}'")
         if target_attr.get('type') in ['Secrets', 'Secret']:
             recommendations.append(f"Enable automatic secret rotation and restrict access to '{target_label}'")
+        if target_attr.get('type') == 'EC2':
+            recommendations.append(f"Restrict EC2 management permissions and enforce IMDSv2 on '{target_label}'")
+        if target_attr.get('type') == 'Lambda':
+            recommendations.append(f"Restrict invoke permissions and apply least privilege to '{target_label}' execution role")
+        if target_attr.get('type') in ['RDS', 'DynamoDB', 'AuroraDBUser']:
+            recommendations.append(f"Restrict database access policies and enable encryption at rest for '{target_label}'")
 
         # Step-by-step transition evidence
         transition_evidence: List[Dict[str, Any]] = []
@@ -694,12 +818,17 @@ def find_attack_paths(
                 "impact": f"Identity moves laterally across account boundaries to access '{target_label}'."
             }
 
+        target_cat = get_target_category(target_attr.get('type', ''))
+
         evaluated_paths.append({
             "source": source,
             "destination": target,
             "target": target,
             "pathType": path_type,
             "attack_type": path_type,
+            "target_type": target_attr.get('type', ''),
+            "target_category": target_cat,
+            "targetCategory": target_cat,
             "nodes": nodes_details,
             "ordered_nodes": nodes_details,
             "orderedRelationships": ordered_relationships,

@@ -565,6 +565,14 @@ export const AttackPaths: FC = () => {
           }
         },
         {
+          selector: 'node[type="DynamoDB"]',
+          style: {
+            'background-color': '#06B6D4', // Cyan
+            'border-color': '#22D3EE',
+            'shape': 'database' as cytoscape.Css.NodeShape
+          }
+        },
+        {
           selector: 'node[type="Secrets"], node[type="Secret"]',
           style: {
             'background-color': '#EF4444', // Red
@@ -1035,7 +1043,7 @@ Explain why this shared privilege path introduces high blast radius across multi
           {/* Resource Type Filter */}
           <div className="flex items-center gap-1 bg-gray-900 p-1 rounded-lg border border-gray-700 text-[11px]">
             <span className="text-gray-400 px-1 font-semibold">Target:</span>
-            {(['all', 's3', 'ec2', 'lambda', 'rds', 'secrets'] as const).map((t) => (
+            {(['all', 's3', 'ec2', 'lambda', 'rds', 'dynamodb', 'secrets'] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setResourceTypeFilter(t)}
@@ -1485,27 +1493,51 @@ Explain why this shared privilege path introduces high blast radius across multi
                         {group.targets.map((target) => {
                           const t = target.type as string;
                           const isCritical = t === 'Secrets' || t === 'Secret' || t === 'RDS';
+                          const isCompute = t === 'EC2' || t === 'Lambda';
+                          const isDatabase = t === 'RDS' || t === 'DynamoDB' || t === 'AuroraDBUser';
+                          const isRole = t === 'Role';
+
+                          const cardBgBorder = isCritical
+                            ? 'bg-red-950/50 border-red-500/70 text-red-100 ring-1 ring-red-500/30'
+                            : t === 'EC2'
+                            ? 'bg-emerald-950/40 border-emerald-500/60 text-emerald-100'
+                            : t === 'Lambda'
+                            ? 'bg-pink-950/40 border-pink-500/60 text-pink-100'
+                            : isDatabase
+                            ? 'bg-sky-950/40 border-sky-500/60 text-sky-100'
+                            : isRole
+                            ? 'bg-purple-950/40 border-purple-500/60 text-purple-100'
+                            : 'bg-amber-950/30 border-amber-500/50 text-amber-100';
+
+                          const dotColor = isCritical
+                            ? 'bg-red-400 animate-pulse'
+                            : t === 'EC2'
+                            ? 'bg-emerald-400'
+                            : t === 'Lambda'
+                            ? 'bg-pink-400'
+                            : isDatabase
+                            ? 'bg-sky-400'
+                            : isRole
+                            ? 'bg-purple-400'
+                            : 'bg-amber-400';
 
                           return (
                             <div
                               key={target.id || target.name}
-                              className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-transform hover:scale-105 ${
-                                isCritical
-                                  ? 'bg-red-950/50 border-red-500/70 text-red-100 ring-1 ring-red-500/30'
-                                  : 'bg-amber-950/30 border-amber-500/50 text-amber-100'
-                              }`}
+                              className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-transform hover:scale-105 ${cardBgBorder}`}
                             >
-                              <span
-                                className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
-                                  isCritical ? 'bg-red-400 animate-pulse' : 'bg-amber-400'
-                                }`}
-                              />
+                              <span className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${dotColor}`} />
                               <div>
                                 <p className="font-bold text-xs text-white leading-tight font-mono">{target.name}</p>
-                                <div className="flex items-center gap-1 mt-0.5">
-                                  <span className="text-[8px] text-gray-400 uppercase font-semibold">{target.type}</span>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[9px] text-gray-300 font-mono">
+                                    Type: <strong className="text-white uppercase">{target.type}</strong>
+                                  </span>
                                   {isCritical && (
                                     <span className="text-[8px] text-red-400 font-bold bg-red-950 px-1 rounded uppercase">CRITICAL</span>
+                                  )}
+                                  {isCompute && (
+                                    <span className="text-[8px] text-emerald-400 font-bold bg-emerald-950 px-1 rounded uppercase">COMPUTE</span>
                                   )}
                                 </div>
                               </div>

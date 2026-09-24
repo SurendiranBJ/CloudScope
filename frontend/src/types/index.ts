@@ -135,6 +135,9 @@ export interface AttackPath {
   correlationStatus?: 'POSSIBLE_CAPABILITY' | 'OBSERVED_ATTACK_ACTIVITY' | 'CORRELATED_ACTIVITY' | 'OBSERVED_ACTIVITY' | string;
   observed_activity?: any[];
   observedActivity?: any[];
+  target_type?: string;
+  target_category?: string;
+  targetCategory?: string;
 }
 
 export type FindingStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | 'SUPPRESSED';
