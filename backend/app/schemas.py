@@ -99,6 +99,8 @@ class AttackPath(BaseModel):
     target_type: Optional[str] = None
     target_category: Optional[str] = None
     targetCategory: Optional[str] = None
+    downstream_reachable_assets: Optional[List[Dict[str, Any]]] = None
+    downstreamReachableAssets: Optional[List[Dict[str, Any]]] = None
 
 class FindingRemediation(BaseModel):
     title: str

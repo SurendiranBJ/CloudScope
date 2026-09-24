@@ -57,6 +57,17 @@ export interface AttackPathNode {
   riskScore?: number;
 }
 
+export interface DownstreamReachableAsset {
+  id: string;
+  name: string;
+  type: string;
+  arn?: string;
+  region?: string;
+  riskScore?: number;
+  access_category?: string;
+  evidence?: Record<string, any>;
+}
+
 export interface TransitionEvidence {
   from_node: string;
   from_name?: string;
@@ -138,6 +149,8 @@ export interface AttackPath {
   target_type?: string;
   target_category?: string;
   targetCategory?: string;
+  downstream_reachable_assets?: DownstreamReachableAsset[];
+  downstreamReachableAssets?: DownstreamReachableAsset[];
 }
 
 export type FindingStatus = 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED' | 'SUPPRESSED';

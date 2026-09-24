@@ -36,7 +36,7 @@ import { getSimulationAttackPaths } from '../api/simulation';
 import { postCopilotMessage } from '../api/copilot';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
-import type { AttackPath, AttackPathNode } from '../types';
+import type { AttackPath, AttackPathNode, DownstreamReachableAsset } from '../types';
 import { ENTITY_STYLES, normalizeGraphType, getGraphEntityStyle } from '../constants/graphStyles';
 
 // Register dagre layout
@@ -48,6 +48,9 @@ export interface ConsolidatedAttackPathGroup {
   sources: AttackPathNode[];
   sharedChain: AttackPathNode[];
   targets: AttackPathNode[];
+  isRoleTarget?: boolean;
+  targetRole?: AttackPathNode;
+  downstreamAssets?: DownstreamReachableAsset[];
   originalPaths: AttackPath[];
   severity: 'critical' | 'high' | 'medium' | 'low';
   maxRiskScore: number;
@@ -71,6 +74,7 @@ export const AttackPaths: FC = () => {
   const [aiExpanded, setAiExpanded] = useState<Record<string, { loading: boolean; text: string; codeBlock?: string } | null>>({});
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
   const [evidenceExpanded, setEvidenceExpanded] = useState<Record<string, boolean>>({});
+  const [inspectedAsset, setInspectedAsset] = useState<DownstreamReachableAsset | null>(null);
 
   // Simulation View Controls
   const [simViewMode, setSimViewMode] = useState<'current' | 'desired' | 'diff'>('diff');
@@ -150,6 +154,13 @@ export const AttackPaths: FC = () => {
         }
       }
     }
+    // If connecting role to downstream reachable asset
+    if (group.isRoleTarget && group.downstreamAssets) {
+      const matchAsset = group.downstreamAssets.find(a => (a.id || a.name) === tgtNodeIdOrName);
+      if (matchAsset) {
+        return matchAsset.evidence?.action ? 'ALLOWS' : 'REACHABLE';
+      }
+    }
     return '';
   }
 
@@ -169,10 +180,15 @@ export const AttackPaths: FC = () => {
         ? path.nodes.slice(1, -1) 
         : (path.nodes.length === 2 ? [path.nodes[1]] : []);
 
-      // If path has length 2 and the 2nd node is a Role (e.g. carol -> OverlyTrustingAdminRole), treat 2nd node as shared role
-      const isDirectRoleTarget = path.nodes.length === 2 && path.nodes[1].type === 'Role';
-      const effectiveSharedChain = isDirectRoleTarget ? [path.nodes[1]] : intermediateNodes;
+      // If final node is a Role (e.g. Surendiran -> OverlyTrustingAdminRole), preserve role as target while displaying in chain
+      const isDirectRoleTarget = !!(targetNode && targetNode.type === 'Role');
+      const effectiveSharedChain = isDirectRoleTarget 
+        ? (path.nodes.length > 2 ? [...intermediateNodes, targetNode] : [targetNode])
+        : intermediateNodes;
       const effectiveTargetNode = isDirectRoleTarget ? null : targetNode;
+
+      const rawDownstream: DownstreamReachableAsset[] =
+        path.downstream_reachable_assets || (path as any).downstreamReachableAssets || [];
 
       // Grouping key: string of ordered shared privilege nodes + ordered relationships
       const relsKey = (path.orderedRelationships || []).join('=>');
@@ -197,6 +213,9 @@ export const AttackPaths: FC = () => {
           sources: [sourceNode],
           sharedChain: effectiveSharedChain,
           targets: effectiveTargetNode ? [effectiveTargetNode] : [],
+          isRoleTarget: isDirectRoleTarget,
+          targetRole: isDirectRoleTarget ? targetNode : undefined,
+          downstreamAssets: [...rawDownstream],
           originalPaths: [path],
           severity: sev,
           maxRiskScore: score,
@@ -221,6 +240,17 @@ export const AttackPaths: FC = () => {
         // Deduplicate and append target resource
         if (effectiveTargetNode && !group.targets.some(t => (t.id || t.name) === (effectiveTargetNode.id || effectiveTargetNode.name))) {
           group.targets.push(effectiveTargetNode);
+        }
+
+        // Deduplicate and append downstream reachable assets
+        if (rawDownstream.length > 0) {
+          if (!group.downstreamAssets) group.downstreamAssets = [];
+          rawDownstream.forEach((da) => {
+            const daId = da.id || da.name;
+            if (!group.downstreamAssets!.some((existing) => (existing.id || existing.name) === daId)) {
+              group.downstreamAssets!.push(da);
+            }
+          });
         }
 
         // Diff status prioritization: CHANGED > NEW > REMOVED > UNCHANGED
@@ -374,13 +404,14 @@ export const AttackPaths: FC = () => {
         }
       }
 
-      // 5. Connect last shared chain node -> all target resources
+      // 5. Connect last shared chain node -> all target resources or downstream reachable assets
       const lastSharedNode = group.sharedChain.length > 0 
         ? group.sharedChain[group.sharedChain.length - 1] 
         : group.sources[0];
       const lastSharedId = lastSharedNode ? (lastSharedNode.id || `node:${lastSharedNode.name}`) : null;
 
       if (lastSharedId && lastSharedNode) {
+        // Direct target resources (Cases B, C, D)
         group.targets.forEach((targetNode) => {
           const targetId = targetNode.id || `node:${targetNode.name}`;
           if (!nodesMap[targetId]) {
@@ -412,6 +443,42 @@ export const AttackPaths: FC = () => {
             edgesMap[branchEdgeId].data.groupIds.push(group.groupId);
           }
         });
+
+        // Downstream reachable assets (Case A - Role targets)
+        if (group.isRoleTarget && group.downstreamAssets) {
+          group.downstreamAssets.forEach((asset) => {
+            const assetId = asset.id || `asset:${asset.name}`;
+            if (!nodesMap[assetId]) {
+              nodesMap[assetId] = {
+                data: {
+                  id: assetId,
+                  label: asset.name,
+                  type: asset.type,
+                  isTarget: true,
+                  isDownstream: true,
+                  riskScore: asset.riskScore ?? group.maxRiskScore
+                }
+              };
+            }
+
+            const downstreamEdgeId = `downstream_edge:${lastSharedId}->${assetId}`;
+            if (!edgesMap[downstreamEdgeId]) {
+              edgesMap[downstreamEdgeId] = {
+                data: {
+                  id: downstreamEdgeId,
+                  source: lastSharedId,
+                  target: assetId,
+                  label: findExactEdgeLabel(group, lastSharedNode.id || lastSharedNode.name, asset.id || asset.name) || (asset.evidence?.action ? 'ALLOWS' : 'REACHABLE'),
+                  groupIds: [group.groupId],
+                  severity: group.severity,
+                  diffStatus: group.diffStatus
+                }
+              };
+            } else if (!edgesMap[downstreamEdgeId].data.groupIds.includes(group.groupId)) {
+              edgesMap[downstreamEdgeId].data.groupIds.push(group.groupId);
+            }
+          });
+        }
       }
     });
 
@@ -437,6 +504,16 @@ export const AttackPaths: FC = () => {
           uniqueCriticalTargets.add(targetId);
         }
       }
+      // Include downstream reachable assets in targets count
+      const downstream = p.downstream_reachable_assets || (p as any).downstreamReachableAssets || [];
+      downstream.forEach((da: any) => {
+        const dId = da.id || da.name;
+        uniqueTargets.add(dId);
+        const dt = da.type as string;
+        if (p.severity === 'critical' || dt === 'Secrets' || dt === 'Secret' || dt === 'RDS' || (da.riskScore && da.riskScore >= 70)) {
+          uniqueCriticalTargets.add(dId);
+        }
+      });
       if (p.nodes && p.nodes.length > maxDepth) {
         maxDepth = p.nodes.length;
       }
@@ -692,7 +769,8 @@ export const AttackPaths: FC = () => {
       const matchingGroup = consolidatedGroups.find(g => 
         g.sources.some(s => (s.id || `node:${s.name}`) === nodeId) ||
         g.sharedChain.some(n => (n.id || `node:${n.name}`) === nodeId) ||
-        g.targets.some(t => (t.id || `node:${t.name}`) === nodeId)
+        g.targets.some(t => (t.id || `node:${t.name}`) === nodeId) ||
+        (g.downstreamAssets && g.downstreamAssets.some(d => (d.id || `asset:${d.name}`) === nodeId))
       );
 
       if (matchingGroup) {
@@ -732,7 +810,8 @@ export const AttackPaths: FC = () => {
         const activeNodeIds = [
           ...activeSources.map(s => s.id || `node:${s.name}`),
           ...selectedGroup.sharedChain.map(n => n.id || `node:${n.name}`),
-          ...selectedGroup.targets.map(t => t.id || `node:${t.name}`)
+          ...selectedGroup.targets.map(t => t.id || `node:${t.name}`),
+          ...(selectedGroup.downstreamAssets || []).map(d => d.id || `asset:${d.name}`)
         ];
 
         // Highlight nodes
@@ -1460,8 +1539,8 @@ Explain why this shared privilege path introduces high blast radius across multi
                     </div>
                   ) : null}
 
-                  {/* LAYER 3: BRANCHING FORK CONNECTOR TO MULTIPLE TARGET ASSETS */}
-                  {group.targets.length > 0 && (
+                  {/* LAYER 3A: DIRECT RESOURCE TARGETS (Cases B, C, D) */}
+                  {!group.isRoleTarget && group.targets.length > 0 && (
                     <div className="w-full flex flex-col items-center mt-1">
                       
                       {/* Multi-Target Horizontal Distribution Line */}
@@ -1515,13 +1594,103 @@ Explain why this shared privilege path introduces high blast radius across multi
                     </div>
                   )}
 
+                  {/* LAYER 3B: DOWNSTREAM REACHABLE ASSETS (Case A - Role-Target Paths) */}
+                  {group.isRoleTarget && group.downstreamAssets && group.downstreamAssets.length > 0 && (
+                    <div className="w-full flex flex-col items-center mt-2">
+                      {/* Distribution Line with Downstream Impact Badge */}
+                      <div className="w-full flex flex-col items-center">
+                        <div className="w-3/4 max-w-2xl h-[2px] bg-gradient-to-r from-purple-500/20 via-purple-500 to-purple-500/20 my-1 relative">
+                          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-[#0B1120] px-2.5 py-0.5 text-[8px] font-mono font-bold text-purple-300 uppercase tracking-widest border border-purple-500/50 rounded-full shadow-sm flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                            Downstream Reachable Assets ({group.downstreamAssets.length})
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-gray-400 mt-2 font-mono text-center">
+                          Blast-radius cloud assets accessible via assumed role <strong className="text-purple-300">{group.targetRole?.name || 'elevated role'}</strong>
+                        </p>
+                      </div>
+
+                      {/* Downstream Assets Grid with Canonical Resource Colors */}
+                      <div className="flex flex-wrap items-center justify-center gap-3 mt-3 w-full">
+                        {group.downstreamAssets.map((asset) => {
+                          const normType = normalizeGraphType(asset.type);
+                          const assetStyle = getGraphEntityStyle(asset.type);
+                          const isCritical = normType === 'Secrets' || (normType === 'RDS' && (asset.riskScore ?? 0) >= 80);
+                          const isCompute = normType === 'EC2' || normType === 'Lambda';
+
+                          return (
+                            <div
+                              key={asset.id || asset.name}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setInspectedAsset(asset);
+                              }}
+                              className={`px-3.5 py-2 rounded-xl border flex items-center gap-2.5 shadow-lg transition-all hover:scale-105 cursor-pointer hover:ring-1 hover:ring-white/40 ${assetStyle.cardBgBorder}`}
+                              title="Click to inspect asset evidence and access details"
+                            >
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full shrink-0 shadow-sm ${
+                                  normType === 'Secrets' ? 'animate-pulse' : ''
+                                }`}
+                                style={{ backgroundColor: assetStyle.dotBg }}
+                              />
+                              <div>
+                                <p className="font-bold text-xs text-white leading-tight font-mono">{asset.name}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[9px] text-gray-300 font-mono">
+                                    Type: <strong className="text-white uppercase">{asset.type || normType}</strong>
+                                  </span>
+                                  {isCritical && (
+                                    <span className="text-[8px] text-red-400 font-bold bg-red-950 px-1 rounded uppercase">CRITICAL</span>
+                                  )}
+                                  {isCompute && (
+                                    <span className="text-[8px] text-emerald-400 font-bold bg-emerald-950 px-1 rounded uppercase">COMPUTE</span>
+                                  )}
+                                  {asset.region && (
+                                    <span className="text-[8px] text-gray-400 font-mono">{asset.region}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Bottom Impact Summary Bar */}
                   <div className="mt-5 pt-3 border-t border-gray-800/80 w-full flex items-center justify-between text-xs text-gray-400 flex-wrap gap-2">
-                    <div className="flex items-center gap-2">
-                      <Flame className="w-3.5 h-3.5 text-red-400" />
-                      <span className="font-mono text-[11px]">
-                        <strong className="text-white">Blast Radius:</strong> {group.blastRadiusSummary}
-                      </span>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <Flame className="w-3.5 h-3.5 text-red-400" />
+                        <span className="font-mono text-[11px]">
+                          <strong className="text-white">Blast Radius:</strong> {group.blastRadiusSummary}
+                        </span>
+                      </div>
+                      {/* Explainable asset breakdown */}
+                      {(() => {
+                        const assetsToBreakDown = (group.isRoleTarget && group.downstreamAssets && group.downstreamAssets.length > 0)
+                          ? group.downstreamAssets
+                          : group.targets;
+                        if (!assetsToBreakDown || assetsToBreakDown.length === 0) return null;
+                        
+                        const counts: Record<string, number> = {};
+                        assetsToBreakDown.forEach(a => {
+                          const t = normalizeGraphType(a.type);
+                          counts[t] = (counts[t] || 0) + 1;
+                        });
+                        const items = Object.entries(counts).map(([type, count]) => `${count} ${type}`);
+                        return (
+                          <div className="flex flex-wrap items-center gap-1.5 ml-5 mt-0.5">
+                            <span className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold">Assets:</span>
+                            {items.map((item, idx) => (
+                              <span key={idx} className="px-1.5 py-0.2 bg-gray-900 text-[9px] font-mono text-gray-300 rounded border border-gray-800">
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">MITRE ATT&CK:</span>
@@ -1604,6 +1773,98 @@ Explain why this shared privilege path introduces high blast radius across multi
           })
         )}
       </div>
+
+      {/* Downstream Reachable Asset Inspection Modal */}
+      {inspectedAsset && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setInspectedAsset(null)}
+        >
+          <div
+            className="bg-[#0B1120] border border-gray-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-gray-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className="w-3 h-3 rounded-full shrink-0"
+                  style={{ backgroundColor: getGraphEntityStyle(inspectedAsset.type).dotBg }}
+                />
+                <div>
+                  <h3 className="font-bold text-sm text-white font-mono">{inspectedAsset.name}</h3>
+                  <p className="text-[10px] text-gray-400 font-mono mt-0.5">
+                    Type: <strong className="text-white uppercase">{inspectedAsset.type}</strong>
+                    {inspectedAsset.region && ` • Region: ${inspectedAsset.region}`}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setInspectedAsset(null)}
+                className="text-gray-400 hover:text-white px-2 py-1 rounded-lg hover:bg-gray-800 text-xs font-mono transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-xs">
+              {inspectedAsset.arn && (
+                <div>
+                  <span className="text-[10px] text-gray-500 uppercase font-semibold block">Resource ARN</span>
+                  <span className="font-mono text-gray-300 break-all text-[11px] bg-gray-900/80 px-2 py-1 rounded block border border-gray-800 mt-1">
+                    {inspectedAsset.arn}
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-gray-900/60 p-2.5 rounded-xl border border-gray-800">
+                  <span className="text-[10px] text-gray-500 uppercase font-semibold block">Category</span>
+                  <span className="font-mono text-white text-xs mt-0.5 block">{inspectedAsset.access_category || 'CLOUD_RESOURCE'}</span>
+                </div>
+                <div className="bg-gray-900/60 p-2.5 rounded-xl border border-gray-800">
+                  <span className="text-[10px] text-gray-500 uppercase font-semibold block">Risk Score</span>
+                  <span className="font-mono text-white text-xs mt-0.5 block">{inspectedAsset.riskScore ?? 50}/100</span>
+                </div>
+              </div>
+
+              {inspectedAsset.evidence && (
+                <div className="bg-gray-950/70 p-3 rounded-xl border border-gray-800 space-y-1.5">
+                  <span className="text-[10px] text-purple-400 uppercase font-semibold tracking-wider block">
+                    Authorization & Provenance Evidence
+                  </span>
+                  {inspectedAsset.evidence.policy_name && (
+                    <p className="text-gray-300 text-[11px] font-mono">
+                      <strong className="text-gray-400">Policy:</strong> {inspectedAsset.evidence.policy_name}
+                    </p>
+                  )}
+                  {inspectedAsset.evidence.action && (
+                    <p className="text-gray-300 text-[11px] font-mono">
+                      <strong className="text-gray-400">Allowed Action:</strong>{' '}
+                      {Array.isArray(inspectedAsset.evidence.action)
+                        ? inspectedAsset.evidence.action.join(', ')
+                        : String(inspectedAsset.evidence.action)}
+                    </p>
+                  )}
+                  {inspectedAsset.evidence.why && (
+                    <p className="text-gray-300 text-[11px] font-mono">
+                      <strong className="text-gray-400">Reason:</strong> {inspectedAsset.evidence.why}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => setInspectedAsset(null)}
+                className="px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-xs font-semibold transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

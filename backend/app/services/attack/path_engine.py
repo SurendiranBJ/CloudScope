@@ -554,11 +554,159 @@ def compute_effective_blast_radius(
     return desc, count
 
 
+def get_downstream_reachable_assets(
+    target_node_id: str,
+    G: nx.DiGraph,
+    precomputed_records: Optional[List[Dict[str, Any]]] = None,
+    source_node_id: Optional[str] = None,
+    max_hops: int = MAX_ROLE_HOPS,
+) -> List[Dict[str, Any]]:
+    """Discover actual downstream cloud resources reachable from an elevated target Role.
+
+    Supports: S3, EC2, Lambda, RDS, DynamoDB, Secrets.
+    Uses authoritative effective access records where available, with semantic graph traversal fallback.
+    Returns list of dicts with: id, name, type, arn, region, riskScore, access_category, evidence.
+    """
+    if not G or not G.has_node(target_node_id):
+        return []
+
+    target_attr = G.nodes[target_node_id]
+    if target_attr.get("type") != "Role":
+        return []
+
+    target_label = target_attr.get("label") or target_attr.get("name") or target_node_id
+    target_arn = target_attr.get("arn", "")
+
+    assets_map: Dict[str, Dict[str, Any]] = {}
+
+    # 1. Authoritative effective access records
+    if precomputed_records is not None:
+        source_label = (
+            G.nodes[source_node_id].get("label", source_node_id)
+            if (source_node_id and G.has_node(source_node_id))
+            else ""
+        )
+        for rec in precomputed_records:
+            r_type = rec.get("target_resource_type", "")
+            if r_type not in RESOURCE_TYPES:
+                continue
+
+            ident_name = rec.get("identity_name", "")
+            ident_id = rec.get("identity_id", "")
+            acc_path = rec.get("access_path", [])
+
+            # Check if this record is for the target role or traverses the target role
+            is_match = (
+                ident_name == target_label
+                or ident_id in (target_node_id, target_arn, f"aws:role:{target_label}")
+                or target_label in acc_path
+                or target_node_id in acc_path
+                or (
+                    source_label
+                    and (ident_name == source_label or ident_id == source_node_id)
+                    and target_label in acc_path
+                )
+            )
+            if not is_match:
+                continue
+
+            r_id = rec.get("target_resource_id") or rec.get("target_resource_name") or ""
+            r_name = rec.get("target_resource_name") or rec.get("target_resource_id") or r_id
+            ev = rec.get("evidence", {})
+            r_arn = ev.get("resource_arn") or rec.get("target_resource_arn") or ""
+            r_region = ev.get("region") or ""
+
+            # Resolve node in G for accurate riskScore/region
+            res_node_attr = {}
+            if G.has_node(r_id):
+                res_node_attr = G.nodes[r_id]
+            elif r_arn and G.has_node(r_arn):
+                res_node_attr = G.nodes[r_arn]
+            else:
+                for nid, nattr in G.nodes(data=True):
+                    if (nattr.get("label") == r_name or nid.endswith(f":{r_name}")) and nattr.get("type") == r_type:
+                        res_node_attr = nattr
+                        r_id = nid
+                        break
+
+            r_risk = res_node_attr.get("riskScore", 0) or ev.get("riskScore", 50)
+            if not r_region:
+                r_region = res_node_attr.get("region", "global")
+            if not r_arn:
+                r_arn = res_node_attr.get("arn", "")
+
+            asset_key = r_arn or r_id or r_name
+            if asset_key and asset_key not in assets_map:
+                assets_map[asset_key] = {
+                    "id": r_id,
+                    "name": r_name,
+                    "type": r_type,
+                    "arn": r_arn,
+                    "region": r_region,
+                    "riskScore": r_risk,
+                    "access_category": get_target_category(r_type),
+                    "evidence": ev,
+                }
+
+    # 2. Graph traversal fallback (e.g. synthetic test graphs without AWS inventory)
+    if not assets_map:
+        target_resource_nodes = [
+            n for n, attr in G.nodes(data=True)
+            if attr.get("type") in RESOURCE_TYPES and n != target_node_id
+        ]
+        for tr in target_resource_nodes:
+            if not nx.has_path(G, target_node_id, tr):
+                continue
+            try:
+                for p in nx.all_simple_paths(G, target_node_id, tr, cutoff=max_hops):
+                    if _validate_path_security_semantics(p, G):
+                        tr_attr = G.nodes[tr]
+                        tr_type = tr_attr.get("type", "Resource")
+                        tr_name = tr_attr.get("label", tr)
+                        tr_arn = tr_attr.get("arn", "")
+                        tr_key = tr_arn or tr or tr_name
+                        if tr_key not in assets_map:
+                            edge_data = G.get_edge_data(p[-2], p[-1], default={})
+                            prov = edge_data.get("provenance") or {}
+                            action = edge_data.get("action") or prov.get("action", "*")
+                            why = edge_data.get("why") or prov.get("why") or f"Policy '{G.nodes[p[-2]].get('label', p[-2])}' allows action '{action}' on {tr_type} '{tr_name}'"
+                            ev = {
+                                "source": " -> ".join(
+                                    f"[{G.get_edge_data(p[k], p[k+1], default={}).get('relationship') or G.get_edge_data(p[k], p[k+1], default={}).get('label') or ''}]"
+                                    for k in range(len(p)-1)
+                                ),
+                                "policy_name": edge_data.get("policy_name") or G.nodes[p[-2]].get("label", ""),
+                                "action": action,
+                                "decision": "ALLOWED",
+                                "resource_arn": tr_arn,
+                                "region": tr_attr.get("region", "global"),
+                                "why": why
+                            }
+                            assets_map[tr_key] = {
+                                "id": tr,
+                                "name": tr_name,
+                                "type": tr_type,
+                                "arn": tr_arn,
+                                "region": tr_attr.get("region", "global"),
+                                "riskScore": tr_attr.get("riskScore", 0),
+                                "access_category": get_target_category(tr_type),
+                                "evidence": ev,
+                            }
+                        break
+            except Exception:
+                continue
+
+    sorted_assets = list(assets_map.values())
+    sorted_assets.sort(key=lambda a: (-a.get("riskScore", 0), a.get("type", ""), a.get("name", "")))
+    return sorted_assets
+
+
 def find_attack_paths(
     G: nx.DiGraph,
     max_hops: int = MAX_ROLE_HOPS,
     inventory: Any = None,
     policy_doc_map: Optional[Dict[str, str]] = None,
+    precomputed_records: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Discover deterministic attack paths traversing identities, policies, and cloud resources."""
     if not G or G.number_of_nodes() == 0:
@@ -661,13 +809,28 @@ def find_attack_paths(
         path_eval = calculate_path_risk_score(path, G, ordered_relationships)
         path_type = classify_path_type(path, G, ordered_relationships)
 
-        # Authoritative effective-access blast radius
-        if source not in blast_cache:
-            desc, _ = compute_effective_blast_radius(
-                source, G, inventory, policy_doc_map, precomputed_records=precomputed_records
+        # Authoritative effective-access blast radius & downstream reachable assets
+        if target_attr.get('type') == 'Role':
+            downstream_assets = get_downstream_reachable_assets(
+                target, G, precomputed_records=precomputed_records, source_node_id=source, max_hops=max_hops
             )
-            blast_cache[source] = desc
-        blast_radius_desc = blast_cache[source]
+            count = len(downstream_assets)
+            if count >= 5:
+                blast_radius_desc = f"High ({count} unique cloud assets)"
+            elif count >= 2:
+                blast_radius_desc = f"Medium ({count} unique cloud assets)"
+            elif count == 1:
+                blast_radius_desc = "Low (1 unique cloud asset)"
+            else:
+                blast_radius_desc = "Low (0 unique cloud assets)"
+        else:
+            downstream_assets = []
+            if source not in blast_cache:
+                desc, _ = compute_effective_blast_radius(
+                    source, G, inventory, policy_doc_map, precomputed_records=precomputed_records
+                )
+                blast_cache[source] = desc
+            blast_radius_desc = blast_cache[source]
 
         # MITRE ATT&CK mapping based on actual security behavior
         mitre = []
@@ -839,6 +1002,8 @@ def find_attack_paths(
             "severity": path_eval["severity"],
             "confidence": path_eval["confidence"],
             "blastRadius": blast_radius_desc,
+            "downstream_reachable_assets": downstream_assets,
+            "downstreamReachableAssets": downstream_assets,
             "mitreTechniques": mitre,
             "description": description,
             "reason": description,
