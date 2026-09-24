@@ -130,7 +130,7 @@ CloudScope operates as a single, continuous, unified security analysis pipeline:
    - **Centralized Semantic Edge Validation**: Centralized validation (`validate_edge`) ensures every relationship adheres to explicit AWS authorization semantics. Illegal edges (e.g. `Secret -[ALLOWS]-> User`) are deterministically rejected with diagnostic feedback.
    - **Provenance-Backed Relationships**: All graph edges (`MEMBER_OF`, `HAS_POLICY`, `CAN_ASSUME`, `EXECUTES_WITH`, `DB_CONNECT`, `ALLOWS`) carry full authorization provenance metadata: `policy_name`, `statement_sid`, `action`, `decision`, `why`, `region`, and `evidence`.
    - **Dual-Signature `iam:PassRole` Escalation Analysis**: Evaluates `iam:PassRole` permission to pass an elevated target role (risk score >= 60) that trusts an AWS compute service (`lambda.amazonaws.com`, `ec2.amazonaws.com`).
-   - **Authoritative Effective-Access Blast Radius**: Strictly counts unique reachable cloud data resources (S3, Secrets, RDS, DynamoDB), cleanly separating operational target assets from intermediate IAM roles and policies.
+   - **Authoritative Effective-Access Blast Radius**: Strictly counts unique reachable cloud data and compute resources (S3, EC2, Lambda, RDS, DynamoDB, Secrets), cleanly separating operational target assets from intermediate IAM roles and policies.
    - **Explainable Attack Path Details**: Attack paths return complete `ordered_nodes`, `ordered_relationships`, and step-by-step `transition_evidence` showing exact authorization rationale and region context for every hop.
 
 10. **CloudTrail Runtime Activity Analysis & 4-State Correlation (Phase 4)**:
@@ -349,20 +349,28 @@ The scan pipeline instruments every execution phase with high-resolution monoton
 
 ## 🧭 Identity Graph Analyst Visualization
 
-CloudScope features an interactive, high-readability Identity Graph designed specifically for security analysts to quickly comprehend complex IAM topologies without getting overwhelmed by statement-level hairballs:
+CloudScope features an interactive, path-centric Identity Graph designed specifically for security analysts to quickly comprehend complex IAM topologies and attack exposure without getting overwhelmed by statement-level clutter:
 
-- **Deterministic 3-Column Hierarchical Layout**:
-  - **Column 1 (Left)**: IAM Principals & Identities (`IAM Users`, `IAM Groups`).
-  - **Column 2 (Center)**: Execution & Privilege Boundaries (`IAM Roles`).
-  - **Column 3 (Right)**: Reachable Cloud Assets & Workloads (`S3`, `EC2`, `Lambda`, `RDS`, `Secrets Manager`, etc.).
-  - Remains stable across browser reloads and minimizes edge crossings.
+- **Path-Centric Security Visualization**:
+  - Preserves the full cloud topology as global context while dynamically focusing on active identity and resource attack paths.
+  - The relevant identity/resource subgraph is highlighted with distinct colored borders and glowing badges, while unrelated nodes and edges are smoothly dimmed for immediate visual clarity.
+  - Interactive layouts (`dagre`, `concentric`, `breadthfirst`) adapt naturally across browser viewports while minimizing edge crossings.
+
+- **Centralized Canonical Styling (`graphStyles.ts`)**:
+  - Unified visual styling and color system shared across the Identity Graph and Attack Path UI.
+  - Authoritative palette: User (`#3B82F6`), Group (`#6366F1`), Policy (`#14B8A6`), Role (`#8B5CF6`), S3 (`#F59E0B`), EC2 (`#10B981`), Lambda (`#EC4899`), RDS (`#0EA5E9`), DynamoDB (`#A855F7`), Secrets (`#EF4444`).
+  - Supported cloud resources comprehensively cover EC2, Lambda, S3, RDS, DynamoDB, Secrets Manager, and other discovered cloud assets.
+
+- **Role-Target Attack Paths & Downstream Reachability**:
+  - For direct identity-to-role escalation paths (e.g., `User -> CAN_ASSUME -> Role`), the role remains the attack target while downstream reachable assets (S3, EC2, Lambda, RDS, etc.) are explicitly exposed and visualised in downstream branching DAGs.
+  - The UI presents an explainable blast-radius asset breakdown detailing exact counts per resource type (e.g., `4 S3 • 1 EC2 • 3 Lambda • 1 RDS`) backed by authoritative effective access evaluation.
 
 - **Aggregated Effective-Access Abstraction**:
   - Replaces individual statement clutter (`ALLOWS`, `ALLOWS_WRITE`, etc.) with consolidated, typed effective-access edges (e.g., `READ / WRITE`, `FULL ADMIN`, `ASSUME_ROLE`).
   - Edge labels display canonical access categories computed by the backend evaluation engine.
 
 - **Analyst Workflows & Modes**:
-  - **Identity Overview (Default)**: Top-down view of all identities, roles, and connected resources.
+  - **Identity Overview (Default)**: Interactive view of all identities, roles, and connected resources.
   - **Resource Detail**: Select a sensitive resource to isolate inbound access paths and identify which identities possess reachability.
   - **Attack Path**: Filters the graph down to high-risk privilege escalation and lateral movement attack chains.
 

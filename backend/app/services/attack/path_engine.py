@@ -760,8 +760,7 @@ def find_attack_paths(
 
     # Pre-cache effective blast radius per source node
     blast_cache: Dict[str, str] = {}
-    precomputed_records = None
-    if inventory and policy_doc_map:
+    if precomputed_records is None and inventory and policy_doc_map:
         try:
             from app.services.simulation.effective_access import compute_effective_access
             all_res = (
