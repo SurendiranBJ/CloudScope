@@ -113,13 +113,7 @@ def update_scan_region(body: ScanRegionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update scan mode: {str(e)}")
 
-    # Invalidate stale cache keys so the next poll gets fresh data
-    for key in [
-        "v1:dashboard", "v1:graph", "v1:risks", "v1:attack-paths",
-        "v1:alerts", "v1:users", "v1:roles", "v1:policies", "v1:resources"
-    ]:
-        cache.invalidate(key)
-
+    # Do not invalidate current snapshot cache; the new scan will atomically replace the snapshot when complete
     # Kick off a rescan immediately so the change is reflected without waiting
     scan_manager.trigger_async_scan()
 

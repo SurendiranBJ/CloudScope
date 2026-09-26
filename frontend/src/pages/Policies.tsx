@@ -94,6 +94,7 @@ export const Policies: React.FC = () => {
     isPartial,
     isFailed,
     lastCompletedAt,
+    hasCompletedSnapshot,
   } = useScanDataRefresh();
 
   const { data: catalogData, isLoading, isFetching, isError, error, refetch } = useQuery({
@@ -106,9 +107,6 @@ export const Policies: React.FC = () => {
     }),
     staleTime: 30_000,
     placeholderData: (previousData) => previousData,
-    refetchInterval: () => {
-      return isScanning ? 2500 : false;
-    },
   });
 
   const policies = catalogData?.items ?? [];
@@ -116,7 +114,7 @@ export const Policies: React.FC = () => {
   const totalPages = catalogData?.total_pages ?? 1;
 
   const hasExistingData = !!catalogData && policies.length > 0;
-  const showInitialLoading = isLoading && !catalogData;
+  const showInitialLoading = isLoading && !catalogData && !hasCompletedSnapshot;
 
   const { data: simState } = useQuery({
     queryKey: ['simulation-state'],
@@ -321,13 +319,19 @@ export const Policies: React.FC = () => {
               </button>
             </div>
           ) : sorted.length === 0 ? (
-            isScanning ? (
+            isScanning && !hasCompletedSnapshot ? (
               <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
                 <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
                 <div>
-                  <p className="text-sm font-semibold text-white">CloudScope scan is running...</p>
-                  <p className="text-xs text-enterprise-subtext mt-1">Preparing AWS IAM data and policy catalog. This will refresh automatically.</p>
+                  <p className="text-sm font-semibold text-white">Initial CloudScope scan is running...</p>
+                  <p className="text-xs text-enterprise-subtext mt-1">Discovering AWS IAM data and building policy catalog. This will populate automatically.</p>
                 </div>
+              </div>
+            ) : search || filter !== 'all' ? (
+              <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">
+                <Shield className="w-8 h-8" />
+                <p className="text-sm">No policies match filter</p>
+                <p className="text-xs">Try clearing search or filters</p>
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">

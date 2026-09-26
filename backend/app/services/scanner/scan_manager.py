@@ -195,6 +195,12 @@ CRITICAL_COLLECTORS = {
     "S3", "EC2", "Lambda", "Secrets", "RDS", "DynamoDB"
 }
 
+ALL_COLLECTOR_NAMES = [
+    "IAM_Users", "IAM_Groups", "IAM_Roles", "IAM_Policies",
+    "EC2", "S3", "Lambda", "Secrets", "RDS", "DynamoDB",
+    "AccessAnalyzer", "CloudTrail"
+]
+
 
 class ScanManager:
     """Central Orchestrator for the unified single continuous scanning pipeline.
@@ -211,15 +217,37 @@ class ScanManager:
         self._scan_id: str | None = None
         self._scan_status: str = "IDLE"  # IDLE, SCANNING, SUCCESS, FAILED, PARTIAL
         self._scan_started_at: str | None = None
+        self._scan_started_perf: float | None = None
+        self._scan_elapsed_seconds: float = 0.0
+
+        self._active_phase: str | None = None
+        self._active_phase_started_at: str | None = None
+        self._completed_phases: List[str] = []
+        self._last_progress_at: str | None = None
+
+        self._completed_collectors: int = 0
+        self._total_collectors: int = len(ALL_COLLECTOR_NAMES)
+        self._collector_status: Dict[str, str] = {name: "PENDING" for name in ALL_COLLECTOR_NAMES}
+
+        self._resources_discovered: int = 0
+        self._users_discovered: int = 0
+        self._roles_discovered: int = 0
+        self._groups_discovered: int = 0
+        self._policies_discovered: int = 0
+
         self._last_completed_scan_at: str | None = None
         self._last_completed_scan_id: str | None = None
         self._last_successful_scan_at: str | None = None
         self._last_successful_scan_id: str | None = None
+        self._last_published_scan_id: str | None = None
+        self._last_published_at: str | None = None
         self._last_error: str | None = None
         self._last_result: dict | None = None
         self._service_status: Dict[str, str] = {}
         self._failed_regions: List[str] = []
         self._successful_regions: List[str] = []
+        self._scan_mode: str = "global"
+        self._resolved_regions: List[str] = []
         self._phase_durations: Dict[str, Any] = {
             "discovery": {"duration_seconds": 0.0, "status": "SKIPPED"},
             "iam_analysis": {"duration_seconds": 0.0, "status": "SKIPPED"},
@@ -232,7 +260,7 @@ class ScanManager:
         self._init_from_disk()
 
     def _init_from_disk(self):
-        """Restore last successful scan metadata from durable disk storage."""
+        """Restore last successful scan metadata from durable disk storage and cache."""
         if os.path.exists(LAST_SCAN_FILE):
             try:
                 with open(LAST_SCAN_FILE, "r", encoding="utf-8") as fp:
@@ -248,6 +276,7 @@ class ScanManager:
                         data.get("last_completed_scan_id")
                         or data.get("lastCompletedScanId")
                         or data.get("scan_id")
+                        or data.get("scanId")
                     )
                     self._last_successful_scan_at = (
                         data.get("last_successful_scan_at")
@@ -257,63 +286,193 @@ class ScanManager:
                         data.get("last_successful_scan_id")
                         or data.get("lastSuccessfulScanId")
                     )
+                    self._last_published_scan_id = (
+                        data.get("last_published_scan_id")
+                        or data.get("lastPublishedScanId")
+                        or data.get("snapshot_id")
+                        or self._last_successful_scan_id
+                        or self._last_completed_scan_id
+                    )
+                    self._last_published_at = (
+                        data.get("last_published_at")
+                        or data.get("lastPublishedAt")
+                        or data.get("snapshot_published_at")
+                        or self._last_successful_scan_at
+                        or self._last_completed_scan_at
+                    )
+                    self._scan_mode = data.get("scan_mode") or data.get("scanMode") or "global"
+                    self._resolved_regions = data.get("resolved_regions") or data.get("resolvedRegions") or []
                     if "phase_durations" in data:
                         self._phase_durations = data["phase_durations"]
+                    if "durationSeconds" in data:
+                        self._scan_elapsed_seconds = float(data["durationSeconds"])
             except Exception as e:
                 logger.warning(f"Failed to restore scan metadata from disk: {e}")
+
+        # Fallback check in cache if disk metadata was missing
+        if not self._last_published_scan_id:
+            try:
+                cached_meta = cache.get("v1:scan_metadata")
+                if cached_meta:
+                    self._last_published_scan_id = cached_meta.get("snapshot_id") or cached_meta.get("scanId")
+                    self._last_published_at = cached_meta.get("snapshot_published_at") or cached_meta.get("scanTimestamp")
+                    self._last_completed_scan_at = self._last_completed_scan_at or cached_meta.get("lastCompletedScanAt")
+                    self._last_completed_scan_id = self._last_completed_scan_id or cached_meta.get("lastCompletedScanId")
+                    self._last_successful_scan_at = self._last_successful_scan_at or cached_meta.get("lastSuccessfulScanAt")
+                    self._last_successful_scan_id = self._last_successful_scan_id or cached_meta.get("lastSuccessfulScanId")
+                    self._scan_mode = cached_meta.get("scanMode") or self._scan_mode
+                    self._resolved_regions = cached_meta.get("resolvedRegions") or self._resolved_regions
+                    if "durationSeconds" in cached_meta:
+                        self._scan_elapsed_seconds = float(cached_meta["durationSeconds"])
+            except Exception:
+                pass
 
     @property
     def is_running(self) -> bool:
         return self._is_running
 
+    def _set_active_phase(self, phase_name: str) -> None:
+        """Atomically advance the active scan phase and update progress heartbeat."""
+        now_str = datetime.utcnow().isoformat() + "Z"
+        self._active_phase = phase_name
+        self._active_phase_started_at = now_str
+        self._last_progress_at = now_str
+
+    def _complete_phase(self, phase_name: str, duration_seconds: float, status: str = "COMPLETED") -> None:
+        """Atomically record completed phase duration and update progress heartbeat."""
+        now_str = datetime.utcnow().isoformat() + "Z"
+        self._phase_durations[phase_name] = {
+            "duration_seconds": max(0.0, round(duration_seconds, 3)),
+            "status": status
+        }
+        if phase_name not in self._completed_phases and status == "COMPLETED":
+            self._completed_phases.append(phase_name)
+        self._last_progress_at = now_str
+
     def get_status(self) -> dict:
-        """Return current scan status for the frontend to poll."""
-        from app.services.aws.region_cache import get_scan_mode_state
-        mode_state = get_scan_mode_state()
+        """Return current scan status for the frontend to poll.
+
+        FAST IN-MEMORY READ:
+        Must NOT call AWS DescribeRegions, start a scan, call Neo4j,
+        or perform heavy computation. Reads strictly in-memory state.
+        """
+        if self._is_running and self._scan_started_perf is not None:
+            elapsed = max(0.0, round(time.perf_counter() - self._scan_started_perf, 2))
+        else:
+            elapsed = self._scan_elapsed_seconds
+
+        sched_info = {}
+        try:
+            from app.utils.scheduler import get_scheduler_status
+            sched_info = get_scheduler_status()
+        except Exception:
+            pass
+
         return {
             "is_scanning": self._is_running,
             "scan_id": self._scan_id,
             "scan_status": self._scan_status,
             "started_at": self._scan_started_at,
+            "elapsed_seconds": elapsed,
+            "active_phase": self._active_phase,
+            "active_phase_started_at": self._active_phase_started_at,
+            "completed_phases": list(self._completed_phases),
+            "phase_durations": self._phase_durations,
+            "completed_collectors": self._completed_collectors,
+            "total_collectors": self._total_collectors,
+            "collector_status": dict(self._collector_status),
+            "resources_discovered": self._resources_discovered,
+            "users_discovered": self._users_discovered,
+            "roles_discovered": self._roles_discovered,
+            "groups_discovered": self._groups_discovered,
+            "policies_discovered": self._policies_discovered,
             "last_completed_scan_at": self._last_completed_scan_at,
             "last_completed_scan_id": self._last_completed_scan_id,
             "last_successful_scan_at": self._last_successful_scan_at,
             "last_successful_scan_id": self._last_successful_scan_id,
+            "last_published_scan_id": self._last_published_scan_id,
+            "last_published_at": self._last_published_at,
+            "failed_regions": list(self._failed_regions),
+            "successful_regions": list(self._successful_regions),
             "last_error": self._last_error,
+            "last_progress_at": self._last_progress_at,
+            "scan_mode": self._scan_mode,
+            "resolved_regions": list(self._resolved_regions),
+            "scheduled_scan_interval_minutes": sched_info.get("scheduled_scan_interval_minutes"),
+            "next_scheduled_scan_at": sched_info.get("next_scheduled_scan_at"),
             "last_result": self._last_result,
             "service_status": self._service_status,
-            "failed_regions": self._failed_regions,
-            "successful_regions": self._successful_regions,
-            "phase_durations": self._phase_durations,
-            "scan_mode": mode_state.get("mode"),
-            "resolved_regions": mode_state.get("resolved_regions", []),
         }
 
     def trigger_async_scan(self) -> dict:
         """Start a scan in a background thread with atomic slot claim. Returns immediately."""
         with self._lock:
             if self._is_running:
-                return {"status": "skipped", "message": "Scan already running"}
+                return {
+                    "status": "already_running",
+                    "scan_id": self._scan_id,
+                    "message": "A scan is already running"
+                }
             self._is_running = True
             self._scan_id = str(uuid.uuid4())
             self._scan_status = "SCANNING"
-            self._scan_started_at = datetime.utcnow().isoformat() + "Z"
+            now_iso = datetime.utcnow().isoformat() + "Z"
+            self._scan_started_at = now_iso
+            self._scan_started_perf = time.perf_counter()
+            self._scan_elapsed_seconds = 0.0
+            self._last_progress_at = now_iso
+            self._active_phase = "discovery"
+            self._active_phase_started_at = now_iso
+            self._completed_phases = []
+            self._completed_collectors = 0
+            self._total_collectors = len(ALL_COLLECTOR_NAMES)
+            self._collector_status = {name: "PENDING" for name in ALL_COLLECTOR_NAMES}
+            self._resources_discovered = 0
+            self._users_discovered = 0
+            self._roles_discovered = 0
+            self._groups_discovered = 0
+            self._policies_discovered = 0
+            self._last_error = None
             scan_id = self._scan_id
 
         thread = threading.Thread(target=self._execute_scan, args=(scan_id,), daemon=True)
         thread.start()
-        return {"status": "started", "message": "Scan started in background"}
+        return {
+            "status": "started",
+            "scan_id": scan_id,
+            "message": "Scan started"
+        }
 
     def run_scan(self) -> dict:
         """Execute a scan synchronously with atomic slot claim."""
         with self._lock:
             if self._is_running:
-                logger.warning("Scan lock held. Skipping duplicate.")
-                return {"status": "skipped", "message": "Scan already running"}
+                logger.warning("Scan lock held. Skipping duplicate scheduled scan.")
+                return {
+                    "status": "already_running",
+                    "scan_id": self._scan_id,
+                    "message": "A scan is already running"
+                }
             self._is_running = True
             self._scan_id = str(uuid.uuid4())
             self._scan_status = "SCANNING"
-            self._scan_started_at = datetime.utcnow().isoformat() + "Z"
+            now_iso = datetime.utcnow().isoformat() + "Z"
+            self._scan_started_at = now_iso
+            self._scan_started_perf = time.perf_counter()
+            self._scan_elapsed_seconds = 0.0
+            self._last_progress_at = now_iso
+            self._active_phase = "discovery"
+            self._active_phase_started_at = now_iso
+            self._completed_phases = []
+            self._completed_collectors = 0
+            self._total_collectors = len(ALL_COLLECTOR_NAMES)
+            self._collector_status = {name: "PENDING" for name in ALL_COLLECTOR_NAMES}
+            self._resources_discovered = 0
+            self._users_discovered = 0
+            self._roles_discovered = 0
+            self._groups_discovered = 0
+            self._policies_discovered = 0
+            self._last_error = None
             scan_id = self._scan_id
 
         return self._execute_scan(scan_id)
@@ -321,6 +480,7 @@ class ScanManager:
     def _execute_scan(self, scan_id: str) -> dict:
         self._last_error = None
         start_perf = time.perf_counter()
+        self._scan_started_perf = start_perf
         self._service_status = {}
 
         self._phase_durations = {
@@ -333,9 +493,6 @@ class ScanManager:
             "total": {"duration_seconds": 0.0, "status": "SKIPPED"}
         }
 
-        active_phase: str | None = None
-        phase_t0: float | None = None
-
         logger.info(f"[INFO] SCAN START: Initializing AWS security scan (scan_id={scan_id})")
 
         try:
@@ -347,6 +504,7 @@ class ScanManager:
                 self._scan_status = "FAILED"
                 self._last_error = err_msg
                 duration = max(0.0, round(time.perf_counter() - start_perf, 3))
+                self._scan_elapsed_seconds = duration
                 self._phase_durations["total"] = {"duration_seconds": duration, "status": "FAILED"}
                 self._last_result = {
                     "status": "failed",
@@ -360,6 +518,8 @@ class ScanManager:
                     "last_completed_scan_id": self._last_completed_scan_id,
                     "last_successful_scan_at": self._last_successful_scan_at,
                     "last_successful_scan_id": self._last_successful_scan_id,
+                    "last_published_scan_id": self._last_published_scan_id,
+                    "last_published_at": self._last_published_at,
                 }
                 return self._last_result
 
@@ -398,8 +558,11 @@ class ScanManager:
             collector_failures: Dict[str, str] = {}
 
             # 1. AWS API Data Collection (Concurrently)
-            active_phase = "discovery"
+            self._set_active_phase("discovery")
             phase_t0 = time.perf_counter()
+            for c_name in ALL_COLLECTOR_NAMES:
+                self._collector_status[c_name] = "RUNNING"
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {
                     executor.submit(func): name
@@ -458,22 +621,46 @@ class ScanManager:
                                             existing_names.update(x.get("name") or x.get("function_name") for x in preserved)
 
                             if len(res.items) > 0:
+                                self._collector_status[name] = "SUCCESS_WITH_DATA"
                                 self._service_status[name] = "SUCCESS_WITH_DATA"
                             elif getattr(res, 'failed_regions', None) and not getattr(res, 'successful_regions', None):
+                                self._collector_status[name] = "FAILED"
                                 self._service_status[name] = "FAILED"
                             else:
+                                self._collector_status[name] = "SUCCESS_EMPTY"
                                 self._service_status[name] = "SUCCESS_EMPTY"
                         else:
                             collector_results[name] = res
                             if res and len(res) > 0:
+                                self._collector_status[name] = "SUCCESS_WITH_DATA"
                                 self._service_status[name] = "SUCCESS_WITH_DATA"
                             else:
+                                self._collector_status[name] = "SUCCESS_EMPTY"
                                 self._service_status[name] = "SUCCESS_EMPTY"
                     except Exception as err:
                         logger.error(f"[ERROR] Collector {name} failed: {err}")
+                        self._collector_status[name] = "FAILED"
                         self._service_status[name] = f"FAILED: {err}"
                         collector_failures[name] = str(err)
                         collector_results[name] = []
+
+                    self._completed_collectors += 1
+                    self._last_progress_at = datetime.utcnow().isoformat() + "Z"
+
+                    # Live resource & identity count telemetry
+                    items_len = len(collector_results.get(name, []))
+                    if name == "IAM_Users":
+                        self._users_discovered = items_len
+                    elif name == "IAM_Roles":
+                        self._roles_discovered = items_len
+                    elif name == "IAM_Groups":
+                        self._groups_discovered = items_len
+                    elif name == "IAM_Policies":
+                        self._policies_discovered = items_len
+                    self._resources_discovered = sum(
+                        len(collector_results.get(c, []))
+                        for c in ["EC2", "S3", "Lambda", "Secrets", "RDS", "DynamoDB"]
+                    )
 
             self._failed_regions = sorted(list(scan_failed_regions))
             reconcilable_regions = sorted(list(successful_regions_set - scan_failed_regions))
@@ -487,9 +674,11 @@ class ScanManager:
                 self._scan_status = "FAILED"
                 self._last_error = err_msg
                 dur_disc = max(0.0, round(time.perf_counter() - phase_t0, 3))
-                self._phase_durations["discovery"] = {"duration_seconds": dur_disc, "status": "FAILED"}
+                self._complete_phase("discovery", dur_disc, status="FAILED")
+                duration = max(0.0, round(time.perf_counter() - start_perf, 3))
+                self._scan_elapsed_seconds = duration
                 self._phase_durations["total"] = {
-                    "duration_seconds": max(0.0, round(time.perf_counter() - start_perf, 3)),
+                    "duration_seconds": duration,
                     "status": "FAILED"
                 }
                 self._last_result = {
@@ -505,71 +694,72 @@ class ScanManager:
                     "last_completed_scan_id": self._last_completed_scan_id,
                     "last_successful_scan_at": self._last_successful_scan_at,
                     "last_successful_scan_id": self._last_successful_scan_id,
+                    "last_published_scan_id": self._last_published_scan_id,
+                    "last_published_at": self._last_published_at,
                 }
                 # Do NOT prune Neo4j, do NOT publish empty cache, preserve previous snapshot
                 return self._last_result
 
-            # Assign authoritative validated inventory
-            self.inventory.users = collector_results.get("IAM_Users", [])
-            self.inventory.groups = collector_results.get("IAM_Groups", [])
-            self.inventory.roles = collector_results.get("IAM_Roles", [])
-            self.inventory.policies = collector_results.get("IAM_Policies", [])
-            self.inventory.ec2 = collector_results.get("EC2", [])
-            self.inventory.s3 = collector_results.get("S3", [])
-            self.inventory.lambdas = collector_results.get("Lambda", [])
-            self.inventory.secrets = collector_results.get("Secrets", [])
-            self.inventory.rds = collector_results.get("RDS", [])
-            self.inventory.dynamodb = collector_results.get("DynamoDB", [])
-            self.inventory.findings = collector_results.get("AccessAnalyzer", [])
-            self.inventory.alerts = collector_results.get("CloudTrail", [])
+            # Assign working inventory (separate from published self.inventory)
+            working_inventory = AWSInventory()
+            working_inventory.users = collector_results.get("IAM_Users", [])
+            working_inventory.groups = collector_results.get("IAM_Groups", [])
+            working_inventory.roles = collector_results.get("IAM_Roles", [])
+            working_inventory.policies = collector_results.get("IAM_Policies", [])
+            working_inventory.ec2 = collector_results.get("EC2", [])
+            working_inventory.s3 = collector_results.get("S3", [])
+            working_inventory.lambdas = collector_results.get("Lambda", [])
+            working_inventory.secrets = collector_results.get("Secrets", [])
+            working_inventory.rds = collector_results.get("RDS", [])
+            working_inventory.dynamodb = collector_results.get("DynamoDB", [])
+            working_inventory.findings = collector_results.get("AccessAnalyzer", [])
+            working_inventory.alerts = collector_results.get("CloudTrail", [])
 
             discovery_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
-            self._phase_durations["discovery"] = {"duration_seconds": discovery_duration, "status": "COMPLETED"}
-            active_phase = None
-            logger.info(f"[PERF] Phase 1 (Discovery) completed in {discovery_duration}s")
+            self._complete_phase("discovery", discovery_duration, status="COMPLETED")
 
             logger.info(
-                f"[INFO] Discovered AWS Resources: Users={len(self.inventory.users)}, "
-                f"Roles={len(self.inventory.roles)}, Groups={len(self.inventory.groups)}, "
-                f"Policies={len(self.inventory.policies)}, S3={len(self.inventory.s3)}, "
-                f"EC2={len(self.inventory.ec2)}, Lambda={len(self.inventory.lambdas)}, "
-                f"RDS={len(self.inventory.rds)}, DynamoDB={len(self.inventory.dynamodb)}, "
-                f"Secrets={len(self.inventory.secrets)}"
+                f"[INFO] Discovered AWS Resources: Users={len(working_inventory.users)}, "
+                f"Roles={len(working_inventory.roles)}, Groups={len(working_inventory.groups)}, "
+                f"Policies={len(working_inventory.policies)}, S3={len(working_inventory.s3)}, "
+                f"EC2={len(working_inventory.ec2)}, Lambda={len(working_inventory.lambdas)}, "
+                f"RDS={len(working_inventory.rds)}, DynamoDB={len(working_inventory.dynamodb)}, "
+                f"Secrets={len(working_inventory.secrets)}"
             )
 
             # 2. Build Policy Document Map (Customer-Managed + Inline + Attached AWS-Managed)
-            active_phase = "iam_analysis"
+            self._set_active_phase("iam_analysis")
             phase_t0 = time.perf_counter()
             policy_doc_map = {
                 p['name']: p['document']
-                for p in self.inventory.policies
+                for p in working_inventory.policies
             }
 
             # Inline policy documents
-            for u in self.inventory.users:
+            for u in working_inventory.users:
                 for in_name, in_doc in u.get('inlinePolicyDocuments', {}).items():
                     policy_doc_map[in_name] = in_doc
-                    self.inventory.policies.append({
+                    working_inventory.policies.append({
                         "name": in_name,
                         "arn": f"arn:aws:iam:inline:{u['name']}:{in_name}",
                         "type": "inline",
                         "document": in_doc,
                         "riskScore": 0
                     })
-            for r in self.inventory.roles:
+            for r in working_inventory.roles:
                 for in_name, in_doc in r.get('inlinePolicyDocuments', {}).items():
                     policy_doc_map[in_name] = in_doc
-                    self.inventory.policies.append({
+                    working_inventory.policies.append({
                         "name": in_name,
                         "arn": f"arn:aws:iam:inline:{r['name']}:{in_name}",
                         "type": "inline",
                         "document": in_doc,
                         "riskScore": 0
                     })
-            for g in self.inventory.groups:
+            for g in working_inventory.groups:
                 for in_name, in_doc in g.get('inlinePolicyDocuments', {}).items():
                     policy_doc_map[in_name] = in_doc
-                    self.inventory.policies.append({
+                    working_inventory.policies.append({
                         "name": in_name,
                         "arn": f"arn:aws:iam:inline:{g['name']}:{in_name}",
                         "type": "inline",
@@ -581,7 +771,7 @@ class ScanManager:
             aws_managed_arns: set = set()
             boundary_arns: set = set()
 
-            for u in self.inventory.users:
+            for u in working_inventory.users:
                 aws_managed_arns.update(
                     arn for arn in u.get('attachedPolicyArns', {}).values()
                     if '::aws:policy/' in arn
@@ -589,7 +779,7 @@ class ScanManager:
                 if u.get('permissionsBoundary'):
                     boundary_arns.add(u['permissionsBoundary'])
 
-            for r in self.inventory.roles:
+            for r in working_inventory.roles:
                 aws_managed_arns.update(
                     arn for arn in r.get('attachedPolicyArns', {}).values()
                     if '::aws:policy/' in arn
@@ -597,7 +787,7 @@ class ScanManager:
                 if r.get('permissionsBoundary'):
                     boundary_arns.add(r['permissionsBoundary'])
 
-            for g in self.inventory.groups:
+            for g in working_inventory.groups:
                 aws_managed_arns.update(
                     arn for arn in g.get('attachedPolicyArns', {}).values()
                     if '::aws:policy/' in arn
@@ -608,8 +798,8 @@ class ScanManager:
                 managed_docs = iam_service.fetch_managed_policy_documents(aws_managed_arns)
                 policy_doc_map.update(managed_docs)
                 for pol_name, doc_str in managed_docs.items():
-                    if not any(p['name'] == pol_name for p in self.inventory.policies):
-                        self.inventory.policies.append({
+                    if not any(p['name'] == pol_name for p in working_inventory.policies):
+                        working_inventory.policies.append({
                             "name": pol_name,
                             "arn": f"arn:aws:iam::aws:policy/{pol_name}",
                             "type": "aws-managed",
@@ -627,8 +817,8 @@ class ScanManager:
                         b_doc_str = b_doc_obj["document"]
                         policy_doc_map[barn] = b_doc_str
                         policy_doc_map[b_name] = b_doc_str
-                        if not any(p['name'] == b_name for p in self.inventory.policies):
-                            self.inventory.policies.append({
+                        if not any(p['name'] == b_name for p in working_inventory.policies):
+                            working_inventory.policies.append({
                                 "name": b_name,
                                 "arn": barn,
                                 "type": b_doc_obj.get("type", "boundary"),
@@ -639,53 +829,55 @@ class ScanManager:
                         logger.warning(f"Could not resolve permissions boundary document for ARN: {barn}")
 
             # 3. Calculate Deterministic Risk Assessments & Scores
-            for u in self.inventory.users:
+            for u in working_inventory.users:
                 eval_res = risk_engine.get_user_risk_assessment(u, policy_doc_map)
                 u['riskScore'] = eval_res['score']
                 u['riskAssessment'] = eval_res
 
-            for r in self.inventory.roles:
+            for r in working_inventory.roles:
                 eval_res = risk_engine.get_role_risk_assessment(r, policy_doc_map)
                 r['riskScore'] = eval_res['score']
                 r['riskAssessment'] = eval_res
 
-            for s in self.inventory.s3:
+            for s in working_inventory.s3:
                 eval_res = risk_engine.get_resource_risk_assessment(s)
                 s['riskScore'] = eval_res['score']
                 s['riskAssessment'] = eval_res
 
-            for e in self.inventory.ec2:
+            for e in working_inventory.ec2:
                 eval_res = risk_engine.get_resource_risk_assessment(e)
                 e['riskScore'] = eval_res['score']
                 e['riskAssessment'] = eval_res
 
-            for sec in self.inventory.secrets:
+            for sec in working_inventory.secrets:
                 eval_res = risk_engine.get_resource_risk_assessment(sec)
                 sec['riskScore'] = eval_res['score']
                 sec['riskAssessment'] = eval_res
 
-            for rds in self.inventory.rds:
+            for rds in working_inventory.rds:
                 eval_res = risk_engine.get_resource_risk_assessment(rds)
                 rds['riskScore'] = eval_res['score']
                 rds['riskAssessment'] = eval_res
 
-            for ddb in self.inventory.dynamodb:
+            for ddb in working_inventory.dynamodb:
                 eval_res = risk_engine.get_resource_risk_assessment(ddb)
                 ddb['riskScore'] = eval_res['score']
                 ddb['riskAssessment'] = eval_res
 
+            # Update policies discovered count
+            self._policies_discovered = len(working_inventory.policies)
+
             iam_analysis_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
-            self._phase_durations["iam_analysis"] = {"duration_seconds": iam_analysis_duration, "status": "COMPLETED"}
-            active_phase = None
+            self._complete_phase("iam_analysis", iam_analysis_duration, status="COMPLETED")
             logger.info(f"[PERF] Phase 2 (IAM Analysis & Scoring) completed in {iam_analysis_duration}s")
 
             # 4. STEP 1 OF PIPELINE: Neo4j Configuration Sync (Idempotent MERGE, preserves ActivityEvent)
-            active_phase = "graph_construction"
+            self._set_active_phase("graph_construction")
             phase_t0 = time.perf_counter()
             neo4j_success = False
             try:
                 graph_builder.build_graph_in_neo4j(
-                    self.inventory,
+                    working_inventory,
                     successful_regions=reconcilable_regions if reconcilable_regions else None
                 )
                 neo4j_success = True
@@ -697,53 +889,50 @@ class ScanManager:
                 if neo4j_success:
                     G = graph_loader.load_graph_from_neo4j()
                     if G.number_of_nodes() == 0:
-                        G = graph_loader.build_local_graph(self.inventory)
+                        G = graph_loader.build_local_graph(working_inventory)
                 else:
-                    G = graph_loader.build_local_graph(self.inventory)
+                    G = graph_loader.build_local_graph(working_inventory)
             except Exception as loader_err:
                 logger.warning(f"Neo4j loader exception: {loader_err}. Building local NetworkX model.")
-                G = graph_loader.build_local_graph(self.inventory)
+                G = graph_loader.build_local_graph(working_inventory)
 
             graph_construction_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
-            self._phase_durations["graph_construction"] = {"duration_seconds": graph_construction_duration, "status": "COMPLETED"}
-            active_phase = None
+            self._complete_phase("graph_construction", graph_construction_duration, status="COMPLETED")
             logger.info(f"[PERF] Phase 3 (Graph Construction) completed in {graph_construction_duration}s")
 
             # 6. STEP 3 OF PIPELINE: Attack Path Engine Analysis on Graph
-            active_phase = "path_analysis"
+            self._set_active_phase("path_analysis")
             phase_t0 = time.perf_counter()
             _policy_doc_map = {
                 p.get('name', ''): p.get('document', '{}')
-                for p in self.inventory.policies if p.get('name')
+                for p in working_inventory.policies if p.get('name')
             }
             _policy_doc_map.update({
                 p.get('arn', ''): p.get('document', '{}')
-                for p in self.inventory.policies if p.get('arn')
+                for p in working_inventory.policies if p.get('arn')
             })
             attack_paths = path_engine.find_attack_paths(
                 G,
-                inventory=self.inventory,
+                inventory=working_inventory,
                 policy_doc_map=_policy_doc_map,
             )
             path_analysis_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
-            self._phase_durations["path_analysis"] = {"duration_seconds": path_analysis_duration, "status": "COMPLETED"}
-            active_phase = None
+            self._complete_phase("path_analysis", path_analysis_duration, status="COMPLETED")
             logger.info(f"[PERF] Phase 4 (Path Analysis) completed in {path_analysis_duration}s: {len(attack_paths)} paths detected")
 
             # 7. STEP 4 OF PIPELINE: CloudTrail Activity Normalization & Correlation with Graph/Paths
-            active_phase = "cloudtrail_correlation"
+            self._set_active_phase("cloudtrail_correlation")
             phase_t0 = time.perf_counter()
             correlation_result = cloudtrail_correlator.correlate_activity_with_graph(
-                self.inventory.alerts,
-                self.inventory,
+                working_inventory.alerts,
+                working_inventory,
                 G,
                 attack_paths=attack_paths
             )
             correlated_findings = correlation_result.get("correlated_findings", [])
             activity_metrics = correlation_result.get("metrics", {})
             cloudtrail_correlation_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
-            self._phase_durations["cloudtrail_correlation"] = {"duration_seconds": cloudtrail_correlation_duration, "status": "COMPLETED"}
-            active_phase = None
+            self._complete_phase("cloudtrail_correlation", cloudtrail_correlation_duration, status="COMPLETED")
 
             nodes_count = G.number_of_nodes()
             edges_count = G.number_of_edges()
@@ -754,10 +943,10 @@ class ScanManager:
 
             # 8. STEP 5 OF PIPELINE: Findings & Severity Groupings
             all_scored_items = (
-                self.inventory.users + self.inventory.roles +
-                self.inventory.s3 + self.inventory.ec2 +
-                self.inventory.secrets + self.inventory.rds +
-                self.inventory.dynamodb
+                working_inventory.users + working_inventory.roles +
+                working_inventory.s3 + working_inventory.ec2 +
+                working_inventory.secrets + working_inventory.rds +
+                working_inventory.dynamodb
             )
 
             critical_items = [x for x in all_scored_items if x.get('riskScore', 0) >= 80]
@@ -769,22 +958,22 @@ class ScanManager:
 
             # Calculate Global 5-Category Posture Score
             global_posture = risk_engine.compute_global_security_score(
-                self.inventory,
+                working_inventory,
                 attack_paths,
-                self.inventory.alerts
+                working_inventory.alerts
             )
             security_score = global_posture["overall_score"]
-            recommendations = _generate_recommendations(self.inventory, attack_paths)
+            recommendations = _generate_recommendations(working_inventory, attack_paths)
 
             from app.services.aws.ec2_service import is_running_ec2
-            running_ec2 = [e for e in self.inventory.ec2 if is_running_ec2(e)]
+            running_ec2 = [e for e in working_inventory.ec2 if is_running_ec2(e)]
 
             # 9. Record ScanHistory (Accurate Severity Metrics)
             scan_timestamp = datetime.utcnow().isoformat() + "Z"
             resources_count = (
-                len(running_ec2) + len(self.inventory.s3) +
-                len(self.inventory.lambdas) + len(self.inventory.secrets) +
-                len(self.inventory.rds) + len(self.inventory.dynamodb)
+                len(running_ec2) + len(working_inventory.s3) +
+                len(working_inventory.lambdas) + len(working_inventory.secrets) +
+                len(working_inventory.rds) + len(working_inventory.dynamodb)
             )
 
             try:
@@ -817,7 +1006,7 @@ class ScanManager:
                         "med": len(medium_items),
                         "low": len(low_items),
                         "paths": len(attack_paths),
-                        "ct_events": len(self.inventory.alerts),
+                        "ct_events": len(working_inventory.alerts),
                         "corr": len(correlated_findings),
                         "score": security_score,
                         "nodes": nodes_count,
@@ -850,8 +1039,8 @@ class ScanManager:
                 nid_to_canonical[nid] = canon
 
             cytoscape_elements = []
-            role_map = {r['name']: r for r in self.inventory.roles}
-            user_map = {u['name']: u for u in self.inventory.users}
+            role_map = {r['name']: r for r in working_inventory.roles}
+            user_map = {u['name']: u for u in working_inventory.users}
 
             for nid in relevant_node_ids:
                 attr = G.nodes[nid]
@@ -938,10 +1127,10 @@ class ScanManager:
                     })
 
             # Critical Risks Findings list & Canonical Security Findings Reconciled
-            active_phase = "finding_synthesis"
+            self._set_active_phase("finding_synthesis")
             phase_t0 = time.perf_counter()
             canonical_findings = finding_service.reconcile_scan_findings(
-                inventory=self.inventory,
+                inventory=working_inventory,
                 attack_paths=attack_paths,
                 correlated_findings=correlated_findings,
                 successful_regions=reconcilable_regions,
@@ -949,12 +1138,12 @@ class ScanManager:
                 scan_timestamp=scan_timestamp
             )
             finding_synthesis_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
-            self._phase_durations["finding_synthesis"] = {"duration_seconds": finding_synthesis_duration, "status": "COMPLETED"}
-            active_phase = None
+            self._complete_phase("finding_synthesis", finding_synthesis_duration, status="COMPLETED")
             logger.info(f"[PERF] Phase 6 (Finding Synthesis & Lifecycle) completed in {finding_synthesis_duration}s: {len(canonical_findings)} total findings")
 
             duration = max(0.0, round(time.perf_counter() - start_perf, 3))
             self._phase_durations["total"] = {"duration_seconds": duration, "status": "COMPLETED"}
+            self._scan_elapsed_seconds = duration
             phase_durations = self._phase_durations
             logger.info(
                 f"[PERF] Scan {scan_id} Pipeline Timing: "
@@ -983,19 +1172,19 @@ class ScanManager:
             critical_risks.sort(key=lambda x: x['riskScore'], reverse=True)
 
             res_breakdown = [
-                {"type": "IAM Users", "count": len(self.inventory.users)},
-                {"type": "IAM Roles", "count": len(self.inventory.roles)},
-                {"type": "IAM Policies", "count": len(self.inventory.policies)},
-                {"type": "S3 Buckets", "count": len(self.inventory.s3)},
+                {"type": "IAM Users", "count": len(working_inventory.users)},
+                {"type": "IAM Roles", "count": len(working_inventory.roles)},
+                {"type": "IAM Policies", "count": len(working_inventory.policies)},
+                {"type": "S3 Buckets", "count": len(working_inventory.s3)},
                 {"type": "EC2 Instances", "count": len(running_ec2)},
-                {"type": "Lambda Functions", "count": len(self.inventory.lambdas)},
-                {"type": "Secrets", "count": len(self.inventory.secrets)},
-                {"type": "RDS Databases", "count": len(self.inventory.rds)},
-                {"type": "DynamoDB Tables", "count": len(self.inventory.dynamodb)}
+                {"type": "Lambda Functions", "count": len(working_inventory.lambdas)},
+                {"type": "Secrets", "count": len(working_inventory.secrets)},
+                {"type": "RDS Databases", "count": len(working_inventory.rds)},
+                {"type": "DynamoDB Tables", "count": len(working_inventory.dynamodb)}
             ]
             res_breakdown = [r for r in res_breakdown if r["count"] > 0]
 
-            all_identities = self.inventory.users + self.inventory.roles
+            all_identities = working_inventory.users + working_inventory.roles
             sorted_identities = sorted(all_identities, key=lambda x: x.get('riskScore', 0), reverse=True)
             top_identities = [
                 {
@@ -1030,16 +1219,16 @@ class ScanManager:
             dashboard_summary = {
                 "securityScore": f"{security_score} / 100",
                 "stats": {
-                    "users": len(self.inventory.users),
-                    "roles": len(self.inventory.roles),
-                    "policies": len(self.inventory.policies),
+                    "users": len(working_inventory.users),
+                    "roles": len(working_inventory.roles),
+                    "policies": len(working_inventory.policies),
                     "risks": len(open_canonical),
                     "paths": len(attack_paths),
                     "resources": resources_count
                 },
                 "activityMetrics": {
                     "staticAttackPaths": len(attack_paths),
-                    "observedSecurityEvents": len(self.inventory.alerts),
+                    "observedSecurityEvents": len(working_inventory.alerts),
                     "correlatedFindings": len(correlated_findings),
                     "observedAttackActivity": activity_metrics.get("observed_attack_activity_count", 0)
                 },
@@ -1049,7 +1238,7 @@ class ScanManager:
                     {"name": "Medium", "value": len(med_canonical), "color": "#3B82F6"},
                     {"name": "Low", "value": len(low_canonical), "color": "#10B981"}
                 ],
-                "recentAlerts": self.inventory.alerts[:5],
+                "recentAlerts": working_inventory.alerts[:5],
                 "criticalPaths": critical_paths_list,
                 "recommendations": [
                     {"title": r.get('title', 'Remediation'), "desc": r.get('desc', r.get('description', ''))}
@@ -1085,6 +1274,10 @@ class ScanManager:
                 "lastCompletedScanId": self._last_completed_scan_id,
                 "lastSuccessfulScanAt": self._last_successful_scan_at,
                 "lastSuccessfulScanId": self._last_successful_scan_id,
+                "lastPublishedScanId": scan_id,
+                "lastPublishedAt": scan_timestamp,
+                "snapshot_id": scan_id,
+                "snapshot_published_at": scan_timestamp,
                 "lastError": None,
                 "serviceStatus": self._service_status,
                 "failedRegions": self._failed_regions
@@ -1092,7 +1285,9 @@ class ScanManager:
 
             scan_metadata = {
                 "scanId": scan_id,
+                "snapshot_id": scan_id,
                 "scanTimestamp": scan_timestamp,
+                "snapshot_published_at": scan_timestamp,
                 "scanStatus": final_scan_status,
                 "scanMode": resolved_scan_mode,
                 "scannedRegions": scanned_regions,
@@ -1102,6 +1297,8 @@ class ScanManager:
                 "lastCompletedScanId": self._last_completed_scan_id,
                 "lastSuccessfulScanAt": self._last_successful_scan_at,
                 "lastSuccessfulScanId": self._last_successful_scan_id,
+                "lastPublishedScanId": scan_id,
+                "lastPublishedAt": scan_timestamp,
                 "lastError": None,
                 "serviceStatus": self._service_status,
                 "failedRegions": self._failed_regions,
@@ -1114,28 +1311,28 @@ class ScanManager:
             try:
                 from app.services.simulation.effective_access import compute_effective_access
                 all_res = (
-                    self.inventory.s3 + self.inventory.secrets + self.inventory.rds +
-                    self.inventory.dynamodb + running_ec2 + self.inventory.lambdas
+                    working_inventory.s3 + working_inventory.secrets + working_inventory.rds +
+                    working_inventory.dynamodb + running_ec2 + working_inventory.lambdas
                 )
-                effective_access_records = compute_effective_access(self.inventory, _policy_doc_map, all_res)
+                effective_access_records = compute_effective_access(working_inventory, _policy_doc_map, all_res)
             except Exception as eff_err:
                 logger.warning(f"Failed to compute effective access snapshot: {eff_err}")
                 effective_access_records = []
 
             new_snapshot = {
-                "v1:users": self.inventory.users,
-                "v1:roles": self.inventory.roles,
-                "v1:groups": self.inventory.groups,
-                "v1:policies": self.inventory.policies,
-                "v1:inventory:ec2": self.inventory.ec2,
-                "v1:inventory:lambda": self.inventory.lambdas,
+                "v1:users": working_inventory.users,
+                "v1:roles": working_inventory.roles,
+                "v1:groups": working_inventory.groups,
+                "v1:policies": working_inventory.policies,
+                "v1:inventory:ec2": working_inventory.ec2,
+                "v1:inventory:lambda": working_inventory.lambdas,
                 "v1:resources": (
-                    self.inventory.users + self.inventory.roles +
-                    running_ec2 + self.inventory.s3 +
-                    self.inventory.lambdas + self.inventory.secrets +
-                    self.inventory.rds + self.inventory.dynamodb
+                    working_inventory.users + working_inventory.roles +
+                    running_ec2 + working_inventory.s3 +
+                    working_inventory.lambdas + working_inventory.secrets +
+                    working_inventory.rds + working_inventory.dynamodb
                 ),
-                "v1:alerts": self.inventory.alerts,
+                "v1:alerts": working_inventory.alerts,
                 "v1:correlated_risks": correlated_findings,
                 "v1:attack-paths": attack_paths,
                 "v1:global_posture": global_posture,
@@ -1147,9 +1344,14 @@ class ScanManager:
                 "v1:scan_metadata": scan_metadata,
             }
 
-            # Atomic publication under single lock
+            # Atomic publication under single lock: replaces previous cache atomically
             cache.set_many(new_snapshot)
             logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id}, status={final_scan_status})")
+
+            # Update authoritative in-memory state only upon publication
+            self.inventory = working_inventory
+            self._last_published_scan_id = scan_id
+            self._last_published_at = scan_timestamp
 
             # Persist authoritative scan metadata to durable disk storage
             try:
@@ -1172,6 +1374,10 @@ class ScanManager:
                 "last_completed_scan_id": self._last_completed_scan_id,
                 "last_successful_scan_at": self._last_successful_scan_at,
                 "last_successful_scan_id": self._last_successful_scan_id,
+                "last_published_scan_id": self._last_published_scan_id,
+                "last_published_at": self._last_published_at,
+                "snapshot_id": scan_id,
+                "snapshot_published_at": scan_timestamp,
                 "duration_seconds": duration,
                 "nodes_count": nodes_count,
                 "edges_count": edges_count,
@@ -1193,11 +1399,12 @@ class ScanManager:
             logger.error(f"[ERROR] Scan execution encountered an unexpected failure: {e}", exc_info=True)
             self._scan_status = "FAILED"
             self._last_error = str(e)
-            if active_phase:
+            if self._active_phase:
                 dur = max(0.0, round(time.perf_counter() - phase_t0, 3)) if phase_t0 else 0.0
-                self._phase_durations[active_phase] = {"duration_seconds": dur, "status": "FAILED"}
+                self._complete_phase(self._active_phase, dur, status="FAILED")
             duration = max(0.0, round(time.perf_counter() - start_perf, 3))
             self._phase_durations["total"] = {"duration_seconds": duration, "status": "FAILED"}
+            self._scan_elapsed_seconds = duration
             self._last_result = {
                 "status": "failed",
                 "scan_id": scan_id,
@@ -1210,11 +1417,17 @@ class ScanManager:
                 "last_completed_scan_id": self._last_completed_scan_id,
                 "last_successful_scan_at": self._last_successful_scan_at,
                 "last_successful_scan_id": self._last_successful_scan_id,
+                "last_published_scan_id": self._last_published_scan_id,
+                "last_published_at": self._last_published_at,
             }
             return self._last_result
         finally:
             with self._lock:
                 self._is_running = False
+                self._active_phase = None
+                self._active_phase_started_at = None
+                if self._scan_started_perf is not None:
+                    self._scan_elapsed_seconds = max(0.0, round(time.perf_counter() - self._scan_started_perf, 2))
 
 
 scan_manager = ScanManager()

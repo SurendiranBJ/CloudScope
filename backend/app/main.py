@@ -32,12 +32,7 @@ async def lifespan(app: FastAPI):
     # Startup actions
     logger.info("Initializing IdentityScope Backend Engine Server")
     
-    # Proactively clear cache on startup to prevent serving stale layout shapes
-    try:
-        logger.info("Clearing cache at engine startup")
-        cache.clear()
-    except Exception as cache_err:
-        logger.warning(f"Cache clear during startup failed: {str(cache_err)}")
+    # Do not clear authoritative snapshot cache on startup to ensure existing data remains visible across restarts
 
     try:
         get_driver()  # Initialize Neo4j pool

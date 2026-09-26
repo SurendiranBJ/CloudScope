@@ -61,6 +61,7 @@ export const Relationships: React.FC = () => {
     isPartial,
     isFailed,
     lastCompletedAt,
+    hasCompletedSnapshot,
   } = useScanDataRefresh();
 
   const { data: relData, isLoading, isFetching, isError, error, refetch } = useQuery({
@@ -72,9 +73,6 @@ export const Relationships: React.FC = () => {
     }),
     staleTime: 30_000,
     placeholderData: (previousData) => previousData,
-    refetchInterval: () => {
-      return isScanning ? 2500 : false;
-    },
   });
 
   const { data: entityData } = useQuery({
@@ -85,7 +83,7 @@ export const Relationships: React.FC = () => {
 
   const allRels = relData?.relationships ?? [];
   const hasExistingData = !!relData && allRels.length > 0;
-  const showInitialLoading = isLoading && !relData;
+  const showInitialLoading = isLoading && !relData && !hasCompletedSnapshot;
 
   const uniqueRelTypes = useMemo(() => {
     const s = new Set(allRels.map(r => r.relationship));
@@ -266,13 +264,19 @@ export const Relationships: React.FC = () => {
               </button>
             </div>
           ) : grouped.length === 0 ? (
-            isScanning ? (
+            isScanning && !hasCompletedSnapshot ? (
               <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
                 <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
                 <div>
-                  <p className="text-sm font-semibold text-white">CloudScope scan is running...</p>
-                  <p className="text-xs text-enterprise-subtext mt-1">Preparing AWS IAM data and identity relationships. This will refresh automatically.</p>
+                  <p className="text-sm font-semibold text-white">Initial CloudScope scan is running...</p>
+                  <p className="text-xs text-enterprise-subtext mt-1">Discovering AWS IAM data and identity relationships. This will populate automatically.</p>
                 </div>
+              </div>
+            ) : search || typeFilter !== 'all' || relFilter !== 'all' ? (
+              <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">
+                <Network className="w-8 h-8" />
+                <p className="text-sm">No relationships match filter</p>
+                <p className="text-xs">Try clearing search or filters</p>
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">

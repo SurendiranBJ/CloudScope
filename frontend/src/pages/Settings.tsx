@@ -1,11 +1,19 @@
-import { useState } from 'react';
-import { Settings, Shield, Bell, Key, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Settings, Shield, Bell, Key, RefreshCw, CheckCircle, AlertCircle, Clock } from 'lucide-react';
 import { postScanInterval } from '../api/settings';
+import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 
 export const SettingsPage: React.FC = () => {
-  const [scanInterval, setScanInterval] = useState('10');
+  const { scheduledInterval, nextScheduledScanAt } = useScanDataRefresh();
+  const [scanInterval, setScanInterval] = useState(String(scheduledInterval || 5));
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+
+  useEffect(() => {
+    if (scheduledInterval) {
+      setScanInterval(String(scheduledInterval));
+    }
+  }, [scheduledInterval]);
 
   const handleSaveScanInterval = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,6 +81,24 @@ export const SettingsPage: React.FC = () => {
               <RefreshCw className="w-4 h-4 text-enterprise-accent animate-spin-slow" />
               <span>Configuration Scanning Intervals</span>
             </h2>
+
+            {/* Live Scheduler Visibility (Requirement 26) */}
+            <div className="bg-enterprise-bg/60 border border-enterprise-border/80 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-enterprise-accent" />
+                <div>
+                  <span className="text-enterprise-subtext block text-[10px] uppercase font-semibold">Automatic scan:</span>
+                  <span className="font-semibold text-white">Every {scheduledInterval} minutes</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="text-enterprise-subtext block text-[10px] uppercase font-semibold">Next scheduled scan:</span>
+                <span className="font-mono text-enterprise-accent font-medium">
+                  {nextScheduledScanAt ? new Date(nextScheduledScanAt).toLocaleTimeString() : 'Pending'}
+                </span>
+              </div>
+            </div>
+
             <div className="space-y-3">
               <span className="text-xs text-enterprise-subtext block">
                 Determine how often the platform polls AWS config logs and credential reports.
@@ -83,15 +109,16 @@ export const SettingsPage: React.FC = () => {
                 in <code className="text-enterprise-accent font-mono text-[10px] bg-gray-900 px-1 py-0.5 rounded">.env</code>{' '}
                 to persist across server restarts.
               </span>
-              <div className="flex gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {[
-                  { value: '10', label: '10 Minutes (High Frequency)' },
+                  { value: '5', label: '5 Minutes (Default)' },
+                  { value: '10', label: '10 Minutes' },
                   { value: '30', label: '30 Minutes' },
-                  { value: '60', label: '1 Hour (Recommended)' }
+                  { value: '60', label: '1 Hour' }
                 ].map((opt) => (
                   <label
                     key={opt.value}
-                    className={`flex-1 p-3 rounded-lg border text-center cursor-pointer transition-all duration-150 ${
+                    className={`p-3 rounded-lg border text-center cursor-pointer transition-all duration-150 ${
                       scanInterval === opt.value
                         ? 'border-enterprise-accent bg-enterprise-accent/10 text-white font-bold'
                         : 'border-enterprise-border bg-enterprise-bg/40 text-enterprise-subtext hover:border-gray-700'

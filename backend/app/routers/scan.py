@@ -11,7 +11,7 @@ def trigger_manual_scan():
     result = scan_manager.trigger_async_scan()
     return APIResponse(
         success=True,
-        message="Scan triggered",
+        message=result.get("message", "Scan started"),
         timestamp=datetime.utcnow().isoformat() + "Z",
         data=result
     )

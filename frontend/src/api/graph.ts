@@ -63,17 +63,51 @@ export interface EffectiveAccessRecord {
   };
 }
 
+export interface PhaseDurationInfo {
+  duration_seconds: number;
+  status: string;
+}
+
 export interface ScanStatus {
   is_scanning: boolean;
   scan_id?: string | null;
   scan_status?: 'IDLE' | 'SCANNING' | 'SUCCESS' | 'FAILED' | 'PARTIAL';
   started_at: string | null;
+  elapsed_seconds?: number;
+
+  active_phase?: string | null;
+  active_phase_started_at?: string | null;
+  completed_phases?: string[];
+  phase_durations?: Record<string, PhaseDurationInfo | number>;
+
+  completed_collectors?: number;
+  total_collectors?: number;
+  collector_status?: Record<string, string>;
+
+  resources_discovered?: number;
+  users_discovered?: number;
+  roles_discovered?: number;
+  groups_discovered?: number;
+  policies_discovered?: number;
+
   last_completed_scan_at?: string | null;
   last_completed_scan_id?: string | null;
   last_successful_scan_at?: string | null;
   last_successful_scan_id?: string | null;
+  last_published_scan_id?: string | null;
+  last_published_at?: string | null;
+
+  failed_regions?: string[];
+  successful_regions?: string[];
   last_error?: string | null;
-  last_result: {
+  last_progress_at?: string | null;
+
+  scan_mode?: string;
+  resolved_regions?: string[];
+  scheduled_scan_interval_minutes?: number | null;
+  next_scheduled_scan_at?: string | null;
+
+  last_result?: {
     status: string;
     scan_id?: string;
     scan_status?: string;
@@ -85,11 +119,6 @@ export interface ScanStatus {
     error?: string;
   } | null;
   service_status?: Record<string, string>;
-  failed_regions?: string[];
-  successful_regions?: string[];
-  phase_durations?: Record<string, number>;
-  scan_mode?: string;
-  resolved_regions?: string[];
 }
 
 export const getGraphElements = async (): Promise<CytoscapeElement[]> => {
@@ -102,6 +131,11 @@ export const rebuildGraph = async (): Promise<any> => {
   return res.data.data;
 };
 
+export const triggerScan = async (): Promise<{ status: string; scan_id?: string; message: string }> => {
+  const res = await apiClient.post<APIResponse<{ status: string; scan_id?: string; message: string }>>('/scan');
+  return res.data.data;
+};
+
 export const getScanStatus = async (): Promise<ScanStatus> => {
   const res = await apiClient.get<APIResponse<ScanStatus>>('/scan/status');
   return res.data.data;
@@ -111,4 +145,5 @@ export const getEffectiveAccess = async (): Promise<EffectiveAccessRecord[]> => 
   const res = await apiClient.get<APIResponse<EffectiveAccessRecord[]>>('/graph/effective-access');
   return res.data.data;
 };
+
 

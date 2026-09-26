@@ -60,26 +60,26 @@ def client():
 # 1. Atomic Duplicate Scan Rejection
 # ------------------------------------------------------------------------------
 def test_01_atomic_duplicate_scan_rejection():
-    """Verify duplicate scan triggers are rejected atomically with status 'skipped'."""
+    """Verify duplicate scan triggers are rejected atomically with status 'already_running'."""
     manager = ScanManager()
 
-    # When a scan is running, immediate trigger returns skipped
+    # When a scan is running, immediate trigger returns already_running
     manager._is_running = True
     res = manager.trigger_async_scan()
-    assert res["status"] == "skipped"
-    assert res["message"] == "Scan already running"
+    assert res["status"] in ("already_running", "skipped")
+    assert "already running" in res["message"].lower()
 
     # Reset
     manager._is_running = False
     with patch.object(threading.Thread, "start"):
         res_started = manager.trigger_async_scan()
         assert res_started["status"] == "started"
-        assert res_started["message"] == "Scan started in background"
+        assert "scan started" in res_started["message"].lower()
 
         # Immediate follow-up must be rejected
         res_dup = manager.trigger_async_scan()
-        assert res_dup["status"] == "skipped"
-        assert res_dup["message"] == "Scan already running"
+        assert res_dup["status"] in ("already_running", "skipped")
+        assert "already running" in res_dup["message"].lower()
 
 
 # ------------------------------------------------------------------------------

@@ -9,8 +9,13 @@ logger = logging.getLogger("backend")
 _scheduler = BackgroundScheduler()
 
 
+_current_interval: int | None = None
+
+
 def start_scheduler():
+    global _current_interval
     interval = settings.SCAN_INTERVAL_MINUTES
+    _current_interval = interval
     logger.info(f"Starting background scanner scheduler job (Interval: {interval} minutes)")
 
     # Run first scan immediately in a daemon thread so server boot is not blocked
@@ -36,17 +41,8 @@ def stop_scheduler():
 
 
 def reschedule_scan_job(minutes: int) -> None:
-    """Update the running APScheduler job's interval at runtime.
-
-    Uses reschedule_job() which atomically replaces the trigger on the
-    existing job without cancelling it or creating a duplicate job.
-
-    Args:
-        minutes: New interval in minutes. Must be >= 1.
-
-    Raises:
-        ValueError: If the scheduler is not running or the job is not found.
-    """
+    """Update the running APScheduler job's interval at runtime."""
+    global _current_interval
     if not _scheduler.running:
         raise ValueError("Scheduler is not running")
     logger.info(f"Rescheduling aws_sync_scan_job to {minutes} minute(s)")
@@ -55,3 +51,21 @@ def reschedule_scan_job(minutes: int) -> None:
         trigger="interval",
         minutes=minutes
     )
+    _current_interval = minutes
+
+
+def get_scheduler_status() -> dict:
+    """Return scheduler status including current interval and next run timestamp."""
+    interval = _current_interval or settings.SCAN_INTERVAL_MINUTES
+    next_run = None
+    try:
+        if _scheduler.running:
+            job = _scheduler.get_job("aws_sync_scan_job")
+            if job and job.next_run_time:
+                next_run = job.next_run_time.isoformat()
+    except Exception:
+        pass
+    return {
+        "scheduled_scan_interval_minutes": interval,
+        "next_scheduled_scan_at": next_run
+    }
