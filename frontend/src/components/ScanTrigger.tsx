@@ -45,6 +45,8 @@ export const useScanTrigger = () => {
             queryClient.invalidateQueries({ queryKey: ['iamUsers'] });
             queryClient.invalidateQueries({ queryKey: ['iamRoles'] });
             queryClient.invalidateQueries({ queryKey: ['iamPolicies'] });
+            queryClient.invalidateQueries({ queryKey: ['policies'] });
+            queryClient.invalidateQueries({ queryKey: ['relationships'] });
             queryClient.invalidateQueries({ queryKey: ['scanStatus'] });
 
             setTimeout(() => setScanSuccess(false), 4000);

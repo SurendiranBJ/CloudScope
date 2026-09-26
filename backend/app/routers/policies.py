@@ -37,30 +37,125 @@ def get_policy_catalog(
     The search and type filters operate across the COMPLETE cached catalog.
     Documents are never loaded or fetched during catalog listing to ensure high performance.
     """
-    catalog = list(cache.get("v1:policy_catalog") or [])
+    from app.services.scanner.scan_manager import scan_manager
 
-    # Also include policies discovered during scan (from v1:policies)
-    scan_policies = cache.get("v1:policies") or []
-    catalog_arns = {p.get("arn", "") for p in catalog}
+    # Ensure scan data availability if cache is empty
+    scan_policies = cache.get("v1:policies")
+    catalog_cached = cache.get("v1:policy_catalog")
+
+    if scan_policies is None and catalog_cached is None:
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
+        scan_policies = cache.get("v1:policies")
+        catalog_cached = cache.get("v1:policy_catalog")
+
+    # Authoritative primary source is v1:policies
+    scan_policies = scan_policies or []
+    catalog = list(catalog_cached or [])
+
+    # Pre-calculate entity attachments from authoritative cache/inventory
+    users = cache.get("v1:users") or getattr(scan_manager.inventory, "users", []) or []
+    roles = cache.get("v1:roles") or getattr(scan_manager.inventory, "roles", []) or []
+    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
+
+    # Map policy identifier (name and ARN) to attachment counts
+    attachment_counts: dict = {}
+    for u in users:
+        u_pols = set(u.get("policies", []) + u.get("attachedPolicies", []))
+        for p in u_pols:
+            clean = p.replace("[inline] ", "")
+            attachment_counts[clean] = attachment_counts.get(clean, 0) + 1
+        for p_arn in u.get("attachedPolicyArns", {}).values():
+            attachment_counts[p_arn] = attachment_counts.get(p_arn, 0) + 1
+
+    for r in roles:
+        r_pols = set(r.get("attachedPolicies", []) + r.get("policies", []))
+        for p in r_pols:
+            clean = p.replace("[inline] ", "")
+            attachment_counts[clean] = attachment_counts.get(clean, 0) + 1
+        for p_arn in r.get("attachedPolicyArns", {}).values():
+            attachment_counts[p_arn] = attachment_counts.get(p_arn, 0) + 1
+
+    for g in groups:
+        g_pols = set(g.get("attachedPolicies", []) + g.get("policies", []))
+        for p in g_pols:
+            clean = p.replace("[inline] ", "")
+            attachment_counts[clean] = attachment_counts.get(clean, 0) + 1
+        for p_arn in g.get("attachedPolicyArns", {}).values():
+            attachment_counts[p_arn] = attachment_counts.get(p_arn, 0) + 1
+
+    # Merge authoritative scan_policies into catalog
+    catalog_arns = {p.get("arn", "") for p in catalog if p.get("arn")}
+    catalog_names = {p.get("name", "") for p in catalog if p.get("name")}
+
     for sp in scan_policies:
-        if sp.get("arn", "") not in catalog_arns:
-            catalog.append({
-                "name": sp.get("name", ""),
-                "arn": sp.get("arn", ""),
-                "type": sp.get("type", "customer-managed"),
-                "attachmentCount": 0,
-                "isAttachable": True,
-                "description": "",
-                "document": sp.get("document"),
-                "riskScore": sp.get("riskScore", 0),
-                "severity": _score_to_severity(sp.get("riskScore", 0)),
-                "findings": [],
-            })
+        sp_arn = sp.get("arn", "")
+        sp_name = sp.get("name", "")
+        if (sp_arn and sp_arn in catalog_arns) or (sp_name and sp_name in catalog_names):
+            continue
+
+        raw_type = sp.get("type", "customer-managed")
+        if raw_type in ("custom", "customer-managed"):
+            norm_type = "customer-managed"
+            is_attachable = True
+        elif raw_type in ("aws-managed", "managed") or "::aws:policy/" in sp_arn:
+            norm_type = "aws-managed"
+            is_attachable = True
+        elif raw_type == "inline" or sp_name.startswith("[inline] "):
+            norm_type = "inline"
+            is_attachable = False
+        else:
+            norm_type = raw_type
+            is_attachable = True
+
+        clean_name = sp_name.replace("[inline] ", "")
+        att_count = max(attachment_counts.get(clean_name, 0), attachment_counts.get(sp_arn, 0))
+
+        catalog.append({
+            "name": sp_name,
+            "arn": sp_arn,
+            "type": norm_type,
+            "attachmentCount": att_count,
+            "isAttachable": is_attachable,
+            "description": sp.get("description", ""),
+            "document": sp.get("document"),
+            "riskScore": sp.get("riskScore", 0),
+            "severity": _score_to_severity(sp.get("riskScore", 0)),
+            "findings": [],
+        })
+
+    # Normalize existing catalog entries
+    for entry in catalog:
+        raw_type = entry.get("type", "customer-managed")
+        if raw_type in ("custom", "customer-managed"):
+            entry["type"] = "customer-managed"
+            entry["isAttachable"] = True
+        elif raw_type in ("aws-managed", "managed") or "::aws:policy/" in entry.get("arn", ""):
+            entry["type"] = "aws-managed"
+            entry["isAttachable"] = True
+        elif raw_type == "inline" or entry.get("name", "").startswith("[inline] "):
+            entry["type"] = "inline"
+            entry["isAttachable"] = False
+
+        c_name = entry.get("name", "").replace("[inline] ", "")
+        if not entry.get("attachmentCount"):
+            entry["attachmentCount"] = max(
+                attachment_counts.get(c_name, 0),
+                attachment_counts.get(entry.get("arn", ""), 0)
+            )
 
     # Apply type filtering across the complete catalog
     if type_filter:
         tf = type_filter.strip().lower()
-        catalog = [p for p in catalog if p.get("type", "").lower() == tf]
+        if tf in ("customer-managed", "custom"):
+            target_types = {"customer-managed", "custom"}
+        elif tf in ("aws-managed", "managed"):
+            target_types = {"aws-managed", "managed"}
+        elif tf == "inline":
+            target_types = {"inline"}
+        else:
+            target_types = {tf}
+        catalog = [p for p in catalog if p.get("type", "").lower() in target_types]
 
     # Apply search across the complete catalog
     if search:
@@ -93,6 +188,11 @@ def get_policy_catalog(
             entry["severity"] = "unknown"
         else:
             entry["severity"] = _score_to_severity(entry.get("riskScore", 0))
+
+        # Ensure required frontend fields exist with valid defaults
+        entry.setdefault("attachmentCount", 0)
+        entry.setdefault("isAttachable", entry.get("type") != "inline")
+        entry.setdefault("findings", [])
 
         # Omit document in list view to enforce Level 1 metadata-only
         entry.pop("document", None)
@@ -164,7 +264,9 @@ def get_policy_detail(policy_id: str):
     # Search catalog cache first
     catalog = cache.get("v1:policy_catalog") or []
     scan_policies = cache.get("v1:policies") or []
-    all_policies = catalog + scan_policies
+    from app.services.scanner.scan_manager import scan_manager
+    inv_policies = getattr(scan_manager.inventory, "policies", []) or []
+    all_policies = catalog + scan_policies + inv_policies
 
     entry = _find_policy(all_policies, policy_id)
 
@@ -215,17 +317,57 @@ def get_policy_detail(policy_id: str):
         entry["documentParsed"] = None
         entry["documentUnavailable"] = True
 
-    # Find attachment locations
-    users = cache.get("v1:users") or []
-    roles = cache.get("v1:roles") or []
+    # Find attachment locations across users, roles, and groups
+    users = cache.get("v1:users") or getattr(scan_manager.inventory, "users", []) or []
+    roles = cache.get("v1:roles") or getattr(scan_manager.inventory, "roles", []) or []
+    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
     pol_name = entry.get("name", "")
+    pol_arn = entry.get("arn", "")
+    clean_pol_name = pol_name.replace("[inline] ", "")
+
     attached_to: List[dict] = []
+    seen_attachments = set()
+
+    def _matches_policy(policy_list: list, policy_arn_map: dict) -> bool:
+        for p in policy_list:
+            if p == pol_name or p == clean_pol_name or p == f"[inline] {clean_pol_name}":
+                return True
+            if p.replace("[inline] ", "") == clean_pol_name:
+                return True
+        if pol_arn:
+            if pol_arn in policy_arn_map.values():
+                return True
+            if policy_arn_map.get(pol_name) == pol_arn or policy_arn_map.get(clean_pol_name) == pol_arn:
+                return True
+        return False
+
     for u in users:
-        if pol_name in u.get("policies", []):
-            attached_to.append({"type": "User", "name": u["name"], "arn": u.get("arn", "")})
+        u_pols = u.get("policies", []) + u.get("attachedPolicies", [])
+        u_arns = u.get("attachedPolicyArns", {})
+        if _matches_policy(u_pols, u_arns):
+            key = ("User", u.get("name", ""))
+            if key not in seen_attachments:
+                seen_attachments.add(key)
+                attached_to.append({"type": "User", "name": u["name"], "arn": u.get("arn", "")})
+
     for r in roles:
-        if pol_name in r.get("attachedPolicies", []):
-            attached_to.append({"type": "Role", "name": r["name"], "arn": r.get("arn", "")})
+        r_pols = r.get("attachedPolicies", []) + r.get("policies", [])
+        r_arns = r.get("attachedPolicyArns", {})
+        if _matches_policy(r_pols, r_arns):
+            key = ("Role", r.get("name", ""))
+            if key not in seen_attachments:
+                seen_attachments.add(key)
+                attached_to.append({"type": "Role", "name": r["name"], "arn": r.get("arn", "")})
+
+    for g in groups:
+        g_pols = g.get("attachedPolicies", []) + g.get("policies", [])
+        g_arns = g.get("attachedPolicyArns", {})
+        if _matches_policy(g_pols, g_arns):
+            key = ("Group", g.get("name", ""))
+            if key not in seen_attachments:
+                seen_attachments.add(key)
+                attached_to.append({"type": "Group", "name": g["name"], "arn": g.get("arn", "")})
+
     entry["attachedTo"] = attached_to
 
     return APIResponse(

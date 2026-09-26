@@ -10,11 +10,28 @@ import { getPolicyCatalog, getPolicyById } from '../api/policies';
 import { getSimulationState, addSimulationChange, type SimulationChangePayload } from '../api/simulation';
 import { getIAMUsers } from '../api/users';
 import { getIAMRoles } from '../api/roles';
+import { getScanStatus } from '../api/graph';
 import { SimulationPreviewModal } from '../components/SimulationPreviewModal';
 import type { PolicyCatalogEntry } from '../types';
 
 type FilterType = 'all' | 'aws-managed' | 'customer-managed' | 'inline';
 type SortField = 'name' | 'riskScore' | 'attachmentCount';
+
+function formatPolicyDocument(doc: string | undefined | null): string {
+  if (!doc) return '';
+  if (typeof doc !== 'string') {
+    try {
+      return JSON.stringify(doc, null, 2);
+    } catch {
+      return String(doc);
+    }
+  }
+  try {
+    return JSON.stringify(JSON.parse(doc), null, 2);
+  } catch {
+    return doc;
+  }
+}
 
 const severityColors = {
   critical: { bg: 'bg-red-500/15', text: 'text-red-400', border: 'border-red-500/30' },
@@ -71,7 +88,13 @@ export const Policies: React.FC = () => {
     queryFn: getIAMRoles,
   });
 
-  const { data: catalogData, isLoading, refetch } = useQuery({
+  const { data: scanStatus } = useQuery({
+    queryKey: ['scanStatus'],
+    queryFn: getScanStatus,
+    refetchInterval: 3000,
+  });
+
+  const { data: catalogData, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['policies', filter, search, page, pageSize],
     queryFn: () => getPolicyCatalog({
       type_filter: filter === 'all' ? undefined : filter,
@@ -79,7 +102,10 @@ export const Policies: React.FC = () => {
       page,
       page_size: pageSize,
     }),
-    staleTime: 60_000,
+    staleTime: 30_000,
+    refetchInterval: () => {
+      return scanStatus?.is_scanning ? 2500 : false;
+    },
   });
 
   const policies = catalogData?.items ?? [];
@@ -241,12 +267,38 @@ export const Policies: React.FC = () => {
             <div className="flex items-center justify-center h-40 text-enterprise-subtext">
               <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading policy catalog...
             </div>
-          ) : sorted.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">
-              <Shield className="w-8 h-8" />
-              <p className="text-sm">No policies found</p>
-              <p className="text-xs">Run a scan first to populate the catalog</p>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
+              <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-white">Unable to load policy catalog.</p>
+                <p className="text-xs text-red-400/80 mt-1">{error instanceof Error ? error.message : 'An error occurred while fetching policies'}</p>
+              </div>
+              <button
+                onClick={() => refetch()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-enterprise-card hover:bg-gray-800 border border-enterprise-border text-xs text-white font-medium transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Retry
+              </button>
             </div>
+          ) : sorted.length === 0 ? (
+            scanStatus?.is_scanning ? (
+              <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
+                <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
+                <div>
+                  <p className="text-sm font-semibold text-white">CloudScope scan is running...</p>
+                  <p className="text-xs text-enterprise-subtext mt-1">Preparing AWS IAM data and policy catalog. This will refresh automatically.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">
+                <Shield className="w-8 h-8" />
+                <p className="text-sm">No policies found</p>
+                <p className="text-xs">Run a scan first to populate the catalog</p>
+              </div>
+            )
           ) : (
             sorted.map((policy) => (
               <motion.button
@@ -400,7 +452,7 @@ export const Policies: React.FC = () => {
                 <div>
                   <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wider">Policy Document</p>
                   <pre className="text-[10px] font-mono text-gray-400 bg-gray-900/50 rounded-lg p-3 overflow-auto max-h-48 border border-enterprise-border">
-                    {JSON.stringify(JSON.parse(selected.document), null, 2)}
+                    {formatPolicyDocument(selected.document)}
                   </pre>
                 </div>
               )}

@@ -13,38 +13,44 @@ Never invents labels. All relationship labels are exact backend types.
 import logging
 from fastapi import APIRouter, Query
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 
 from app.schemas import APIResponse
 from app.cache import cache
 from app.services.attack.policy_evaluator import (
-    evaluate_assume_role_trust,
     evaluate_assume_role_trust_with_evidence,
+    evaluate_policy_allows_resources,
 )
+from app.services.scanner.scan_manager import scan_manager
 
 logger = logging.getLogger("scanner")
 router = APIRouter(tags=["Relationships"])
 
 
-@router.get("/relationships", response_model=APIResponse[dict])
-def get_all_relationships(
-    entity_type: Optional[str] = Query(None, description="Filter by entity type: User | Group | Role | Policy"),
-    search: Optional[str] = Query(None, description="Search by entity name"),
-    limit: int = Query(1000, ge=1, le=5000),
-):
-    """Return the full relationship model for the current AWS state.
-
-    Relationships are built from scanned inventory — not inferred.
-    All relationship labels are exact backend types.
-    """
-    users = cache.get("v1:users") or []
-    roles = cache.get("v1:roles") or []
-    policies = cache.get("v1:policies") or []
-
-    # Groups come embedded in users
-    groups = _extract_groups_from_users(users)
-
+def _build_raw_relationships(
+    users: List[dict],
+    roles: List[dict],
+    policies: List[dict],
+    groups: List[dict],
+    resources: List[dict],
+) -> List[dict]:
+    """Build authoritative relationships without deduplication or filtering."""
     relationships = []
+
+    # Map groups to their policies from authoritative scanned groups inventory
+    group_map: Dict[str, List[str]] = {}
+    if groups:
+        for g in groups:
+            gname = g.get("name")
+            if gname:
+                pols = g.get("attachedPolicies", []) or g.get("policies", []) or []
+                group_map[gname] = list(pols)
+    else:
+        # Fallback to embedded user group names without fabricating policies
+        for u in users:
+            for gname in u.get("groups", []):
+                if gname not in group_map:
+                    group_map[gname] = []
 
     # 1. User MEMBER_OF Group
     for u in users:
@@ -59,9 +65,10 @@ def get_all_relationships(
                 "target_type": "Group",
             })
 
-    # 2. User HAS_POLICY (direct)
+    # 2. User HAS_POLICY (direct + inline)
     for u in users:
-        for pname in u.get("policies", []):
+        u_pols = u.get("policies", []) + u.get("attachedPolicies", [])
+        for pname in u_pols:
             clean = pname.replace("[inline] ", "")
             relationships.append({
                 "source_id": f"aws:user:{u['name']}",
@@ -73,8 +80,8 @@ def get_all_relationships(
                 "target_type": "Policy",
             })
 
-    # 3. Group HAS_POLICY
-    for gname, pols in groups.items():
+    # 3. Group HAS_POLICY (from authoritative scanned evidence)
+    for gname, pols in group_map.items():
         for pname in pols:
             clean = pname.replace("[inline] ", "")
             relationships.append({
@@ -89,7 +96,8 @@ def get_all_relationships(
 
     # 4. Role HAS_POLICY
     for r in roles:
-        for pname in r.get("attachedPolicies", []):
+        r_pols = r.get("attachedPolicies", []) + r.get("policies", [])
+        for pname in r_pols:
             clean = pname.replace("[inline] ", "")
             relationships.append({
                 "source_id": f"aws:role:{r['name']}",
@@ -104,7 +112,8 @@ def get_all_relationships(
     # 5. CAN_ASSUME via trust policies
     account_id = _get_account_id(users)
     pol_doc_map = {p["name"]: p.get("document", "{}") for p in policies}
-    cached_groups = cache.get("v1:groups") or groups
+    cached_groups = groups if groups else [{"name": gn, "attachedPolicies": gp} for gn, gp in group_map.items()]
+
     for r in roles:
         trust_ev = evaluate_assume_role_trust_with_evidence(
             r.get("trustPolicy", "{}"),
@@ -147,9 +156,7 @@ def get_all_relationships(
                 "target_type": "Role",
             })
 
-    # 6. Policy ALLOWS Resource (from cached graph edges)
-    resources = cache.get("v1:resources") or []
-    from app.services.attack.policy_evaluator import evaluate_policy_allows_resources
+    # 6. Policy ALLOWS Resource
     for p in policies:
         doc = p.get("document", "{}")
         if not doc or doc == "{}":
@@ -168,21 +175,84 @@ def get_all_relationships(
                 "target_type": rtype,
             })
 
-    # Apply filters
+    return relationships
+
+
+def _deduplicate_relationships(relationships: List[dict]) -> List[dict]:
+    """Deduplicate relationships based on canonical tuple (source_id, relationship, target_id)."""
+    seen = set()
+    deduped = []
+    for r in relationships:
+        key = (r["source_id"], r["relationship"], r["target_id"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    return deduped
+
+
+@router.get("/relationships", response_model=APIResponse[dict])
+def get_all_relationships(
+    entity_type: Optional[str] = Query(None, description="Filter by entity type: User | Group | Role | Policy"),
+    search: Optional[str] = Query(None, description="Search by entity name"),
+    limit: int = Query(1000, ge=1, le=5000),
+):
+    """Return the full relationship model for the current AWS state.
+
+    Relationships are built from scanned inventory — not inferred.
+    All relationship labels are exact backend types.
+    """
+    users = cache.get("v1:users")
+    roles = cache.get("v1:roles")
+    policies = cache.get("v1:policies")
+
+    # If cache is cold after startup, trigger scan
+    if users is None and roles is None and policies is None:
+        if not scan_manager.is_running:
+            scan_manager.trigger_async_scan()
+        users = cache.get("v1:users")
+        roles = cache.get("v1:roles")
+        policies = cache.get("v1:policies")
+
+    users = users or getattr(scan_manager.inventory, "users", []) or []
+    roles = roles or getattr(scan_manager.inventory, "roles", []) or []
+    policies = policies or getattr(scan_manager.inventory, "policies", []) or []
+    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
+    resources = cache.get("v1:resources") or getattr(scan_manager.inventory, "resources", []) or []
+
+    # Build raw relationships
+    raw_relationships = _build_raw_relationships(users, roles, policies, groups, resources)
+
+    # Deduplicate by canonical tuple
+    relationships = _deduplicate_relationships(raw_relationships)
+
+    # Apply entity_type filter across source_type or target_type
     if entity_type:
-        et = entity_type.lower()
+        et = entity_type.strip().lower()
+        singular = et[:-1] if et.endswith('s') and et not in ['secrets'] else et
+        valid_types = {et, singular}
         relationships = [
             r for r in relationships
-            if r["source_type"].lower() == et or r["target_type"].lower() == et
+            if r["source_type"].lower() in valid_types or r["target_type"].lower() in valid_types
         ]
+
+    # Apply search filter
     if search:
-        q = search.lower()
+        q = search.strip().lower()
         relationships = [
             r for r in relationships
             if q in r["source_label"].lower() or q in r["target_label"].lower()
         ]
 
     relationships = relationships[:limit]
+
+    # Calculate real entity counts
+    group_count = len(groups)
+    if group_count == 0:
+        extracted = set()
+        for u in users:
+            for g in u.get("groups", []):
+                extracted.add(g)
+        group_count = len(extracted)
 
     return APIResponse(
         success=True,
@@ -195,7 +265,7 @@ def get_all_relationships(
                 "users": len(users),
                 "roles": len(roles),
                 "policies": len(policies),
-                "groups": len(groups),
+                "groups": group_count,
                 "resources": len(resources),
             },
         },
@@ -209,39 +279,62 @@ def get_entity_relationships(
 ):
     """Return all relationships for a specific entity (user/group/role/policy).
 
-    entity_id should be: type:name (e.g. User:alice or Role:AdminRole)
+    entity_id can be canonical (aws:user:name, aws:role:name, aws:group:name, aws:policy:name)
+    or type:name (User:name) or raw name.
     """
-    users = cache.get("v1:users") or []
-    roles = cache.get("v1:roles") or []
-    policies = cache.get("v1:policies") or []
+    users = cache.get("v1:users") or getattr(scan_manager.inventory, "users", []) or []
+    roles = cache.get("v1:roles") or getattr(scan_manager.inventory, "roles", []) or []
+    policies = cache.get("v1:policies") or getattr(scan_manager.inventory, "policies", []) or []
+    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
+    resources = cache.get("v1:resources") or getattr(scan_manager.inventory, "resources", []) or []
 
-    # Parse entity
-    parts = entity_id.split(":", 1)
-    if len(parts) == 2:
+    # Parse entity ID cleanly
+    if entity_id.startswith("aws:"):
+        sub = entity_id[4:]
+        sub_parts = sub.split(":", 1)
+        if len(sub_parts) == 2:
+            raw_type, entity_name = sub_parts[0], sub_parts[1]
+            type_map = {
+                "user": "User", "role": "Role", "group": "Group", "policy": "Policy",
+                "s3": "S3", "ec2": "EC2", "lambda": "Lambda", "rds": "RDS",
+                "dynamodb": "DynamoDB", "secrets": "Secrets"
+            }
+            entity_type = type_map.get(raw_type.lower(), raw_type.capitalize())
+        else:
+            entity_name = sub
+            entity_type = _infer_entity_type(entity_name, users, roles, policies, groups)
+    elif ":" in entity_id:
+        parts = entity_id.split(":", 1)
         entity_type, entity_name = parts[0], parts[1]
     else:
         entity_name = entity_id
-        entity_type = _infer_entity_type(entity_name, users, roles, policies)
-
-    # Get all relationships and filter for this entity
-    from fastapi.testclient import TestClient
-    all_rel_response = get_all_relationships(search=entity_name)
-    all_rels = all_rel_response.data.get("relationships", [])
+        entity_type = _infer_entity_type(entity_name, users, roles, policies, groups)
 
     entity_node_id = f"aws:{entity_type.lower()}:{entity_name}"
 
-    outgoing = [r for r in all_rels if r["source_id"] == entity_node_id]
-    incoming = [r for r in all_rels if r["target_id"] == entity_node_id]
+    # Build authoritative relationships directly
+    all_rels = _deduplicate_relationships(
+        _build_raw_relationships(users, roles, policies, groups, resources)
+    )
+
+    outgoing = [
+        r for r in all_rels
+        if r["source_id"] == entity_node_id or (r["source_type"].lower() == entity_type.lower() and r["source_label"] == entity_name)
+    ]
+    incoming = [
+        r for r in all_rels
+        if r["target_id"] == entity_node_id or (r["target_type"].lower() == entity_type.lower() and r["target_label"] == entity_name)
+    ]
 
     if direction == "outgoing":
         filtered = outgoing
     elif direction == "incoming":
         filtered = incoming
     else:
-        filtered = outgoing + incoming
+        filtered = _deduplicate_relationships(outgoing + incoming)
 
     # Build access provenance for this entity
-    provenance = _build_provenance(entity_name, entity_type, users, roles, policies)
+    provenance = _build_provenance(entity_name, entity_type, users, roles, policies, groups, resources)
 
     return APIResponse(
         success=True,
@@ -261,16 +354,6 @@ def get_entity_relationships(
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _extract_groups_from_users(users: List[dict]) -> dict:
-    """Extract group→policies mapping from user data."""
-    groups = {}
-    for u in users:
-        for g in u.get("groups", []):
-            if g not in groups:
-                groups[g] = []
-    return groups
-
-
 def _get_account_id(users: List[dict]) -> str:
     for u in users:
         owner = u.get("owner", "")
@@ -279,34 +362,52 @@ def _get_account_id(users: List[dict]) -> str:
     return ""
 
 
-def _infer_entity_type(name: str, users, roles, policies) -> str:
+def _infer_entity_type(name: str, users: list, roles: list, policies: list, groups: list) -> str:
     for u in users:
         if u.get("name") == name:
             return "User"
     for r in roles:
         if r.get("name") == name:
             return "Role"
+    for g in groups:
+        if g.get("name") == name:
+            return "Group"
     for p in policies:
         if p.get("name") == name:
             return "Policy"
     return "Unknown"
 
 
-def _build_provenance(entity_name: str, entity_type: str, users, roles, policies) -> List[dict]:
-    """Build access provenance chains for an entity."""
+def _get_group_policies(gname: str, groups: List[dict]) -> List[str]:
+    """Extract policies for a group from authoritative group inventory."""
+    for g in groups:
+        if g.get("name") == gname:
+            return list(g.get("attachedPolicies", []) or g.get("policies", []) or [])
+    return []
+
+
+def _build_provenance(
+    entity_name: str,
+    entity_type: str,
+    users: List[dict],
+    roles: List[dict],
+    policies: List[dict],
+    groups: List[dict],
+    resources: List[dict],
+) -> List[dict]:
+    """Build access provenance chains for an entity using real scanned data."""
     chains = []
-    resources = cache.get("v1:resources") or []
-    from app.services.attack.policy_evaluator import evaluate_policy_allows_resources
 
     if entity_type == "User":
-        user = next((u for u in users if u["name"] == entity_name), None)
+        user = next((u for u in users if u.get("name") == entity_name), None)
         if not user:
             return chains
 
         # Direct policy chains
-        for pname in user.get("policies", []):
+        user_pols = user.get("policies", []) + user.get("attachedPolicies", [])
+        for pname in user_pols:
             clean = pname.replace("[inline] ", "")
-            pol = next((p for p in policies if p["name"] == clean), None)
+            pol = next((p for p in policies if p.get("name") == clean or p.get("name") == pname), None)
             if pol:
                 doc = pol.get("document", "{}")
                 allowed = evaluate_policy_allows_resources(doc, resources)
@@ -319,10 +420,10 @@ def _build_provenance(entity_name: str, entity_type: str, users, roles, policies
 
         # Group chains
         for gname in user.get("groups", []):
-            group_pols = _get_group_policies(gname, users)
+            group_pols = _get_group_policies(gname, groups)
             for pname in group_pols:
                 clean = pname.replace("[inline] ", "")
-                pol = next((p for p in policies if p["name"] == clean), None)
+                pol = next((p for p in policies if p.get("name") == clean or p.get("name") == pname), None)
                 if pol:
                     doc = pol.get("document", "{}")
                     allowed = evaluate_policy_allows_resources(doc, resources)
@@ -334,10 +435,3 @@ def _build_provenance(entity_name: str, entity_type: str, users, roles, policies
                         })
 
     return chains[:50]  # Cap provenance chains for performance
-
-
-def _get_group_policies(gname: str, users: List[dict]) -> List[str]:
-    """Extract policies for a group from user data."""
-    # Groups are discovered as user membership — need to look them up
-    # This is approximate; real group policies come from IAM group scan
-    return []

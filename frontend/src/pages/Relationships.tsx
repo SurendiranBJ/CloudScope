@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Network, GitMerge, ChevronRight, RefreshCw,
-  User, Shield, Database, Cloud, Users, ArrowRight, Filter, X
+  User, Shield, Database, Cloud, Users, ArrowRight, Filter, X, AlertTriangle
 } from 'lucide-react';
 import { getRelationships, getEntityRelationships } from '../api/relationships';
+import { getScanStatus } from '../api/graph';
 import type { RelationshipEntry } from '../types';
 
 const REL_COLORS: Record<string, { bg: string; text: string; border: string }> = {
@@ -54,7 +55,13 @@ export const Relationships: React.FC = () => {
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null);
   const [relFilter, setRelFilter] = useState<string>('all');
 
-  const { data: relData, isLoading, refetch } = useQuery({
+  const { data: scanStatus } = useQuery({
+    queryKey: ['scanStatus'],
+    queryFn: getScanStatus,
+    refetchInterval: 3000,
+  });
+
+  const { data: relData, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['relationships', typeFilter, search],
     queryFn: () => getRelationships({
       entity_type: typeFilter === 'all' ? undefined : typeFilter,
@@ -62,6 +69,9 @@ export const Relationships: React.FC = () => {
       limit: 1000,
     }),
     staleTime: 30_000,
+    refetchInterval: () => {
+      return scanStatus?.is_scanning ? 2500 : false;
+    },
   });
 
   const { data: entityData } = useQuery({
@@ -203,12 +213,38 @@ export const Relationships: React.FC = () => {
             <div className="flex items-center justify-center h-40 text-enterprise-subtext">
               <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading relationships...
             </div>
-          ) : grouped.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">
-              <Network className="w-8 h-8" />
-              <p className="text-sm">No relationships found</p>
-              <p className="text-xs">Run a scan to discover AWS IAM relationships</p>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
+              <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-white">Unable to load relationships.</p>
+                <p className="text-xs text-red-400/80 mt-1">{error instanceof Error ? error.message : 'An error occurred while fetching relationships'}</p>
+              </div>
+              <button
+                onClick={() => refetch()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-enterprise-card hover:bg-gray-800 border border-enterprise-border text-xs text-white font-medium transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Retry
+              </button>
             </div>
+          ) : grouped.length === 0 ? (
+            scanStatus?.is_scanning ? (
+              <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
+                <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
+                <div>
+                  <p className="text-sm font-semibold text-white">CloudScope scan is running...</p>
+                  <p className="text-xs text-enterprise-subtext mt-1">Preparing AWS IAM data and identity relationships. This will refresh automatically.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-40 gap-2 text-enterprise-subtext">
+                <Network className="w-8 h-8" />
+                <p className="text-sm">No relationships found</p>
+                <p className="text-xs">Run a scan to discover AWS IAM relationships</p>
+              </div>
+            )
           ) : (
             grouped.map(({ sourceId, sourceLabel, sourceType, rels }) => (
               <motion.div
