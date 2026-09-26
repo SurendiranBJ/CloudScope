@@ -219,15 +219,29 @@ class ScanManager:
         self._scan_started_at: str | None = None
         self._scan_started_perf: float | None = None
         self._scan_elapsed_seconds: float = 0.0
+        self._elapsed_seconds: float = 0.0
 
-        self._active_phase: str | None = None
+        self._active_phase: str = "IDLE"
         self._active_phase_started_at: str | None = None
         self._completed_phases: List[str] = []
         self._last_progress_at: str | None = None
 
         self._completed_collectors: int = 0
-        self._total_collectors: int = len(ALL_COLLECTOR_NAMES)
-        self._collector_status: Dict[str, str] = {name: "PENDING" for name in ALL_COLLECTOR_NAMES}
+        self._total_collectors: int = 12
+        self._collector_status: Dict[str, str] = {
+            "IAM_Users": "PENDING",
+            "IAM_Groups": "PENDING",
+            "IAM_Roles": "PENDING",
+            "IAM_Policies": "PENDING",
+            "EC2": "PENDING",
+            "S3": "PENDING",
+            "Lambda": "PENDING",
+            "Secrets": "PENDING",
+            "RDS": "PENDING",
+            "DynamoDB": "PENDING",
+            "AccessAnalyzer": "PENDING",
+            "CloudTrail": "PENDING"
+        }
 
         self._resources_discovered: int = 0
         self._users_discovered: int = 0

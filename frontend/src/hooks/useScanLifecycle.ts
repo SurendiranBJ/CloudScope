@@ -156,15 +156,6 @@ export const useScanLifecycle = (options: UseScanLifecycleOptions = {}) => {
     setManualTriggerLoading(true);
     setManualError(null);
 
-    // Optimistically update query client so UI reacts immediately
-    queryClient.setQueryData<ScanStatus>(['scanStatus'], (old) => ({
-      ...(old || { started_at: new Date().toISOString(), last_result: null }),
-      is_scanning: true,
-      scan_status: 'SCANNING',
-      active_phase: 'INITIALIZING',
-      elapsed_seconds: 0,
-    }));
-
     try {
       const res = await apiTriggerScan();
       const statusUpper = (res?.status || '').toUpperCase();

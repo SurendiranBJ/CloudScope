@@ -28,12 +28,35 @@ export const GlobalScanStatus: React.FC = () => {
     isPartial,
     isFailed,
     failedRegions,
+    manualTriggerLoading,
   } = useScanLifecycle();
 
   const [showCollectors, setShowCollectors] = useState(false);
 
   const currentShort = currentSnapshotId ? currentSnapshotId.slice(0, 8) : null;
   const newShort = newScanId ? newScanId.slice(0, 8) : null;
+
+  // 0. CONNECTING STATE BEFORE BACKEND ARRIVES (Requirement 10)
+  if (manualTriggerLoading && !isScanning) {
+    return (
+      <div className="bg-enterprise-card/95 border border-blue-500/30 rounded-xl px-3.5 py-2.5 shadow-lg text-xs w-full sm:max-w-xs min-w-0 transition-all flex items-center gap-2">
+        <svg
+          className="animate-spin w-3.5 h-3.5 shrink-0 text-blue-400"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          />
+        </svg>
+        <span className="text-gray-300 font-medium">Connecting to scan service...</span>
+      </div>
+    );
+  }
 
   // 1. ACTIVE SCANNING STATE (Compact, responsive card)
   if (isScanning) {
@@ -82,14 +105,16 @@ export const GlobalScanStatus: React.FC = () => {
             )}
           </div>
 
-          {/* Current & Target Snapshot preservation visibility */}
-          <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5">
-            <span className="truncate">
-              Current: <span className="font-mono text-gray-300">{currentShort || 'none'}</span>
-            </span>
+          {/* Current snapshot & active scan ID (Requirement 12) */}
+          <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 gap-2">
+            {currentShort && (
+              <span className="truncate">
+                Current snapshot: <span className="font-mono text-gray-300">{currentShort}</span>
+              </span>
+            )}
             {newShort && (
-              <span className="truncate text-blue-300">
-                Updating to: <span className="font-mono font-medium">{newShort}</span>
+              <span className="truncate text-blue-300 text-right">
+                Updating: <span className="font-mono font-medium">{newShort}</span>
               </span>
             )}
           </div>
