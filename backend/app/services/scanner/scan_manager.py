@@ -445,7 +445,7 @@ class ScanManager:
         with self._lock:
             if self._is_running:
                 return {
-                    "status": "ALREADY_RUNNING",
+                    "status": "already_running",
                     "scan_id": self._scan_id,
                     "message": "A scan is already running"
                 }
@@ -474,7 +474,7 @@ class ScanManager:
         thread = threading.Thread(target=self._execute_scan, args=(scan_id,), daemon=True)
         thread.start()
         return {
-            "status": "STARTED",
+            "status": "started",
             "scan_id": scan_id,
             "message": "Scan started"
         }
@@ -485,7 +485,7 @@ class ScanManager:
             if self._is_running:
                 logger.warning("Scan lock held. Skipping duplicate scheduled scan.")
                 return {
-                    "status": "ALREADY_RUNNING",
+                    "status": "already_running",
                     "scan_id": self._scan_id,
                     "message": "A scan is already running"
                 }
@@ -516,6 +516,7 @@ class ScanManager:
     def _execute_scan(self, scan_id: str) -> dict:
         self._last_error = None
         start_perf = time.perf_counter()
+        phase_t0 = start_perf
         self._scan_started_perf = start_perf
         self._service_status = {}
 
