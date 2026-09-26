@@ -119,7 +119,7 @@ export const Relationships: React.FC = () => {
   ];
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex flex-1 min-h-0 overflow-hidden">
       {/* Main relationship browser */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         {/* Header */}

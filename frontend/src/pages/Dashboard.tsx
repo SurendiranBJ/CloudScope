@@ -16,8 +16,7 @@ import {
   Cloud,
   FileText,
   Key,
-  ShieldCheck,
-  AlertTriangle
+  ShieldCheck
 } from 'lucide-react';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { RegionSelector } from '../components/RegionSelector';
@@ -25,6 +24,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { ScanTrigger, useScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
+import { GlobalScanStatus } from '../components/GlobalScanStatus';
 import { apiClient } from '../api/client';
 
 export const Dashboard: React.FC = () => {
@@ -130,84 +130,36 @@ export const Dashboard: React.FC = () => {
   const resourceBreakdown = data.resourceBreakdown || [];
 
   return (
-    <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
+    <div className="flex-1 min-h-0 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
       
       {/* Header */}
-      <div className="flex justify-between items-center flex-wrap gap-4">
-        <div>
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            <Cloud className="w-6 h-6 text-enterprise-accent" />
-            <span>AWS Security Control Center</span>
+            <Cloud className="w-6 h-6 text-enterprise-accent shrink-0" />
+            <span className="truncate">AWS Security Control Center</span>
           </h1>
           <p className="text-xs text-enterprise-subtext mt-1">
             Near-real-time CloudTrail security monitoring, IAM identity graph, and lateral attack vector intelligence.
           </p>
         </div>
         
-        {/* Region Selector & Scan Controls */}
-        <div className="flex items-center gap-3 flex-wrap">
-          {healthData && (
-            <RegionSelector
-              currentMode={healthData.scan_mode || 'single'}
-              currentRegion={healthData.selected_region || null}
-              onRegionChanged={handleScanClick}
-            />
-          )}
-          <ScannedRegionBadge />
-          <ScanTrigger />
+        {/* Region Selector & Scan Controls + Status Card (Requirement 11, 22) */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 flex-wrap xl:justify-end min-w-0">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {healthData && (
+              <RegionSelector
+                currentMode={healthData.scan_mode || 'single'}
+                currentRegion={healthData.selected_region || null}
+                onRegionChanged={handleScanClick}
+              />
+            )}
+            <ScannedRegionBadge />
+            <ScanTrigger />
+          </div>
+          <GlobalScanStatus />
         </div>
       </div>
-
-      {/* Scan Status Diagnostic Banners */}
-      {data?.scanStatus === 'FAILED' && (
-        <div className="p-3 bg-red-950/40 border border-red-500/40 rounded-xl flex items-center justify-between gap-3 text-xs text-red-300">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-            <span className="font-semibold">Scan Failed:</span>
-            <span>{data?.lastError || 'One or more critical AWS collectors failed.'}</span>
-          </div>
-          {data?.lastSuccessfulScanAt && (
-            <span className="text-gray-400 text-[11px]">
-              Displaying last verified snapshot from {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()}
-            </span>
-          )}
-        </div>
-      )}
-      {data?.scanStatus === 'PARTIAL' && (
-        <div className="p-3 bg-amber-950/40 border border-amber-500/40 rounded-xl flex items-center justify-between gap-3 text-xs text-amber-300">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span className="font-semibold">Partial Regional Scan:</span>
-            <span>
-              AWS collection failed for region(s):{' '}
-              <span className="font-mono font-bold text-white bg-amber-900/60 px-1.5 py-0.5 rounded border border-amber-500/30">
-                {(data.failedRegions || []).join(', ') || 'N/A'}
-              </span>
-              . Cached inventory for failed regions was preserved.
-            </span>
-          </div>
-          {(data?.lastCompletedScanAt || data?.lastSuccessfulScanAt) && (
-            <span className="text-gray-400 text-[11px]">
-              Last completed: {new Date(data.lastCompletedScanAt || data.lastSuccessfulScanAt!).toLocaleTimeString()}
-              {data.lastSuccessfulScanAt && data.lastSuccessfulScanAt !== data.lastCompletedScanAt && (
-                <span className="ml-1 text-gray-500">(full scan: {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()})</span>
-              )}
-            </span>
-          )}
-        </div>
-      )}
-      {data?.scanStatus === 'SCANNING' && data?.lastSuccessfulScanAt && (
-        <div className="p-2.5 bg-blue-950/40 border border-blue-500/30 rounded-xl flex items-center justify-between gap-3 text-xs text-blue-300">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
-            <span className="font-semibold">Scan in progress:</span>
-            <span>Refreshing AWS cloud inventory... Showing previous completed snapshot.</span>
-          </div>
-          <span className="text-gray-400 text-[11px]">
-            Last verified: {new Date(data.lastSuccessfulScanAt).toLocaleTimeString()}
-          </span>
-        </div>
-      )}
 
       {/* Initial Empty State Banner */}
       {!data?.lastSuccessfulScanAt && stats.resources === 0 && (

@@ -253,7 +253,7 @@ export const IdentityGraphPage: FC = () => {
   }, []);
 
   return (
-    <div ref={pageRef} className="flex flex-col h-full min-h-screen bg-[#0B1120] text-gray-200 font-sans overflow-hidden">
+    <div ref={pageRef} className="flex flex-col flex-1 min-h-0 bg-[#0B1120] text-gray-200 font-sans overflow-hidden">
       
       {/* HEADER BAR */}
       {!isFullscreen && (

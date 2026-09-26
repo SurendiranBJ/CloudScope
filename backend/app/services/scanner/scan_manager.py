@@ -255,6 +255,7 @@ class ScanManager:
             "path_analysis": {"duration_seconds": 0.0, "status": "SKIPPED"},
             "cloudtrail_correlation": {"duration_seconds": 0.0, "status": "SKIPPED"},
             "finding_synthesis": {"duration_seconds": 0.0, "status": "SKIPPED"},
+            "publishing": {"duration_seconds": 0.0, "status": "SKIPPED"},
             "total": {"duration_seconds": 0.0, "status": "SKIPPED"}
         }
         self._init_from_disk()
@@ -334,19 +335,23 @@ class ScanManager:
     def _set_active_phase(self, phase_name: str) -> None:
         """Atomically advance the active scan phase and update progress heartbeat."""
         now_str = datetime.utcnow().isoformat() + "Z"
-        self._active_phase = phase_name
+        self._active_phase = phase_name.upper()
         self._active_phase_started_at = now_str
         self._last_progress_at = now_str
 
     def _complete_phase(self, phase_name: str, duration_seconds: float, status: str = "COMPLETED") -> None:
         """Atomically record completed phase duration and update progress heartbeat."""
         now_str = datetime.utcnow().isoformat() + "Z"
-        self._phase_durations[phase_name] = {
+        norm_name = phase_name.upper()
+        self._phase_durations[norm_name] = {
             "duration_seconds": max(0.0, round(duration_seconds, 3)),
             "status": status
         }
-        if phase_name not in self._completed_phases and status == "COMPLETED":
-            self._completed_phases.append(phase_name)
+        self._phase_durations[phase_name.lower()] = self._phase_durations[norm_name]
+        if norm_name not in self._completed_phases and status == "COMPLETED":
+            self._completed_phases.append(norm_name)
+        if phase_name.lower() not in self._completed_phases and status == "COMPLETED":
+            self._completed_phases.append(phase_name.lower())
         self._last_progress_at = now_str
 
     def get_status(self) -> dict:
@@ -368,13 +373,30 @@ class ScanManager:
         except Exception:
             pass
 
+        current_snapshot = (
+            self._last_published_scan_id
+            or self._last_successful_scan_id
+            or self._last_completed_scan_id
+        )
+
+        active_phase = self._active_phase
+        if not self._is_running and not active_phase:
+            if self._scan_status in ("COMPLETED", "PARTIAL", "SUCCESS"):
+                active_phase = "COMPLETED"
+            elif self._scan_status == "FAILED":
+                active_phase = "FAILED"
+
         return {
             "is_scanning": self._is_running,
             "scan_id": self._scan_id,
             "scan_status": self._scan_status,
+            "current_snapshot_id": current_snapshot,
+            "new_scan_id": self._scan_id if self._is_running else None,
+            "snapshot_id": current_snapshot,
+            "snapshot_published_at": self._last_published_at,
             "started_at": self._scan_started_at,
             "elapsed_seconds": elapsed,
-            "active_phase": self._active_phase,
+            "active_phase": active_phase,
             "active_phase_started_at": self._active_phase_started_at,
             "completed_phases": list(self._completed_phases),
             "phase_durations": self._phase_durations,
@@ -409,7 +431,7 @@ class ScanManager:
         with self._lock:
             if self._is_running:
                 return {
-                    "status": "already_running",
+                    "status": "ALREADY_RUNNING",
                     "scan_id": self._scan_id,
                     "message": "A scan is already running"
                 }
@@ -421,7 +443,7 @@ class ScanManager:
             self._scan_started_perf = time.perf_counter()
             self._scan_elapsed_seconds = 0.0
             self._last_progress_at = now_iso
-            self._active_phase = "discovery"
+            self._active_phase = "INITIALIZING"
             self._active_phase_started_at = now_iso
             self._completed_phases = []
             self._completed_collectors = 0
@@ -438,7 +460,7 @@ class ScanManager:
         thread = threading.Thread(target=self._execute_scan, args=(scan_id,), daemon=True)
         thread.start()
         return {
-            "status": "started",
+            "status": "STARTED",
             "scan_id": scan_id,
             "message": "Scan started"
         }
@@ -449,7 +471,7 @@ class ScanManager:
             if self._is_running:
                 logger.warning("Scan lock held. Skipping duplicate scheduled scan.")
                 return {
-                    "status": "already_running",
+                    "status": "ALREADY_RUNNING",
                     "scan_id": self._scan_id,
                     "message": "A scan is already running"
                 }
@@ -461,7 +483,7 @@ class ScanManager:
             self._scan_started_perf = time.perf_counter()
             self._scan_elapsed_seconds = 0.0
             self._last_progress_at = now_iso
-            self._active_phase = "discovery"
+            self._active_phase = "INITIALIZING"
             self._active_phase_started_at = now_iso
             self._completed_phases = []
             self._completed_collectors = 0
@@ -942,6 +964,8 @@ class ScanManager:
             )
 
             # 8. STEP 5 OF PIPELINE: Findings & Severity Groupings
+            self._set_active_phase("FINDING_SYNTHESIS")
+            phase_t0 = time.perf_counter()
             all_scored_items = (
                 working_inventory.users + working_inventory.roles +
                 working_inventory.s3 + working_inventory.ec2 +
@@ -1015,6 +1039,11 @@ class ScanManager:
                 )
             except Exception as hist_err:
                 logger.debug(f"Neo4j ScanHistory creation skipped: {hist_err}")
+
+            finding_synthesis_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
+            self._complete_phase("FINDING_SYNTHESIS", finding_synthesis_duration, status="COMPLETED")
+            self._set_active_phase("PUBLISHING")
+            phase_t0 = time.perf_counter()
 
             # 10. STEP 6 OF PIPELINE: Build Atomic Snapshot in Memory & Publish Gate
             attack_path_node_ids = set()
@@ -1348,6 +1377,10 @@ class ScanManager:
             cache.set_many(new_snapshot)
             logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id}, status={final_scan_status})")
 
+            publishing_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
+            self._complete_phase("PUBLISHING", publishing_duration, status="COMPLETED")
+            self._set_active_phase("COMPLETED")
+
             # Update authoritative in-memory state only upon publication
             self.inventory = working_inventory
             self._last_published_scan_id = scan_id
@@ -1402,6 +1435,7 @@ class ScanManager:
             if self._active_phase:
                 dur = max(0.0, round(time.perf_counter() - phase_t0, 3)) if phase_t0 else 0.0
                 self._complete_phase(self._active_phase, dur, status="FAILED")
+            self._set_active_phase("FAILED")
             duration = max(0.0, round(time.perf_counter() - start_perf, 3))
             self._phase_durations["total"] = {"duration_seconds": duration, "status": "FAILED"}
             self._scan_elapsed_seconds = duration
@@ -1424,7 +1458,11 @@ class ScanManager:
         finally:
             with self._lock:
                 self._is_running = False
-                self._active_phase = None
+                if self._active_phase not in ("COMPLETED", "FAILED"):
+                    if self._scan_status == "FAILED":
+                        self._active_phase = "FAILED"
+                    else:
+                        self._active_phase = "COMPLETED"
                 self._active_phase_started_at = None
                 if self._scan_started_perf is not None:
                     self._scan_elapsed_seconds = max(0.0, round(time.perf_counter() - self._scan_started_perf, 2))

@@ -934,7 +934,7 @@ Explain why this shared privilege path introduces high blast radius across multi
   };
 
   return (
-    <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none text-gray-200">
+    <div className="flex-1 min-h-0 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none text-gray-200">
       
       {/* Header */}
       <div className="flex justify-between items-center flex-wrap gap-3">

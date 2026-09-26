@@ -64,7 +64,7 @@ def test_1_2_3_4_scan_starts_generates_id_and_sets_scanning_discovery():
     mgr = ScanManager()
     with patch.object(mgr, "_execute_scan"):
         res = mgr.trigger_async_scan()
-        assert res["status"] == "started"
+        assert res["status"] in ("started", "STARTED")
         assert "scan_id" in res
         assert mgr.is_running is True
 
@@ -72,7 +72,7 @@ def test_1_2_3_4_scan_starts_generates_id_and_sets_scanning_discovery():
         assert status["is_scanning"] is True
         assert status["scan_id"] == res["scan_id"]
         assert status["scan_status"] == "SCANNING"
-        assert status["active_phase"] == "discovery"
+        assert status["active_phase"] == "INITIALIZING"
         assert status["total_collectors"] == 12
         assert status["completed_collectors"] == 0
         assert status["collector_status"]["IAM_Users"] == "PENDING"
@@ -101,15 +101,15 @@ def test_5_collector_progress_updates():
 def test_6_active_phase_advances():
     mgr = ScanManager()
     mgr._is_running = True
-    mgr._set_active_phase("discovery")
-    assert mgr.get_status()["active_phase"] == "discovery"
+    mgr._set_active_phase("DISCOVERY")
+    assert mgr.get_status()["active_phase"] == "DISCOVERY"
 
-    mgr._complete_phase("discovery", 1.5)
-    mgr._set_active_phase("iam_analysis")
+    mgr._complete_phase("DISCOVERY", 1.5)
+    mgr._set_active_phase("IAM_ANALYSIS")
     status = mgr.get_status()
-    assert status["active_phase"] == "iam_analysis"
-    assert "discovery" in status["completed_phases"]
-    assert status["phase_durations"]["discovery"]["status"] == "COMPLETED"
+    assert status["active_phase"] == "IAM_ANALYSIS"
+    assert "DISCOVERY" in status["completed_phases"]
+    assert status["phase_durations"]["DISCOVERY"]["status"] == "COMPLETED"
 
 
 def test_7_elapsed_time_increases():
@@ -175,7 +175,7 @@ def test_12_is_running_resets_after_success():
         mgr.run_scan()
 
     assert mgr.is_running is False
-    assert mgr.get_status()["active_phase"] is None
+    assert mgr.get_status()["active_phase"] == "COMPLETED"
 
 
 def test_13_is_running_resets_after_failure():
@@ -184,7 +184,7 @@ def test_13_is_running_resets_after_failure():
         mgr.run_scan()
 
     assert mgr.is_running is False
-    assert mgr.get_status()["active_phase"] is None
+    assert mgr.get_status()["active_phase"] == "FAILED"
 
 
 def test_14_second_manual_scan_while_active_returns_already_running():
@@ -193,7 +193,7 @@ def test_14_second_manual_scan_while_active_returns_already_running():
     mgr._scan_id = "active-scan-1"
 
     res = mgr.trigger_async_scan()
-    assert res["status"] == "already_running"
+    assert res["status"] in ("already_running", "ALREADY_RUNNING")
     assert res["scan_id"] == "active-scan-1"
 
 
@@ -203,7 +203,7 @@ def test_15_scheduled_scan_while_active_does_not_start_duplicate():
     mgr._scan_id = "active-scan-2"
 
     res = mgr.run_scan()
-    assert res["status"] == "already_running"
+    assert res["status"] in ("already_running", "ALREADY_RUNNING")
     assert res["scan_id"] == "active-scan-2"
 
 
@@ -293,7 +293,7 @@ def test_status_endpoint_is_cheap_and_reports_progress():
     scan_manager._scan_id = "status-test-123"
     scan_manager._scan_status = "SCANNING"
     scan_manager._scan_started_perf = time.perf_counter()
-    scan_manager._set_active_phase("discovery")
+    scan_manager._set_active_phase("DISCOVERY")
     scan_manager._completed_collectors = 4
     scan_manager._total_collectors = 12
 
@@ -311,7 +311,7 @@ def test_status_endpoint_is_cheap_and_reports_progress():
         assert data["is_scanning"] is True
         assert data["scan_id"] == "status-test-123"
         assert data["scan_status"] == "SCANNING"
-        assert data["active_phase"] == "discovery"
+        assert data["active_phase"] == "DISCOVERY"
         assert data["completed_collectors"] == 4
         assert data["total_collectors"] == 12
         assert data["elapsed_seconds"] >= 0.0

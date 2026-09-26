@@ -72,6 +72,10 @@ export interface ScanStatus {
   is_scanning: boolean;
   scan_id?: string | null;
   scan_status?: 'IDLE' | 'SCANNING' | 'SUCCESS' | 'FAILED' | 'PARTIAL';
+  current_snapshot_id?: string | null;
+  new_scan_id?: string | null;
+  snapshot_id?: string | null;
+  snapshot_published_at?: string | null;
   started_at: string | null;
   elapsed_seconds?: number;
 
