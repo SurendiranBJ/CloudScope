@@ -143,11 +143,20 @@ CloudScope operates as a single, continuous, unified security analysis pipeline:
      - `OBSERVED_ATTACK_ACTIVITY`: Concrete CloudTrail activity verified along the execution hops of a discovered attack path.
    - **Zero False-Positive Exploitation Claims**: Errors (`AccessDenied`, `Client.UnauthorizedOperation`) are strictly isolated and never treated as successful transitions. Exploitation is never claimed unless verifiable CloudTrail events match the attack vector.
 
+11. **Evidence-Grounded AI Security Copilot (Gemini-Powered)**:
+    - **Strictly Grounded in Authoritative Evidence**: Explains direct and transitive IAM permissions, complex attack paths, and security findings using authoritative scan facts. Never invents users, roles, policies, attack paths, or risk scores.
+    - **Server-Side API Key & Confidentiality**: The Gemini API key (`GEMINI_API_KEY`) is stored strictly server-side and never exposed to the frontend or printed in logs.
+    - **Automated Credential & Secret Redaction**: Sanitizes AWS access keys, secret keys, session tokens, passwords, and private keys before dispatching context to the model. Secrets Manager secret values are never read or transmitted.
+    - **Prompt Injection Defense**: Untrusted cloud strings (policy descriptions, tag names, resource metadata) are isolated as raw untrusted data within strict prompt delimiters.
+    - **Interactive Investigation & Remediation**: Provides structured summaries, root-cause analyses, verified evidence points, least-privilege remediation recommendations, and suggested follow-up questions.
+    - **Provider Abstraction**: Extensible AI architecture (`AIProvider` protocol) supporting Gemini with configurable models, temperature, and timeouts.
+
 ---
 
 ## 🛠️ Technology Stack
 
-- **Backend**: Python 3.11, FastAPI, Uvicorn, Boto3, Pydantic v2, NetworkX, Neo4j Python Driver, APScheduler
+- **Backend**: Python 3.11, FastAPI, Uvicorn, Boto3, Pydantic v2, NetworkX, Neo4j Python Driver, APScheduler, Google GenAI SDK (`google-genai`)
+- **AI Engine**: Google Gemini (`gemini-3.8-flash`) for evidence-grounded security explanations and remediation recommendations
 - **Database & Cache**: Neo4j Graph Database (Bolt Protocol), Redis (Cache layer with automatic in-memory fallback), Local Durable State Store
 - **Frontend**: React 19, Vite, TypeScript, Tailwind CSS, Lucide React, Cytoscape.js (`cytoscape-dagre`), TanStack Query, Recharts
 
@@ -201,6 +210,23 @@ npm install
 npm run dev
 ```
 Frontend Web UI: `http://localhost:5173`
+
+### 5. AI Security Copilot Configuration (Gemini)
+
+CloudScope integrates with Google Gemini for evidence-grounded security explanations, investigation assistance, and remediation advice:
+
+```bash
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-3.8-flash
+AI_MAX_OUTPUT_TOKENS=1200
+AI_TEMPERATURE=0.2
+AI_CONTEXT_MAX_CHARS=24000
+AI_TIMEOUT_SECONDS=30
+```
+
+> [!IMPORTANT]
+> `GEMINI_API_KEY` must remain strictly server-side in your `.env` or deployment environment. It is never transmitted to the browser or frontend. CloudScope automatically redacts AWS credentials, tokens, and secret values before prompt dispatch.
 
 ---
 
@@ -343,7 +369,9 @@ The scan pipeline instruments every execution phase with high-resolution monoton
 | `GET` | `/api/v1/alerts` | CloudTrail audit events and correlated activity alerts |
 | `GET` | `/api/v1/correlated-risks` | Runtime activity events correlated against static attack paths |
 | `GET` | `/api/v1/reports/summary` | Verified Security Control Coverage across the 5 security domains (real scan data only) |
-| `POST` | `/api/v1/copilot` | Context-aware cloud security assistant |
+| `POST` | `/api/v1/copilot` | Evidence-grounded security analysis and chat assistant powered by Gemini |
+| `POST` | `/api/v1/copilot/explain-finding` | Deep-dive explanation and remediation for a specific security finding |
+| `POST` | `/api/v1/copilot/explain-attack-path` | Step-by-step authorization mechanics and impact analysis for an attack path |
 
 ---
 

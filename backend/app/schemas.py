@@ -266,13 +266,37 @@ class DashboardData(BaseModel):
 # Copilot Request/Response
 class CopilotRequest(BaseModel):
     prompt: str
+    context_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    entity_type: Optional[str] = None
+    attack_path_id: Optional[str] = None
+    finding_id: Optional[str] = None
+    simulation_context: Optional[Dict[str, Any]] = None
 
 class CopilotResponse(BaseModel):
-    sender: str
+    sender: str = "ai"
     text: str
-    suggestions: List[str]
-    type: Optional[str] = None
+    suggestions: List[str] = []
+    type: str = "analysis"
     codeBlock: Optional[str] = None
+
+    summary: Optional[str] = None
+    analysis: Optional[str] = None
+    severity: Optional[str] = None
+    riskScore: Optional[int] = None
+    affectedEntities: List[str] = []
+    evidence: List[str] = []
+    recommendations: List[str] = []
+    limitations: List[str] = []
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+class ExplainFindingRequest(BaseModel):
+    finding_id: str
+
+class ExplainAttackPathRequest(BaseModel):
+    attack_path_id: str
+    supplementary_metadata: Optional[Dict[str, Any]] = None
 
 
 # ─── Policy Catalog ─────────────────────────────────────────────────────────

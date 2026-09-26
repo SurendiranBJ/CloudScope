@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -23,8 +24,20 @@ class Settings(BaseSettings):
         "http://localhost:3000",
     ]
 
+    # AI Security Copilot Settings
+    AI_PROVIDER: str = "gemini"
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-3.8-flash"
+    AI_MAX_OUTPUT_TOKENS: int = 1200
+    AI_TEMPERATURE: float = 0.2
+    AI_CONTEXT_MAX_CHARS: int = 24000
+    AI_TIMEOUT_SECONDS: int = 30
+
     model_config = SettingsConfigDict(
-        env_file=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),
+        env_file=(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+        ),
         env_file_encoding="utf-8",
         extra="ignore"
     )

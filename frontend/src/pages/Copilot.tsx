@@ -1,20 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
-import { Bot, User, Send, Sparkles, Terminal, Trash2 } from 'lucide-react';
+import { Bot, User, Send, Sparkles, Terminal, Trash2, AlertTriangle, ShieldAlert, CheckCircle2, HelpCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { postCopilotMessage } from '../api/copilot';
-
-interface Message {
-  sender: 'user' | 'ai';
-  text: string;
-  type?: 'text' | 'remediation' | 'analysis';
-  codeBlock?: string;
-}
+import { postCopilotMessage, type CopilotMessage } from '../api/copilot';
 
 export const Copilot: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([
+  const [messages, setMessages] = useState<CopilotMessage[]>([
     {
       sender: 'ai',
-      text: 'Hello Cloud Administrator. I am your IdentityScope Security Copilot. I can analyze direct/transitive permissions, describe lateral attack paths, or suggest least-privilege IAM policy remediations. Select a preset query below or ask any security question.',
+      text: 'Hello Cloud Administrator. I am CloudScope Security Copilot powered by Gemini. I analyze direct and transitive IAM permissions, explain lateral attack paths, correlate CloudTrail events, and recommend evidence-grounded least-privilege remediations. Select a preset query or ask any security question.',
+      summary: 'CloudScope Security Copilot Ready',
+      suggestions: [
+        'What are the highest-risk findings?',
+        'Explain the most critical attack paths.',
+        'Which identities have access to sensitive resources?',
+        'What are the recommended IAM remediations?'
+      ]
     }
   ]);
   const [inputVal, setInputVal] = useState('');
@@ -22,72 +22,37 @@ export const Copilot: React.FC = () => {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const presets = [
-    { title: 'Explain Attack Path 1', query: 'Analyze the active Developer Path to PII S3 Bucket and explain the risk.' },
-    { title: 'Find Over-Privileged Users', query: 'List all IAM users with excessive privileges or inactive console profiles.' },
-    { title: 'Show Public Buckets', query: 'Scan S3 bucket assets and identify configurations exposing object resources to the public.' },
-    { title: 'Recommend IAM Fixes', query: 'Suggest an updated least-privilege trust policy for the AWSAdminRole.' },
-    { title: 'Generate Security Report', query: 'Provide a compliance summary checklist matching CIS AWS Foundations standards.' }
+    { title: 'Highest-Risk Findings', query: 'What are the highest-risk findings detected in the environment?' },
+    { title: 'Dangerous Attack Paths', query: 'Explain the most critical lateral movement and privilege escalation attack paths.' },
+    { title: 'Sensitive Resource Exposure', query: 'Which identities have direct or transitive access to sensitive cloud resources?' },
+    { title: 'IAM Least-Privilege Remediation', query: 'What are the recommended IAM policy remediations to reduce attack exposure?' },
+    { title: 'Correlated CloudTrail Activity', query: 'What runtime CloudTrail activity correlates with our active attack paths?' }
   ];
 
   const handleSend = async (text: string) => {
     if (!text.trim()) return;
 
     // Add user message
-    const userMsg: Message = { sender: 'user', text };
+    const userMsg: CopilotMessage = { sender: 'user', text };
     setMessages((prev) => [...prev, userMsg]);
     setInputVal('');
     setIsTyping(true);
 
     try {
       const response = await postCopilotMessage(text);
-      setMessages((prev) => [...prev, {
-        sender: response.sender as 'user' | 'ai',
-        text: response.text,
-        type: response.type,
-        codeBlock: response.codeBlock
-      }]);
-    } catch (err) {
-      // Graceful fallback to static logic
-      let aiMsg: Message = {
-        sender: 'ai',
-        text: 'I apologize, I could not connect to the backend server. Using local backup: ...'
-      };
+      setMessages((prev) => [...prev, response]);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || 'Failed to communicate with AI Copilot service.';
+      const cleanError = typeof detail === 'string' ? detail : 'An error occurred while generating the security analysis.';
 
-      if (text.includes('Developer Path') || text.includes('Attack Path 1')) {
-        aiMsg = {
-          sender: 'ai',
-          text: 'Security Analysis: The Developer Path represents a high-criticality attack vector. A local workstation compromise on developer-session allows credentials assumption of AWSAdminRole because the role lacks condition-based MFA restrictions. Once assumed, the attacker inherits full s3:* permissions, allowing them to access, download, or delete S3-Customer-PII-DB objects.',
-          type: 'analysis',
-          codeBlock: '# MITRE ATT&CK Mapping:\n- T1078 (Valid Accounts): Compromised local workstation credentials\n- T1548 (Abuse Elevation): sts:AssumeRole bypasses context\n- T1530 (Data from Cloud): Outbound leakage from customer S3 store'
-        };
-      } else if (text.includes('Over-Privileged')) {
-        aiMsg = {
-          sender: 'ai',
-          text: 'Vulnerability Scan Summary: I found 2 highly over-privileged users:\n1. developer-session: Possesses wildcard inline S3 policies.\n2. ci-cd-runner: Houses permanent credentials keys that have not been rotated in 180+ days and can assume root AWSAdminRole.',
-          type: 'analysis'
-        };
-      } else if (text.includes('Public Buckets')) {
-        aiMsg = {
-          sender: 'ai',
-          text: 'Assets Scan Findings: S3-Public-Assets has public read settings enabled (BlockPublicAccess is FALSE). The S3-Customer-PII-DB bucket has custom policy rules that permit s3:GetObject globally without credential tokens. Immediate block recommended.',
-          type: 'remediation',
-          codeBlock: '# Block public buckets policy payload:\naws s3api put-public-access-block \\\n  --bucket s3-customer-pii-db-production \\\n  --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"'
-        };
-      } else if (text.includes('trust policy') || text.includes('Recommend IAM Fixes')) {
-        aiMsg = {
-          sender: 'ai',
-          text: 'Remediation Policy Suggested: Restrict the trust configuration document of AWSAdminRole to validate multi-factor authentication (MFA) and restrict access to internal corporate subnets:',
-          type: 'remediation',
-          codeBlock: '{\n  "Version": "2012-10-17",\n  "Statement": [\n    {\n      "Effect": "Allow",\n      "Principal": { "AWS": "arn:aws:iam::123456789012:user/developer-session" },\n      "Action": "sts:AssumeRole",\n      "Condition": {\n        "Bool": { "aws:MultiFactorAuthPresent": "true" },\n        "IpAddress": { "aws:SourceIp": "10.0.0.0/8" }\n      }\n    }\n  ]\n}'
-        };
-      } else if (text.includes('compliance summary') || text.includes('Security Report')) {
-        aiMsg = {
-          sender: 'ai',
-          text: 'Compliance Posture Status Report (CIS v1.4.0):\n- Section 1.2: Enforce MFA for Console Access -> FAIL (developer-session/ci-cd-runner failed)\n- Section 1.12: Deactivate credentials key after 90 days -> FAIL (ci-cd-runner failed)\n- Section 2.1: Enforce encryption on all S3 Buckets -> PASS\n- Section 2.4: Enable CloudTrail logs in all regions -> PASS',
-          type: 'analysis'
-        };
-      }
-      setMessages((prev) => [...prev, aiMsg]);
+      const errMessage: CopilotMessage = {
+        sender: 'ai',
+        text: `Unable to complete request: ${cleanError}`,
+        summary: 'Analysis Unavailable',
+        limitations: [cleanError],
+        suggestions: ['Run a security scan first.', 'Check backend AI service configuration.']
+      };
+      setMessages((prev) => [...prev, errMessage]);
     } finally {
       setIsTyping(false);
     }
@@ -102,8 +67,25 @@ export const Copilot: React.FC = () => {
       {
         sender: 'ai',
         text: 'Chat history cleared. Select a preset query below or ask any security question.',
+        summary: 'Chat Cleared'
       }
     ]);
+  };
+
+  const getSeverityBadge = (severity?: string) => {
+    if (!severity) return null;
+    const sev = severity.toUpperCase();
+    let colorClass = 'bg-gray-800 text-gray-300 border-gray-700';
+    if (sev === 'CRITICAL') colorClass = 'bg-red-500/15 text-red-400 border-red-500/30';
+    else if (sev === 'HIGH') colorClass = 'bg-orange-500/15 text-orange-400 border-orange-500/30';
+    else if (sev === 'MEDIUM') colorClass = 'bg-amber-500/15 text-amber-400 border-amber-500/30';
+    else if (sev === 'LOW') colorClass = 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
+
+    return (
+      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${colorClass}`}>
+        {sev}
+      </span>
+    );
   };
 
   return (
@@ -116,14 +98,15 @@ export const Copilot: React.FC = () => {
             <span>Copilot Quick Actions</span>
           </h2>
           <p className="text-[10px] text-enterprise-subtext leading-relaxed">
-            Click any action below to trigger a pre-configured threat analysis simulation or remediation prompt.
+            Click any action below to query Gemini with real CloudScope scan evidence and graph relationships.
           </p>
           <div className="space-y-2">
             {presets.map((p) => (
               <button
                 key={p.title}
                 onClick={() => handleSend(p.query)}
-                className="w-full text-left px-3 py-2 bg-enterprise-bg/60 border border-enterprise-border hover:border-gray-700 rounded-lg text-xs text-gray-200 hover:text-white transition-all hover:bg-gray-800/40"
+                disabled={isTyping}
+                className="w-full text-left px-3 py-2 bg-enterprise-bg/60 border border-enterprise-border hover:border-gray-700 rounded-lg text-xs text-gray-200 hover:text-white transition-all hover:bg-gray-800/40 disabled:opacity-50"
               >
                 {p.title}
               </button>
@@ -146,11 +129,13 @@ export const Copilot: React.FC = () => {
         <div className="p-4 border-b border-enterprise-border bg-enterprise-bg/25 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Bot className="w-5 h-5 text-enterprise-accent" />
-            <span className="font-bold text-sm text-white">AI Copilot Terminal</span>
+            <span className="font-bold text-sm text-white">AI Security Copilot</span>
           </div>
-          <span className="text-[10px] px-2 py-0.5 rounded bg-enterprise-accent/15 text-enterprise-accent font-bold">
-            GPT-4o Security Engine
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-enterprise-accent/15 border border-enterprise-accent/30 text-enterprise-accent font-bold">
+              Gemini 3.8 Flash • Evidence-Grounded
+            </span>
+          </div>
         </div>
 
         {/* Message Feed */}
@@ -158,7 +143,7 @@ export const Copilot: React.FC = () => {
           {messages.map((msg, index) => (
             <div
               key={index}
-              className={`flex gap-3 text-xs leading-relaxed max-w-[85%] ${
+              className={`flex gap-3 text-xs leading-relaxed max-w-[90%] ${
                 msg.sender === 'user' ? 'ml-auto flex-row-reverse' : 'mr-auto'
               }`}
             >
@@ -171,24 +156,136 @@ export const Copilot: React.FC = () => {
               >
                 {msg.sender === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
               </div>
+
               <div
-                className={`p-3.5 rounded-xl border ${
+                className={`p-4 rounded-xl border space-y-3 ${
                   msg.sender === 'user'
                     ? 'bg-enterprise-accent/5 border-enterprise-accent/10 text-white'
                     : 'bg-enterprise-bg/60 border-enterprise-border text-gray-200'
                 }`}
               >
-                <div className="whitespace-pre-wrap leading-relaxed">{msg.text}</div>
+                {/* AI Structured Header (Summary, Severity, Risk Score) */}
+                {msg.sender === 'ai' && (msg.summary || msg.severity || msg.riskScore !== undefined) && (
+                  <div className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800/80 pb-2">
+                    <div className="font-bold text-white text-xs flex items-center gap-2">
+                      <ShieldAlert className="w-3.5 h-3.5 text-enterprise-accent" />
+                      <span>{msg.summary || 'Security Assessment'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {getSeverityBadge(msg.severity)}
+                      {msg.riskScore !== undefined && msg.riskScore !== null && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-300">
+                          Risk Score: <strong className="text-white">{msg.riskScore}</strong>/100
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Primary Analysis Text */}
+                <div className="whitespace-pre-wrap leading-relaxed">
+                  {msg.analysis || msg.text}
+                </div>
+
+                {/* Affected Entities */}
+                {msg.affectedEntities && msg.affectedEntities.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[10px] font-bold text-enterprise-subtext uppercase tracking-wider block">
+                      Affected Entities:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {msg.affectedEntities.map((ent, i) => (
+                        <span key={i} className="px-2 py-0.5 bg-gray-800/80 border border-gray-700 rounded text-[10px] text-gray-300 font-mono">
+                          {ent}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Evidence List */}
+                {msg.evidence && msg.evidence.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[10px] font-bold text-enterprise-subtext uppercase tracking-wider flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-amber-400" />
+                      <span>Authoritative Evidence:</span>
+                    </span>
+                    <ul className="space-y-1 pl-1">
+                      {msg.evidence.map((ev, i) => (
+                        <li key={i} className="text-[11px] text-gray-300 flex items-start gap-1.5">
+                          <span className="text-enterprise-accent shrink-0">•</span>
+                          <span>{ev}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Recommendations */}
+                {msg.recommendations && msg.recommendations.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                      <span>Remediation Guidance:</span>
+                    </span>
+                    <ul className="space-y-1 pl-1">
+                      {msg.recommendations.map((rec, i) => (
+                        <li key={i} className="text-[11px] text-gray-300 flex items-start gap-1.5">
+                          <span className="text-emerald-400 shrink-0">✓</span>
+                          <span>{rec}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {/* Code Block rendering */}
                 {msg.codeBlock && (
-                  <div className="space-y-1.5 mt-3">
+                  <div className="space-y-1.5 pt-1">
                     <div className="flex items-center gap-1.5 text-[9px] text-enterprise-subtext font-bold uppercase">
                       <Terminal className="w-3.5 h-3.5 text-enterprise-accent" />
-                      <span>Security Output Reference</span>
+                      <span>Security Reference Payload</span>
                     </div>
                     <pre className="p-3 bg-gray-900 border border-enterprise-border rounded-lg text-[9px] font-mono text-gray-300 overflow-x-auto select-text leading-normal">
                       {msg.codeBlock}
                     </pre>
+                  </div>
+                )}
+
+                {/* Limitations */}
+                {msg.limitations && msg.limitations.length > 0 && (
+                  <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-300 space-y-1">
+                    <span className="font-bold flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-amber-400" />
+                      <span>Scope Limitations:</span>
+                    </span>
+                    <ul className="list-disc pl-4 space-y-0.5 text-amber-200/90">
+                      {msg.limitations.map((lim, i) => (
+                        <li key={i}>{lim}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Suggested Follow-up Questions */}
+                {msg.suggestions && msg.suggestions.length > 0 && (
+                  <div className="space-y-1.5 pt-2 border-t border-gray-800/80">
+                    <span className="text-[9px] font-bold text-enterprise-subtext uppercase tracking-wider flex items-center gap-1">
+                      <HelpCircle className="w-3 h-3 text-enterprise-accent" />
+                      <span>Suggested Follow-Ups:</span>
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {msg.suggestions.map((sug, i) => (
+                        <button
+                          key={i}
+                          onClick={() => handleSend(sug)}
+                          disabled={isTyping}
+                          className="px-2.5 py-1 bg-gray-800/80 hover:bg-gray-700/80 border border-gray-700 rounded-full text-[10px] text-gray-300 hover:text-white transition-colors text-left"
+                        >
+                          {sug}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -231,12 +328,14 @@ export const Copilot: React.FC = () => {
               type="text"
               value={inputVal}
               onChange={(e) => setInputVal(e.target.value)}
+              disabled={isTyping}
               placeholder="Ask the Security Copilot about attack vectors, group configurations, or least-privilege updates..."
-              className="flex-1 bg-enterprise-bg/60 border border-enterprise-border rounded-lg px-4 py-2.5 text-xs text-white placeholder-enterprise-subtext focus:outline-none focus:border-enterprise-accent transition-colors"
+              className="flex-1 bg-enterprise-bg/60 border border-enterprise-border rounded-lg px-4 py-2.5 text-xs text-white placeholder-enterprise-subtext focus:outline-none focus:border-enterprise-accent transition-colors disabled:opacity-50"
             />
             <button
               type="submit"
-              className="px-4 py-2 bg-enterprise-accent hover:bg-blue-600 text-white font-semibold rounded-lg text-xs transition-colors flex items-center justify-center gap-1 glow-blue"
+              disabled={isTyping || !inputVal.trim()}
+              className="px-4 py-2 bg-enterprise-accent hover:bg-blue-600 disabled:bg-gray-800 text-white font-semibold rounded-lg text-xs transition-colors flex items-center justify-center gap-1 glow-blue disabled:opacity-50"
             >
               <Send className="w-3.5 h-3.5" />
               <span>Ask AI</span>

@@ -867,17 +867,23 @@ Severity: ${group.severity}.
 MITRE Techniques: ${group.mitreTechniques.join(', ')}. 
 Explain why this shared privilege path introduces high blast radius across multiple identities and suggest an IAM remediation.`;
       
-      const response = await postCopilotMessage(prompt);
+      const response = await postCopilotMessage({
+        prompt,
+        context_type: 'attack_path',
+        attack_path_id: group.originalPaths[0]?.id || group.groupId,
+        entity_id: group.sharedChain[0]?.name,
+      });
       setAiExpanded(prev => ({
         ...prev,
-        [group.groupId]: { loading: false, text: response.text, codeBlock: response.codeBlock }
+        [group.groupId]: { loading: false, text: response.analysis || response.text, codeBlock: response.codeBlock }
       }));
-    } catch {
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || 'Unable to connect to AI Security Copilot service.';
       setAiExpanded(prev => ({
         ...prev,
         [group.groupId]: {
           loading: false,
-          text: `Multiple identities (${group.sources.map(s => s.name).join(', ')}) share a common privilege path (${group.sharedChain.map(n => n.name).join(' → ')}) allowing lateral escalation to reach ${group.targets.length} cloud assets. Recommendation: ${group.recommendation || 'Enforce MFA and restrict trust relationships on the target role.'}`
+          text: `AI Explanation Unavailable: ${detail}`
         }
       }));
     }
@@ -1750,8 +1756,14 @@ Explain why this shared privilege path introduces high blast radius across multi
                   <div className="bg-enterprise-accent/5 p-4 rounded-xl border border-enterprise-accent/20 flex gap-3 text-xs leading-relaxed text-gray-200 mt-1">
                     <Bot className="w-5 h-5 text-enterprise-accent shrink-0 mt-0.5" />
                     <div className="space-y-3 w-full">
-                      <h4 className="font-extrabold text-white text-xs flex items-center gap-1.5">
-                        <span>Copilot Security Explanation</span>
+                      <h4 className="font-extrabold text-white text-xs flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Bot className="w-4 h-4 text-enterprise-accent" />
+                          <span>AI-generated explanation based on CloudScope evidence</span>
+                        </span>
+                        <span className="text-[9px] font-normal px-2 py-0.5 rounded bg-enterprise-accent/15 text-enterprise-accent border border-enterprise-accent/30">
+                          Gemini Security Analysis
+                        </span>
                       </h4>
                       <p className="text-[11px] text-enterprise-subtext whitespace-pre-wrap">{aiState.text}</p>
                       {aiState.codeBlock && (

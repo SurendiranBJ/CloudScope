@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Sparkles
 } from 'lucide-react';
+import { postCopilotMessage } from '../api/copilot';
 
 export const AttackSimulation: React.FC = () => {
   const [startIdentity, setStartIdentity] = useState('usr-002');
@@ -20,6 +21,11 @@ export const AttackSimulation: React.FC = () => {
   const [targetResource, setTargetResource] = useState('res-002');
   const [isRunning, setIsRunning] = useState(false);
   const [showResult, setShowResult] = useState(false);
+  const [aiAssessment, setAiAssessment] = useState<{
+    text: string;
+    codeBlock?: string;
+    loading: boolean;
+  }>({ text: '', loading: false });
 
   const startOptions = [
     { id: 'usr-002', name: 'developer-session (User)', type: 'User' },
@@ -32,18 +38,49 @@ export const AttackSimulation: React.FC = () => {
     { id: 'res-004', name: 'Secrets-RDS-MasterCredentials (Secrets)', type: 'Secrets' }
   ];
 
-  const runSimulation = () => {
+  const runSimulation = async () => {
     setIsRunning(true);
     setShowResult(false);
-    setTimeout(() => {
+    setAiAssessment({ text: '', loading: true });
+
+    const selectedStart = startOptions.find(o => o.id === startIdentity);
+    const selectedTarget = targetOptions.find(o => o.id === targetResource);
+
+    try {
+      const prompt = `Analyze the simulated lateral attack vector where starting point '${selectedStart?.name || startIdentity}' attempts escalation via '${escalationStep}' to reach goal target '${selectedTarget?.name || targetResource}'. Explain the IAM authorization mechanics, why it introduces risk, and recommended IAM remediation.`;
+      
+      const res = await postCopilotMessage({
+        prompt,
+        context_type: 'simulation',
+        entity_id: startIdentity,
+        simulation_context: {
+          start_identity: selectedStart?.name || startIdentity,
+          escalation_vector: escalationStep,
+          target_resource: selectedTarget?.name || targetResource,
+        }
+      });
+
+      setAiAssessment({
+        text: res.analysis || res.text || res.summary || 'Simulation threat assessment completed.',
+        codeBlock: res.codeBlock,
+        loading: false,
+      });
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || 'Unable to connect to AI Security Copilot service.';
+      setAiAssessment({
+        text: `AI Simulation Analysis Unavailable: ${detail}`,
+        loading: false,
+      });
+    } finally {
       setIsRunning(false);
       setShowResult(true);
-    }, 1800);
+    }
   };
 
   const resetSimulation = () => {
     setIsRunning(false);
     setShowResult(false);
+    setAiAssessment({ text: '', loading: false });
   };
 
   return (
@@ -226,31 +263,35 @@ export const AttackSimulation: React.FC = () => {
               <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl lg:col-span-2 flex gap-3 text-xs leading-relaxed text-gray-200">
                 <Bot className="w-6 h-6 text-enterprise-accent shrink-0 mt-0.5" />
                 <div className="space-y-3 w-full">
-                  <h3 className="text-xs font-bold text-white uppercase tracking-wider">Simulated AI Path Assessment</h3>
-                  <p className="text-[11px] text-enterprise-subtext">
-                    Exploitation occurred because the trust relationship policy of the
-                    <strong className="text-white"> AWSAdminRole </strong> permits assumption without verifying the principal session state. The developer credential can elevate directly to master administrator privileges and scan database secrets.
-                  </p>
-                  <div className="space-y-1.5">
-                    <span className="font-semibold text-white text-[10px] flex items-center gap-1">
-                      <Terminal className="w-3.5 h-3.5 text-enterprise-accent" />
-                      <span>Mitigation Guide</span>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold text-white uppercase tracking-wider">Simulated AI Threat Assessment</h3>
+                    <span className="text-[9px] px-2 py-0.5 rounded bg-enterprise-accent/15 border border-enterprise-accent/30 text-enterprise-accent font-bold">
+                      Gemini Copilot
                     </span>
-                    <pre className="p-3 bg-gray-900 border border-enterprise-border rounded-lg text-[9px] font-mono text-gray-300 overflow-x-auto">
-{`# Inject Condition clause restricting role assumption to authorized source IPs:
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": { "AWS": "arn:aws:iam::123456789012:user/developer-session" },
-      "Action": "sts:AssumeRole",
-      "Condition": { "NotIpAddress": { "aws:SourceIp": "203.0.113.42" } }
-    }
-  ]
-}`}
-                    </pre>
                   </div>
+                  {aiAssessment.loading ? (
+                    <div className="flex items-center gap-2 text-enterprise-subtext text-[11px] py-4">
+                      <RefreshCw className="w-4 h-4 animate-spin text-enterprise-accent" />
+                      <span>Generating evidence-based path assessment...</span>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-[11px] text-enterprise-subtext whitespace-pre-wrap">
+                        {aiAssessment.text}
+                      </p>
+                      {aiAssessment.codeBlock && (
+                        <div className="space-y-1.5">
+                          <span className="font-semibold text-white text-[10px] flex items-center gap-1">
+                            <Terminal className="w-3.5 h-3.5 text-enterprise-accent" />
+                            <span>Mitigation Guide</span>
+                          </span>
+                          <pre className="p-3 bg-gray-900 border border-enterprise-border rounded-lg text-[9px] font-mono text-gray-300 overflow-x-auto">
+                            {aiAssessment.codeBlock}
+                          </pre>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             </div>
