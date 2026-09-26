@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ShieldCheck, AlertCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { rebuildGraph, getScanStatus } from '../api/graph';
+import { refreshScanDependentQueries } from '../hooks/useScanDataRefresh';
 
 export const useScanTrigger = () => {
   const queryClient = useQueryClient();
@@ -31,23 +32,13 @@ export const useScanTrigger = () => {
 
           const scanState = status.scan_status || (status.last_result?.status || '').toUpperCase();
 
-          if (scanState === 'SUCCESS') {
+          if (scanState === 'SUCCESS' || scanState === 'PARTIAL') {
             setScanSuccess(true);
             setScanError(null);
             setLastSuccessfulScanAt(status.last_successful_scan_at || status.last_result?.timestamp || null);
 
             // Immediately invalidate and refetch all scan-dependent data
-            queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
-            queryClient.invalidateQueries({ queryKey: ['graphElements'] });
-            queryClient.invalidateQueries({ queryKey: ['cloudResources'] });
-            queryClient.invalidateQueries({ queryKey: ['attackPaths'] });
-            queryClient.invalidateQueries({ queryKey: ['riskAssessmentFindings'] });
-            queryClient.invalidateQueries({ queryKey: ['iamUsers'] });
-            queryClient.invalidateQueries({ queryKey: ['iamRoles'] });
-            queryClient.invalidateQueries({ queryKey: ['iamPolicies'] });
-            queryClient.invalidateQueries({ queryKey: ['policies'] });
-            queryClient.invalidateQueries({ queryKey: ['relationships'] });
-            queryClient.invalidateQueries({ queryKey: ['scanStatus'] });
+            refreshScanDependentQueries(queryClient);
 
             setTimeout(() => setScanSuccess(false), 4000);
           } else if (scanState === 'FAILED') {

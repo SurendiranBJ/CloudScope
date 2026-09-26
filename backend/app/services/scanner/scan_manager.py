@@ -372,7 +372,7 @@ class ScanManager:
             prev_ec2 = list(self.inventory.ec2) if self.inventory.ec2 else (cache.get("v1:inventory:ec2") or [])
             prev_lambdas = list(self.inventory.lambdas) if self.inventory.lambdas else (cache.get("v1:inventory:lambda") or [])
 
-            self.inventory.clear()
+            # Preserve current snapshot during scan execution; inventory is replaced atomically upon validation
             clear_region_cache()
             from app.services.aws.region_cache import get_resolved_scan_mode
             scanned_regions = list(get_all_regions())

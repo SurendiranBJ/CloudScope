@@ -3,10 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Network, GitMerge, ChevronRight, RefreshCw,
-  User, Shield, Database, Cloud, Users, ArrowRight, Filter, X, AlertTriangle
+  User, Shield, Database, Cloud, Users, ArrowRight, Filter, X, AlertTriangle, CheckCircle
 } from 'lucide-react';
 import { getRelationships, getEntityRelationships } from '../api/relationships';
-import { getScanStatus } from '../api/graph';
+import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 import type { RelationshipEntry } from '../types';
 
 const REL_COLORS: Record<string, { bg: string; text: string; border: string }> = {
@@ -55,13 +55,15 @@ export const Relationships: React.FC = () => {
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null);
   const [relFilter, setRelFilter] = useState<string>('all');
 
-  const { data: scanStatus } = useQuery({
-    queryKey: ['scanStatus'],
-    queryFn: getScanStatus,
-    refetchInterval: 3000,
-  });
+  const {
+    isScanning,
+    scanJustCompleted,
+    isPartial,
+    isFailed,
+    lastCompletedAt,
+  } = useScanDataRefresh();
 
-  const { data: relData, isLoading, isError, error, refetch } = useQuery({
+  const { data: relData, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: ['relationships', typeFilter, search],
     queryFn: () => getRelationships({
       entity_type: typeFilter === 'all' ? undefined : typeFilter,
@@ -69,8 +71,9 @@ export const Relationships: React.FC = () => {
       limit: 1000,
     }),
     staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
     refetchInterval: () => {
-      return scanStatus?.is_scanning ? 2500 : false;
+      return isScanning ? 2500 : false;
     },
   });
 
@@ -81,6 +84,8 @@ export const Relationships: React.FC = () => {
   });
 
   const allRels = relData?.relationships ?? [];
+  const hasExistingData = !!relData && allRels.length > 0;
+  const showInitialLoading = isLoading && !relData;
 
   const uniqueRelTypes = useMemo(() => {
     const s = new Set(allRels.map(r => r.relationship));
@@ -127,9 +132,35 @@ export const Relationships: React.FC = () => {
                 <Network className="w-5 h-5 text-enterprise-accent" />
                 Identity Relationships
               </h1>
-              <p className="text-xs text-enterprise-subtext mt-0.5">
-                All IAM relationships from real AWS discovery — no inferred labels
-              </p>
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <p className="text-xs text-enterprise-subtext">
+                  All IAM relationships from real AWS discovery — no inferred labels
+                </p>
+                {isScanning && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-400 text-[11px] animate-pulse">
+                    <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
+                    Updating relationships from latest AWS scan...
+                  </span>
+                )}
+                {scanJustCompleted && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/25 text-green-400 text-[11px]">
+                    <CheckCircle className="w-3 h-3 text-green-400" />
+                    Relationships updated
+                  </span>
+                )}
+                {isPartial && !isScanning && !scanJustCompleted && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 text-[11px]">
+                    <AlertTriangle className="w-3 h-3 text-amber-400" />
+                    Updated from a partial AWS scan. Some regions were unavailable.
+                  </span>
+                )}
+                {isFailed && !isScanning && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/25 text-red-400 text-[11px]">
+                    <AlertTriangle className="w-3 h-3 text-red-400" />
+                    Latest scan failed. Showing the last completed snapshot{lastCompletedAt ? ` (${new Date(lastCompletedAt).toLocaleTimeString()})` : ''}.
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {relData && (
@@ -137,8 +168,13 @@ export const Relationships: React.FC = () => {
                   {relData.total.toLocaleString()} relationship{relData.total !== 1 ? 's' : ''}
                 </div>
               )}
-              <button onClick={() => refetch()} className="p-2 rounded-lg border border-enterprise-border hover:bg-gray-800/50 text-enterprise-subtext hover:text-white transition-colors">
-                <RefreshCw className="w-4 h-4" />
+              <button
+                onClick={() => refetch()}
+                disabled={isFetching}
+                title="Refresh relationships"
+                className="p-2 rounded-lg border border-enterprise-border hover:bg-gray-800/50 text-enterprise-subtext hover:text-white transition-colors disabled:opacity-60"
+              >
+                <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-enterprise-accent' : ''}`} />
               </button>
             </div>
           </div>
@@ -209,11 +245,11 @@ export const Relationships: React.FC = () => {
 
         {/* Relationship list */}
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
-          {isLoading ? (
+          {showInitialLoading ? (
             <div className="flex items-center justify-center h-40 text-enterprise-subtext">
               <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading relationships...
             </div>
-          ) : isError ? (
+          ) : isError && !hasExistingData ? (
             <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
               <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
                 <AlertTriangle className="w-5 h-5" />
@@ -230,7 +266,7 @@ export const Relationships: React.FC = () => {
               </button>
             </div>
           ) : grouped.length === 0 ? (
-            scanStatus?.is_scanning ? (
+            isScanning ? (
               <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
                 <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
                 <div>

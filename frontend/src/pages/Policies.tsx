@@ -10,7 +10,7 @@ import { getPolicyCatalog, getPolicyById } from '../api/policies';
 import { getSimulationState, addSimulationChange, type SimulationChangePayload } from '../api/simulation';
 import { getIAMUsers } from '../api/users';
 import { getIAMRoles } from '../api/roles';
-import { getScanStatus } from '../api/graph';
+import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 import { SimulationPreviewModal } from '../components/SimulationPreviewModal';
 import type { PolicyCatalogEntry } from '../types';
 
@@ -88,13 +88,15 @@ export const Policies: React.FC = () => {
     queryFn: getIAMRoles,
   });
 
-  const { data: scanStatus } = useQuery({
-    queryKey: ['scanStatus'],
-    queryFn: getScanStatus,
-    refetchInterval: 3000,
-  });
+  const {
+    isScanning,
+    scanJustCompleted,
+    isPartial,
+    isFailed,
+    lastCompletedAt,
+  } = useScanDataRefresh();
 
-  const { data: catalogData, isLoading, isError, error, refetch } = useQuery({
+  const { data: catalogData, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: ['policies', filter, search, page, pageSize],
     queryFn: () => getPolicyCatalog({
       type_filter: filter === 'all' ? undefined : filter,
@@ -103,14 +105,18 @@ export const Policies: React.FC = () => {
       page_size: pageSize,
     }),
     staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
     refetchInterval: () => {
-      return scanStatus?.is_scanning ? 2500 : false;
+      return isScanning ? 2500 : false;
     },
   });
 
   const policies = catalogData?.items ?? [];
   const total = catalogData?.total ?? 0;
   const totalPages = catalogData?.total_pages ?? 1;
+
+  const hasExistingData = !!catalogData && policies.length > 0;
+  const showInitialLoading = isLoading && !catalogData;
 
   const { data: simState } = useQuery({
     queryKey: ['simulation-state'],
@@ -202,7 +208,33 @@ export const Policies: React.FC = () => {
                 <Lock className="w-5 h-5 text-enterprise-accent" />
                 Policy Catalog
               </h1>
-              <p className="text-xs text-enterprise-subtext mt-0.5">Browse AWS IAM policies and simulate changes</p>
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <p className="text-xs text-enterprise-subtext">Browse AWS IAM policies and simulate changes</p>
+                {isScanning && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-400 text-[11px] animate-pulse">
+                    <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
+                    Updating from latest AWS scan...
+                  </span>
+                )}
+                {scanJustCompleted && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/25 text-green-400 text-[11px]">
+                    <CheckCircle className="w-3 h-3 text-green-400" />
+                    Policy catalog updated
+                  </span>
+                )}
+                {isPartial && !isScanning && !scanJustCompleted && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 text-[11px]">
+                    <AlertTriangle className="w-3 h-3 text-amber-400" />
+                    Updated from a partial AWS scan. Some regions were unavailable.
+                  </span>
+                )}
+                {isFailed && !isScanning && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/25 text-red-400 text-[11px]">
+                    <AlertTriangle className="w-3 h-3 text-red-400" />
+                    Latest scan failed. Showing the last completed snapshot{lastCompletedAt ? ` (${new Date(lastCompletedAt).toLocaleTimeString()})` : ''}.
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {simState?.simulation_active && (
@@ -211,8 +243,13 @@ export const Policies: React.FC = () => {
                   {simState.pending_changes} sim change{simState.pending_changes !== 1 ? 's' : ''} active
                 </div>
               )}
-              <button onClick={() => refetch()} className="p-2 rounded-lg border border-enterprise-border hover:bg-gray-800/50 text-enterprise-subtext hover:text-white transition-colors">
-                <RefreshCw className="w-4 h-4" />
+              <button
+                onClick={() => refetch()}
+                disabled={isFetching}
+                title="Refresh policy catalog"
+                className="p-2 rounded-lg border border-enterprise-border hover:bg-gray-800/50 text-enterprise-subtext hover:text-white transition-colors disabled:opacity-60"
+              >
+                <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-enterprise-accent' : ''}`} />
               </button>
             </div>
           </div>
@@ -263,11 +300,11 @@ export const Policies: React.FC = () => {
 
         {/* Policy list */}
         <div className="flex-1 overflow-y-auto">
-          {isLoading ? (
+          {showInitialLoading ? (
             <div className="flex items-center justify-center h-40 text-enterprise-subtext">
               <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading policy catalog...
             </div>
-          ) : isError ? (
+          ) : isError && !hasExistingData ? (
             <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
               <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
                 <AlertTriangle className="w-5 h-5" />
@@ -284,7 +321,7 @@ export const Policies: React.FC = () => {
               </button>
             </div>
           ) : sorted.length === 0 ? (
-            scanStatus?.is_scanning ? (
+            isScanning ? (
               <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
                 <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
                 <div>

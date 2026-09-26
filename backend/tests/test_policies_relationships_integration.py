@@ -419,3 +419,120 @@ def test_19_api_errors_remain_distinguishable():
     # Calling non-existent policy detail should return 404, not 200 empty
     response = client.get("/api/v1/policies/NoSuchPolicyExists")
     assert response.status_code == 404
+
+
+# 20. Snapshot A remains readable during active scan (stale-while-revalidate)
+def test_20_snapshot_a_readable_during_scan():
+    # Snapshot A
+    cache.set("v1:policies", [{"name": "SnapshotAPolicy", "type": "aws-managed", "riskScore": 10}])
+    cache.set("v1:users", [{"name": "alice_snapshot_a", "groups": [], "policies": ["SnapshotAPolicy"]}])
+    cache.set("v1:groups", [])
+    cache.set("v1:roles", [])
+
+    # Simulate scan in progress
+    scan_manager._is_running = True
+    scan_manager._scan_status = "SCANNING"
+
+    try:
+        # GET /policies during scan must return Snapshot A
+        res_policies = client.get("/api/v1/policies")
+        assert res_policies.status_code == 200
+        p_items = res_policies.json()["data"]["items"]
+        assert len(p_items) == 1
+        assert p_items[0]["name"] == "SnapshotAPolicy"
+
+        # GET /relationships during scan must return Snapshot A
+        res_rels = client.get("/api/v1/relationships")
+        assert res_rels.status_code == 200
+        rels = res_rels.json()["data"]["relationships"]
+        assert len(rels) == 1
+        assert rels[0]["source_label"] == "alice_snapshot_a"
+        assert rels[0]["target_label"] == "SnapshotAPolicy"
+    finally:
+        scan_manager._is_running = False
+        scan_manager._scan_status = "IDLE"
+
+
+# 21. Snapshot B replaces Snapshot A after scan completes
+def test_21_snapshot_b_replaces_snapshot_a_after_scan_success():
+    # Snapshot A
+    cache.set("v1:policies", [{"name": "SnapshotAPolicy", "type": "aws-managed"}])
+    cache.set("v1:users", [{"name": "alice", "groups": [], "policies": ["SnapshotAPolicy"]}])
+
+    # Scan finishes with Snapshot B
+    snapshot_b = {
+        "v1:policies": [{"name": "SnapshotBPolicy", "type": "customer-managed", "riskScore": 90}],
+        "v1:users": [{"name": "bob", "groups": [], "policies": ["SnapshotBPolicy"]}],
+        "v1:groups": [],
+        "v1:roles": [],
+    }
+    cache.set_many(snapshot_b)
+    scan_manager._scan_status = "SUCCESS"
+    scan_manager._is_running = False
+
+    res_p = client.get("/api/v1/policies")
+    assert res_p.status_code == 200
+    p_items = res_p.json()["data"]["items"]
+    assert len(p_items) == 1
+    assert p_items[0]["name"] == "SnapshotBPolicy"
+
+    res_r = client.get("/api/v1/relationships")
+    assert res_r.status_code == 200
+    rels = res_r.json()["data"]["relationships"]
+    assert len(rels) == 1
+    assert rels[0]["source_label"] == "bob"
+    assert rels[0]["target_label"] == "SnapshotBPolicy"
+
+
+# 22. Failed scan preserves Snapshot A
+def test_22_failed_scan_preserves_snapshot_a():
+    # Snapshot A
+    cache.set("v1:policies", [{"name": "PreservedPolicyA", "type": "aws-managed"}])
+    cache.set("v1:users", [{"name": "charlie", "groups": [], "policies": ["PreservedPolicyA"]}])
+    cache.set("v1:groups", [])
+    cache.set("v1:roles", [])
+
+    # Scan fails: snapshot is not replaced in cache
+    scan_manager._is_running = False
+    scan_manager._scan_status = "FAILED"
+    scan_manager._last_error = "Access denied in us-east-1"
+
+    res_p = client.get("/api/v1/policies")
+    assert res_p.status_code == 200
+    p_items = res_p.json()["data"]["items"]
+    assert len(p_items) == 1
+    assert p_items[0]["name"] == "PreservedPolicyA"
+
+    res_r = client.get("/api/v1/relationships")
+    assert res_r.status_code == 200
+    rels = res_r.json()["data"]["relationships"]
+    assert len(rels) == 1
+    assert rels[0]["source_label"] == "charlie"
+
+
+# 23. Partial scan publishes newly updated snapshot
+def test_23_partial_scan_publishes_updated_snapshot():
+    # Partial scan published snapshot with available data
+    partial_snapshot = {
+        "v1:policies": [{"name": "PartialPolicy", "type": "aws-managed", "riskScore": 40}],
+        "v1:users": [{"name": "david", "groups": [], "policies": ["PartialPolicy"]}],
+        "v1:groups": [],
+        "v1:roles": [],
+    }
+    cache.set_many(partial_snapshot)
+    scan_manager._scan_status = "PARTIAL"
+    scan_manager._failed_regions = ["ap-south-1"]
+    scan_manager._successful_regions = ["us-east-1"]
+
+    res_p = client.get("/api/v1/policies")
+    assert res_p.status_code == 200
+    p_items = res_p.json()["data"]["items"]
+    assert len(p_items) == 1
+    assert p_items[0]["name"] == "PartialPolicy"
+
+    res_r = client.get("/api/v1/relationships")
+    assert res_r.status_code == 200
+    rels = res_r.json()["data"]["relationships"]
+    assert len(rels) == 1
+    assert rels[0]["source_label"] == "david"
+

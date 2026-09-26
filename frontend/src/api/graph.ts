@@ -1,5 +1,5 @@
-import { apiClient } from './client';
-import type { APIResponse } from './client';
+import { apiClient } from './client.ts';
+import type { APIResponse } from './client.ts';
 
 export interface CytoscapeElement {
   data: {
@@ -68,6 +68,8 @@ export interface ScanStatus {
   scan_id?: string | null;
   scan_status?: 'IDLE' | 'SCANNING' | 'SUCCESS' | 'FAILED' | 'PARTIAL';
   started_at: string | null;
+  last_completed_scan_at?: string | null;
+  last_completed_scan_id?: string | null;
   last_successful_scan_at?: string | null;
   last_successful_scan_id?: string | null;
   last_error?: string | null;
@@ -84,6 +86,10 @@ export interface ScanStatus {
   } | null;
   service_status?: Record<string, string>;
   failed_regions?: string[];
+  successful_regions?: string[];
+  phase_durations?: Record<string, number>;
+  scan_mode?: string;
+  resolved_regions?: string[];
 }
 
 export const getGraphElements = async (): Promise<CytoscapeElement[]> => {
