@@ -133,7 +133,7 @@ export const Copilot: React.FC = () => {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-enterprise-accent/15 border border-enterprise-accent/30 text-enterprise-accent font-bold">
-              Gemini 3.8 Flash • Evidence-Grounded
+              Gemini Flash • Evidence-Grounded
             </span>
           </div>
         </div>

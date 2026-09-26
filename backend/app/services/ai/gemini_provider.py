@@ -76,6 +76,27 @@ class GeminiProvider(AIProvider):
             self._client = genai.Client(api_key=self.api_key)
         return self._client
 
+    def _build_config(self, model_name: str, include_thinking: bool = True) -> types.GenerateContentConfig:
+        """Create GenerateContentConfig with thinking budget disabled where supported."""
+        if include_thinking and "lite" not in model_name.lower():
+            try:
+                return types.GenerateContentConfig(
+                    temperature=self.temperature,
+                    max_output_tokens=self.max_output_tokens,
+                    response_mime_type="application/json",
+                    response_schema=CopilotAIResponse,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                )
+            except Exception as e:
+                logger.debug("Could not attach ThinkingConfig: %s", e)
+
+        return types.GenerateContentConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_output_tokens,
+            response_mime_type="application/json",
+            response_schema=CopilotAIResponse,
+        )
+
     async def generate_security_response(
         self,
         prompt: str,
@@ -84,6 +105,7 @@ class GeminiProvider(AIProvider):
     ) -> CopilotAIResponse:
         """
         Send prompt and structured context to Gemini and validate the response schema.
+        Supports automatic model fallback and intelligent retry.
         """
         client = self._get_client()
         sys_inst = system_instructions or DEFAULT_SYSTEM_INSTRUCTIONS
@@ -95,96 +117,160 @@ class GeminiProvider(AIProvider):
             security_evidence_json=context_json
         )
 
-        config = types.GenerateContentConfig(
-            temperature=self.temperature,
-            max_output_tokens=self.max_output_tokens,
-            response_mime_type="application/json",
-            response_schema=CopilotAIResponse,
-        )
+        candidate_models = [self.model]
+        for fm in getattr(settings, "GEMINI_FALLBACK_MODELS", []):
+            if fm not in candidate_models:
+                candidate_models.append(fm)
 
-        logger.info(f"Dispatching Copilot query to Gemini (model={self.model})")
+        logger.info(f"Dispatching Copilot query to Gemini (models={candidate_models}, max_tokens={self.max_output_tokens})")
 
-        try:
-            # Execute with strict async timeout
-            response = await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model=self.model,
-                    contents=bounded_prompt,
-                    config=config,
-                ),
-                timeout=float(self.timeout)
-            )
-        except asyncio.TimeoutError:
-            logger.warning("Gemini request timed out after %ds", self.timeout)
-            raise AITimeoutError(
-                f"Gemini request timed out after {self.timeout} seconds.",
-                user_friendly_message="The AI security analysis request timed out. Please try again."
-            )
-        except APIError as e:
-            err_msg = str(e)
-            logger.error("Gemini API error occurred: %s", type(e).__name__)
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg.upper():
-                raise AIRateLimitError(
-                    "Gemini API rate limit exceeded.",
-                    user_friendly_message="AI Copilot rate limit exceeded. Please wait a moment."
-                )
-            if "401" in err_msg or "403" in err_msg or "API_KEY_INVALID" in err_msg.upper():
-                raise AIAuthenticationError(
-                    "Invalid Gemini API Key.",
-                    user_friendly_message="AI Copilot authentication failed. Check server configuration."
-                )
-            if "503" in err_msg or "UNAVAILABLE" in err_msg.upper():
-                raise AIUnavailableError(
-                    "Gemini API is temporarily experiencing high demand.",
-                    user_friendly_message="AI Copilot is temporarily experiencing high demand from the model provider. Please try again in a moment."
-                )
+        response = None
+        last_error = None
+
+        for model_name in candidate_models:
+            model_config = self._build_config(model_name)
+            max_retries = 1
+            for attempt in range(max_retries + 1):
+                try:
+                    logger.info("Calling Gemini (model=%s, attempt=%d)", model_name, attempt + 1)
+                    response = await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=model_name,
+                            contents=bounded_prompt,
+                            config=model_config,
+                        ),
+                        timeout=float(self.timeout)
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    last_error = AITimeoutError(
+                        f"Gemini request timed out after {self.timeout} seconds.",
+                        user_friendly_message="The AI security analysis request timed out. Please try again."
+                    )
+                    break
+                except APIError as e:
+                    err_msg = str(e)
+                    if "401" in err_msg or "403" in err_msg or "API_KEY_INVALID" in err_msg.upper():
+                        raise AIAuthenticationError(
+                            "Invalid Gemini API Key.",
+                            user_friendly_message="AI Copilot authentication failed. Check server configuration."
+                        )
+                    if "INVALID_ARGUMENT" in err_msg and getattr(model_config, "thinking_config", None) is not None:
+                        logger.warning("Model %s rejected thinking_config, retrying without thinking_config...", model_name)
+                        model_config = self._build_config(model_name, include_thinking=False)
+                        continue
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg.upper():
+                        logger.warning("Gemini model %s hit rate limit/quota. Checking fallback...", model_name)
+                        last_error = AIRateLimitError(
+                            f"Gemini API rate limit exceeded on {model_name}.",
+                            user_friendly_message="AI Copilot rate limit exceeded. Please wait a moment."
+                        )
+                        break
+                    if "503" in err_msg or "UNAVAILABLE" in err_msg.upper():
+                        logger.warning("Gemini model %s returned 503 UNAVAILABLE (attempt %d/%d)", model_name, attempt + 1, max_retries + 1)
+                        last_error = AIUnavailableError(
+                            f"Gemini API is temporarily experiencing high demand on {model_name}.",
+                            user_friendly_message="AI Copilot is temporarily experiencing high demand from the model provider. Please try again in a moment."
+                        )
+                        if attempt < max_retries:
+                            await asyncio.sleep(1.5)
+                            continue
+                        break
+                    last_error = AIUnavailableError(
+                        f"Gemini API service error: {type(e).__name__}",
+                        user_friendly_message="Gemini security analysis service is currently unavailable."
+                    )
+                    break
+                except Exception as e:
+                    logger.error("Unexpected error with model %s: %s", model_name, type(e).__name__)
+                    last_error = AIUnavailableError(
+                        f"Unexpected error: {str(e)}",
+                        user_friendly_message="An error occurred while communicating with the AI service."
+                    )
+                    break
+
+            if response is not None:
+                break
+
+        if response is None:
+            if last_error:
+                raise last_error
             raise AIUnavailableError(
-                f"Gemini API service error: {type(e).__name__}",
-                user_friendly_message="Gemini security analysis service is currently unavailable."
-            )
-        except Exception as e:
-            logger.error("Unexpected error in Gemini provider: %s", type(e).__name__)
-            raise AIUnavailableError(
-                f"Unexpected error: {str(e)}",
-                user_friendly_message="An error occurred while communicating with the AI service."
+                "No response received from Gemini.",
+                user_friendly_message="AI Copilot did not receive a response from the model."
             )
 
         # Parse and validate the response
         return self._validate_response(response)
 
     def _validate_response(self, response: Any) -> CopilotAIResponse:
-        """Validate Gemini output against CopilotAIResponse schema."""
+        """Validate Gemini output against CopilotAIResponse schema with tolerant recovery."""
         # 1. Check if SDK directly parsed the response schema into Pydantic
-        if hasattr(response, "parsed") and isinstance(response.parsed, CopilotAIResponse):
-            return response.parsed
+        if hasattr(response, "parsed") and response.parsed is not None:
+            if isinstance(response.parsed, CopilotAIResponse):
+                return response.parsed
+            if isinstance(response.parsed, dict):
+                try:
+                    return CopilotAIResponse.model_validate(response.parsed)
+                except Exception as p_err:
+                    logger.warning("Failed to validate response.parsed dict: %s", p_err)
+            elif hasattr(response.parsed, "model_dump"):
+                try:
+                    return CopilotAIResponse.model_validate(response.parsed.model_dump())
+                except Exception as p_err:
+                    logger.warning("Failed to validate response.parsed dump: %s", p_err)
 
         # 2. Extract text and validate as JSON
         text = getattr(response, "text", "") or ""
         if not text.strip():
+            candidates = getattr(response, "candidates", None) or []
+            if candidates and getattr(candidates[0], "finish_reason", None):
+                logger.warning("Gemini returned empty text with finish_reason: %s", candidates[0].finish_reason)
             raise AIResponseValidationError(
                 "Gemini returned an empty response.",
                 user_friendly_message="AI Copilot received an empty response from the model."
             )
 
-        try:
-            return CopilotAIResponse.model_validate_json(text)
-        except Exception as initial_err:
-            logger.warning("Direct JSON parse failed, attempting markdown unwrapping: %s", initial_err)
-            # Attempt safe unwrapping if markdown code fence was returned
-            cleaned = text.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            elif cleaned.startswith("```"):
-                cleaned = cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
+        # Attempt safe unwrapping if markdown code fence was returned
+        cleaned = text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
 
+        try:
+            return CopilotAIResponse.model_validate_json(cleaned)
+        except Exception as initial_err:
+            logger.warning("Direct JSON parse failed: %s. Attempting tolerant recovery...", initial_err)
+            candidates = getattr(response, "candidates", None) or []
+            finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+
+            # Attempt soft recovery for truncated or slightly malformed JSON
             try:
-                return CopilotAIResponse.model_validate_json(cleaned)
-            except Exception as second_err:
-                logger.error("Failed to parse Gemini response into CopilotAIResponse schema: %s", second_err)
-                raise AIResponseValidationError(
-                    f"Model output did not match expected structured schema: {second_err}",
-                    user_friendly_message="AI Copilot received an invalid response format from the model."
-                )
+                repaired = cleaned
+                # Balance quotes if odd number
+                if repaired.count('"') % 2 != 0:
+                    repaired += '"'
+                # Balance curly braces
+                open_braces = repaired.count('{') - repaired.count('}')
+                if open_braces > 0:
+                    repaired += '}' * open_braces
+
+                parsed_dict = json.loads(repaired)
+                if isinstance(parsed_dict, dict):
+                    if "summary" not in parsed_dict:
+                        parsed_dict["summary"] = "Security analysis generated from CloudScope evidence."
+                    if "analysis" not in parsed_dict:
+                        parsed_dict["analysis"] = repaired[:500]
+                    logger.info("Successfully recovered truncated CopilotAIResponse JSON (finish_reason=%s)", finish_reason)
+                    return CopilotAIResponse.model_validate(parsed_dict)
+            except Exception as repair_err:
+                logger.error("Failed to recover Gemini response into schema: %s (finish_reason=%s)", repair_err, finish_reason)
+
+            raise AIResponseValidationError(
+                f"Model output did not match expected structured schema: {initial_err}",
+                user_friendly_message="AI Copilot received an invalid response format from the model."
+            )

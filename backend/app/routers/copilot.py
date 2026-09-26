@@ -96,6 +96,40 @@ def _map_to_copilot_response(ai_resp: CopilotAIResponse) -> CopilotResponse:
     )
 
 
+def _handle_ai_exception(e: Exception) -> None:
+    """Map AI provider exceptions to standard HTTP response codes."""
+    if isinstance(e, AIAuthenticationError):
+        logger.error("AI Authentication Error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.user_friendly_message
+        )
+    elif isinstance(e, AITimeoutError):
+        logger.warning("AI Timeout: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=e.user_friendly_message
+        )
+    elif isinstance(e, AIRateLimitError):
+        logger.warning("AI Rate Limit: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=e.user_friendly_message
+        )
+    elif isinstance(e, (AIConfigurationError, AIUnavailableError, AIResponseValidationError, AIProviderError)):
+        logger.error("AI Provider Error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=e.user_friendly_message
+        )
+    else:
+        logger.error("Unexpected Copilot error: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred while generating the security analysis."
+        )
+
+
 @router.post("/copilot", response_model=APIResponse[CopilotResponse])
 async def get_copilot_response(req: CopilotRequest):
     """
@@ -142,36 +176,8 @@ async def get_copilot_response(req: CopilotRequest):
             timestamp=datetime.utcnow().isoformat() + "Z",
             data=data
         )
-    except AIAuthenticationError as e:
-        logger.error("AI Authentication Error: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=e.user_friendly_message
-        )
-    except AITimeoutError as e:
-        logger.warning("AI Timeout: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=e.user_friendly_message
-        )
-    except AIRateLimitError as e:
-        logger.warning("AI Rate Limit: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=e.user_friendly_message
-        )
-    except (AIConfigurationError, AIUnavailableError, AIResponseValidationError, AIProviderError) as e:
-        logger.error("AI Provider Error: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=e.user_friendly_message
-        )
     except Exception as e:
-        logger.error("Unexpected Copilot error: %s", type(e).__name__)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred while generating the security analysis."
-        )
+        _handle_ai_exception(e)
 
 
 @router.post("/copilot/explain-finding", response_model=APIResponse[CopilotResponse])
@@ -217,11 +223,8 @@ async def explain_finding(req: ExplainFindingRequest):
             timestamp=datetime.utcnow().isoformat() + "Z",
             data=data
         )
-    except AIProviderError as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=e.user_friendly_message
-        )
+    except Exception as e:
+        _handle_ai_exception(e)
 
 
 @router.post("/copilot/explain-attack-path", response_model=APIResponse[CopilotResponse])
@@ -280,8 +283,5 @@ async def explain_attack_path(req: ExplainAttackPathRequest):
             timestamp=datetime.utcnow().isoformat() + "Z",
             data=data
         )
-    except AIProviderError as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=e.user_friendly_message
-        )
+    except Exception as e:
+        _handle_ai_exception(e)
