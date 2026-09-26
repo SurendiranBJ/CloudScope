@@ -68,7 +68,7 @@ export const ScanTrigger: React.FC = () => {
                   ? 'Scan Partial'
                   : 'Scan Complete'
                 : isScanning
-                  ? `Scanning (${elapsedFormatted})`
+                  ? `Scanning ${elapsedFormatted}`
                   : 'Scan AWS'}
         </span>
       </button>

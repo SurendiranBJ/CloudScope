@@ -223,6 +223,7 @@ class ScanManager:
 
         self._active_phase: str = "IDLE"
         self._active_phase_started_at: str | None = None
+        self._initialization_stage: str | None = None
         self._completed_phases: List[str] = []
         self._last_progress_at: str | None = None
 
@@ -412,6 +413,7 @@ class ScanManager:
             "elapsed_seconds": elapsed,
             "active_phase": active_phase,
             "active_phase_started_at": self._active_phase_started_at,
+            "initialization_stage": self._initialization_stage,
             "completed_phases": list(self._completed_phases),
             "phase_durations": self._phase_durations,
             "completed_collectors": self._completed_collectors,
@@ -459,6 +461,7 @@ class ScanManager:
             self._last_progress_at = now_iso
             self._active_phase = "INITIALIZING"
             self._active_phase_started_at = now_iso
+            self._initialization_stage = "AUTHENTICATING_AWS"
             self._completed_phases = []
             self._completed_collectors = 0
             self._total_collectors = len(ALL_COLLECTOR_NAMES)
@@ -499,6 +502,7 @@ class ScanManager:
             self._last_progress_at = now_iso
             self._active_phase = "INITIALIZING"
             self._active_phase_started_at = now_iso
+            self._initialization_stage = "AUTHENTICATING_AWS"
             self._completed_phases = []
             self._completed_collectors = 0
             self._total_collectors = len(ALL_COLLECTOR_NAMES)
@@ -533,12 +537,16 @@ class ScanManager:
         logger.info(f"[INFO] SCAN START: Initializing AWS security scan (scan_id={scan_id})")
 
         try:
+            self._initialization_stage = "AUTHENTICATING_AWS"
+            self._last_progress_at = datetime.utcnow().isoformat() + "Z"
             # 0. AWS STS Authentication Check
             aws_diag = get_aws_diagnostic_info()
             if not aws_diag["authenticated"]:
                 err_msg = f"AWS Authentication failed: {aws_diag.get('error')}"
                 logger.error(f"[ERROR] {err_msg}")
                 self._scan_status = "FAILED"
+                self._active_phase = "FAILED"
+                self._initialization_stage = "FAILED"
                 self._last_error = err_msg
                 duration = max(0.0, round(time.perf_counter() - start_perf, 3))
                 self._scan_elapsed_seconds = duration
@@ -571,10 +579,14 @@ class ScanManager:
 
             # Preserve current snapshot during scan execution; inventory is replaced atomically upon validation
             clear_region_cache()
+            self._initialization_stage = "RESOLVING_REGIONS"
+            self._last_progress_at = datetime.utcnow().isoformat() + "Z"
             from app.services.aws.region_cache import get_resolved_scan_mode
             scanned_regions = list(get_all_regions())
             resolved_scan_mode = get_resolved_scan_mode()
             logger.info(f"[INFO] Scan mode: {resolved_scan_mode}, regions: {scanned_regions}")
+            self._initialization_stage = "STARTING_COLLECTORS"
+            self._last_progress_at = datetime.utcnow().isoformat() + "Z"
 
             collector_funcs = {
                 "IAM_Users": iam_service.collect_users,
@@ -596,6 +608,7 @@ class ScanManager:
 
             # 1. AWS API Data Collection (Concurrently)
             self._set_active_phase("discovery")
+            self._initialization_stage = None
             phase_t0 = time.perf_counter()
             for c_name in ALL_COLLECTOR_NAMES:
                 self._collector_status[c_name] = "RUNNING"
@@ -1473,6 +1486,7 @@ class ScanManager:
         finally:
             with self._lock:
                 self._is_running = False
+                self._initialization_stage = None
                 if self._active_phase not in ("COMPLETED", "FAILED"):
                     if self._scan_status == "FAILED":
                         self._active_phase = "FAILED"

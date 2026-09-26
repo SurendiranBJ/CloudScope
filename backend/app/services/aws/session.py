@@ -62,7 +62,7 @@ def get_account_id() -> str:
         return _cached_account_id
     try:
         session = get_aws_session()
-        sts = session.client('sts')
+        sts = session.client('sts', config=get_boto_config(connect_timeout=5, read_timeout=15, max_attempts=2))
         identity = sts.get_caller_identity()
         _cached_account_id = identity['Account']
         logger.info(f"Resolved AWS Account ID: {_cached_account_id}")
@@ -79,7 +79,7 @@ def get_aws_diagnostic_info() -> Dict[str, Any]:
     """
     try:
         session = get_aws_session()
-        sts = session.client('sts')
+        sts = session.client('sts', config=get_boto_config(connect_timeout=5, read_timeout=15, max_attempts=2))
         identity = sts.get_caller_identity()
         account_id = identity.get('Account')
         arn = identity.get('Arn')

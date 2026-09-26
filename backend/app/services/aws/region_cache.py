@@ -1,7 +1,7 @@
 import boto3
 import logging
 from app.config import settings
-from app.services.aws.session import get_aws_session
+from app.services.aws.session import get_aws_session, get_boto_config
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
@@ -107,7 +107,7 @@ def get_all_regions() -> List[str]:
         session = get_aws_session()
         # Query describe_regions using session region or default
         probe_region = session.region_name or settings.AWS_DEFAULT_REGION or "us-east-1"
-        ec2 = session.client("ec2", region_name=probe_region)
+        ec2 = session.client("ec2", region_name=probe_region, config=get_boto_config(connect_timeout=5, read_timeout=15, max_attempts=2))
         response = ec2.describe_regions(
             Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}]
         )

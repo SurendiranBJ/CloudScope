@@ -321,3 +321,103 @@ def test_status_endpoint_is_cheap_and_reports_progress():
     scan_manager._scan_id = None
     scan_manager._scan_status = "IDLE"
     scan_manager._active_phase = None
+
+
+def test_initialization_stage_observable_and_advances():
+    """Verify initialization stages (AUTHENTICATING_AWS, RESOLVING_REGIONS, STARTING_COLLECTORS) are tracked."""
+    mgr = ScanManager()
+    with patch.object(mgr, "_execute_scan"):
+        res = mgr.trigger_async_scan()
+        assert res["status"] == "started"
+        status = mgr.get_status()
+        assert status["active_phase"] == "INITIALIZING"
+        assert status["initialization_stage"] == "AUTHENTICATING_AWS"
+
+    # Simulate transition to region discovery
+    mgr._initialization_stage = "RESOLVING_REGIONS"
+    mgr._last_progress_at = "2026-09-26T10:00:01Z"
+    status_reg = mgr.get_status()
+    assert status_reg["initialization_stage"] == "RESOLVING_REGIONS"
+    assert status_reg["last_progress_at"] == "2026-09-26T10:00:01Z"
+
+    # Simulate transition to collector startup
+    mgr._initialization_stage = "STARTING_COLLECTORS"
+    status_col = mgr.get_status()
+    assert status_col["initialization_stage"] == "STARTING_COLLECTORS"
+
+    # Transition to discovery
+    mgr._set_active_phase("DISCOVERY")
+    mgr._initialization_stage = None
+    status_disc = mgr.get_status()
+    assert status_disc["active_phase"] == "DISCOVERY"
+    assert status_disc["initialization_stage"] is None
+
+
+def test_sts_failure_marks_failed_and_cleans_up():
+    """Verify that STS failure stops scan immediately with FAILED status and error."""
+    mgr = ScanManager()
+    mgr._is_running = True
+    diag_fail = {"authenticated": False, "error": "InvalidClientTokenId: Security token is invalid"}
+
+    with patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value=diag_fail):
+        result = mgr._execute_scan("sts-fail-id")
+        assert result["status"] == "failed"
+        assert result["scan_status"] == "FAILED"
+        assert "InvalidClientTokenId" in result["error"]
+        assert mgr.is_running is False
+
+        status = mgr.get_status()
+        assert status["is_scanning"] is False
+        assert status["scan_status"] == "FAILED"
+        assert status["active_phase"] == "FAILED"
+        assert status["elapsed_seconds"] >= 0.0
+        assert "InvalidClientTokenId" in (status["last_error"] or "")
+
+
+def test_live_progress_endpoint_advances_and_reports_changes():
+    """Verify GET /api/v1/scan/status returns changing live metrics while a scan runs."""
+    from app.services.scanner.scan_manager import scan_manager
+    scan_manager._is_running = True
+    scan_manager._scan_id = "live-progress-test"
+    scan_manager._scan_status = "SCANNING"
+    scan_manager._scan_started_perf = time.perf_counter() - 2.0
+    scan_manager._active_phase = "INITIALIZING"
+    scan_manager._initialization_stage = "AUTHENTICATING_AWS"
+    scan_manager._completed_collectors = 0
+    scan_manager._total_collectors = 12
+    scan_manager._last_progress_at = "2026-09-26T10:00:00Z"
+    scan_manager._collector_status = {name: "PENDING" for name in ALL_COLLECTOR_NAMES}
+
+    # Step 1: Poll during initialization
+    resp1 = client.get("/api/v1/scan/status")
+    assert resp1.status_code == 200
+    d1 = resp1.json()["data"]
+    assert d1["is_scanning"] is True
+    assert d1["active_phase"] == "INITIALIZING"
+    assert d1["initialization_stage"] == "AUTHENTICATING_AWS"
+    assert d1["completed_collectors"] == 0
+    assert d1["elapsed_seconds"] >= 2.0
+
+    # Step 2: Collector progress updates
+    scan_manager._active_phase = "DISCOVERY"
+    scan_manager._initialization_stage = None
+    scan_manager._collector_status["IAM_Users"] = "SUCCESS_WITH_DATA"
+    scan_manager._completed_collectors = 1
+    scan_manager._last_progress_at = "2026-09-26T10:00:03Z"
+
+    resp2 = client.get("/api/v1/scan/status")
+    assert resp2.status_code == 200
+    d2 = resp2.json()["data"]
+    assert d2["active_phase"] == "DISCOVERY"
+    assert d2["initialization_stage"] is None
+    assert d2["completed_collectors"] == 1
+    assert d2["collector_status"]["IAM_Users"] == "SUCCESS_WITH_DATA"
+    assert d2["last_progress_at"] == "2026-09-26T10:00:03Z"
+    assert d2["last_progress_at"] != d1["last_progress_at"]
+
+    # Reset
+    scan_manager._is_running = False
+    scan_manager._scan_id = None
+    scan_manager._scan_status = "IDLE"
+    scan_manager._active_phase = None
+    scan_manager._initialization_stage = None

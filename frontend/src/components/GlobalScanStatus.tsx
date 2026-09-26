@@ -7,13 +7,14 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
-import { useScanLifecycle } from '../hooks/useScanLifecycle';
+import { useScanLifecycle } from '../hooks/useScanLifecycle.ts';
 
 export const GlobalScanStatus: React.FC = () => {
   const {
     isScanning,
     scanJustCompleted,
     scanError,
+    activePhase,
     phaseDescription,
     elapsedFormatted,
     completedCollectors,
@@ -35,8 +36,9 @@ export const GlobalScanStatus: React.FC = () => {
 
   const currentShort = currentSnapshotId ? currentSnapshotId.slice(0, 8) : null;
   const newShort = newScanId ? newScanId.slice(0, 8) : null;
+  const isInitializing = (activePhase || '').toUpperCase() === 'INITIALIZING';
 
-  // 0. CONNECTING STATE BEFORE BACKEND ARRIVES (Requirement 10)
+  // 0. CONNECTING STATE BEFORE BACKEND ARRIVES
   if (manualTriggerLoading && !isScanning) {
     return (
       <div className="bg-enterprise-card/95 border border-blue-500/30 rounded-xl px-3.5 py-2.5 shadow-lg text-xs w-full sm:max-w-xs min-w-0 transition-all flex items-center gap-2">
@@ -60,6 +62,9 @@ export const GlobalScanStatus: React.FC = () => {
 
   // 1. ACTIVE SCANNING STATE (Compact, responsive card)
   if (isScanning) {
+    const collectorKeys = Object.keys(collectorStatus || {});
+    const hasCollectorData = collectorKeys.length > 0;
+
     return (
       <div className="bg-enterprise-card/95 border border-blue-500/30 rounded-xl px-3.5 py-2.5 shadow-lg text-xs w-full sm:max-w-md min-w-0 transition-all">
         {/* Top row: Title + Elapsed Timer */}
@@ -88,15 +93,21 @@ export const GlobalScanStatus: React.FC = () => {
           <div className="flex items-center justify-between gap-2 text-[11px]">
             <div className="flex items-center gap-1.5 text-enterprise-subtext shrink-0">
               <span>Progress:</span>
-              <button
-                type="button"
-                onClick={() => setShowCollectors(!showCollectors)}
-                className="text-[10px] text-gray-400 hover:text-white inline-flex items-center gap-0.5 underline transition-colors"
-                title="Toggle collector details"
-              >
-                <span>{completedCollectors} / {totalCollectors} collectors</span>
-                {showCollectors ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              </button>
+              {isInitializing ? (
+                <span className="text-[10px] text-blue-300 font-medium">
+                  AWS authentication / scan setup
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowCollectors(!showCollectors)}
+                  className="text-[10px] text-gray-400 hover:text-white inline-flex items-center gap-0.5 underline transition-colors cursor-pointer"
+                  title="Toggle collector details"
+                >
+                  <span>{completedCollectors} / {totalCollectors} collectors</span>
+                  {showCollectors ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                </button>
+              )}
             </div>
             {newShort && (
               <span className="font-mono text-gray-400 text-[10px] shrink-0">
@@ -105,7 +116,7 @@ export const GlobalScanStatus: React.FC = () => {
             )}
           </div>
 
-          {/* Current snapshot & active scan ID (Requirement 12) */}
+          {/* Current snapshot & active scan ID */}
           <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 gap-2">
             {currentShort && (
               <span className="truncate">
@@ -119,7 +130,7 @@ export const GlobalScanStatus: React.FC = () => {
             )}
           </div>
 
-          {/* Heartbeat / Progress check */}
+          {/* Heartbeat / Progress check (Requirement 15) */}
           <div className="text-[10px] pt-0.5">
             {hasProgressWarning ? (
               <div className="flex items-start gap-1 text-amber-400">
@@ -128,37 +139,47 @@ export const GlobalScanStatus: React.FC = () => {
               </div>
             ) : progressSecondsAgo !== null ? (
               <span className="text-gray-400">
-                Last progress {progressSecondsAgo}s ago
+                Last progress: {progressSecondsAgo}s ago
               </span>
             ) : null}
           </div>
 
-          {/* Optional expandable collectors drawer */}
-          {showCollectors && collectorStatus && (
-            <div className="mt-2 pt-2 border-t border-enterprise-border/50 max-h-32 overflow-y-auto space-y-1">
-              <div className="grid grid-cols-2 gap-1 text-[10px]">
-                {Object.entries(collectorStatus).map(([name, status]) => (
-                  <div
-                    key={name}
-                    className="flex items-center justify-between bg-enterprise-bg/60 px-1.5 py-0.5 rounded border border-enterprise-border/40"
-                  >
-                    <span className="text-gray-300 truncate max-w-[85px]">{name}</span>
-                    <span
-                      className={`font-mono text-[9px] ${
-                        status.startsWith('SUCCESS')
-                          ? 'text-green-400'
-                          : status === 'RUNNING'
-                            ? 'text-blue-400 animate-pulse'
-                            : status === 'FAILED'
-                              ? 'text-red-400'
-                              : 'text-gray-400'
-                      }`}
+          {/* Optional expandable collectors drawer (Requirement 12) */}
+          {showCollectors && (
+            <div className="mt-2 pt-2 border-t border-enterprise-border/50 max-h-36 overflow-y-auto space-y-1">
+              {isInitializing ? (
+                <p className="text-[10px] text-gray-400 italic py-1">
+                  Collectors have not started yet.
+                </p>
+              ) : !hasCollectorData ? (
+                <p className="text-[10px] text-gray-400 italic py-1">
+                  Waiting for backend collector status...
+                </p>
+              ) : (
+                <div className="grid grid-cols-2 gap-1 text-[10px]">
+                  {Object.entries(collectorStatus).map(([name, status]) => (
+                    <div
+                      key={name}
+                      className="flex items-center justify-between bg-enterprise-bg/60 px-1.5 py-0.5 rounded border border-enterprise-border/40"
                     >
-                      {status === 'SUCCESS_WITH_DATA' ? 'DATA' : status === 'SUCCESS_EMPTY' ? 'EMPTY' : status}
-                    </span>
-                  </div>
-                ))}
-              </div>
+                      <span className="text-gray-300 truncate max-w-[85px]" title={name}>{name}</span>
+                      <span
+                        className={`font-mono text-[9px] ${
+                          status.startsWith('SUCCESS')
+                            ? 'text-green-400'
+                            : status === 'RUNNING'
+                              ? 'text-blue-400 animate-pulse'
+                              : status === 'FAILED'
+                                ? 'text-red-400'
+                                : 'text-gray-400'
+                        }`}
+                      >
+                        {status === 'SUCCESS_WITH_DATA' ? 'DATA' : status === 'SUCCESS_EMPTY' ? 'EMPTY' : status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -194,7 +215,7 @@ export const GlobalScanStatus: React.FC = () => {
     );
   }
 
-  // 3. ERROR / FAILED STATE
+  // 3. ERROR / FAILED STATE (Requirement 19)
   if (scanError || isFailed) {
     return (
       <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2 shadow-md text-xs w-full sm:max-w-xs min-w-0">
@@ -202,8 +223,8 @@ export const GlobalScanStatus: React.FC = () => {
           <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
           <div className="min-w-0 flex-1">
             <p className="font-semibold text-red-300 truncate">Scan failed</p>
-            <p className="text-[10px] text-gray-300 truncate">
-              Showing last snapshot: <span className="font-mono">{currentShort || 'none'}</span>
+            <p className="text-[10px] text-gray-300 truncate" title={scanError || undefined}>
+              {scanError || 'Showing last snapshot: ' + (currentShort || 'none')}
             </p>
           </div>
         </div>

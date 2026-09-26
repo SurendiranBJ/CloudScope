@@ -81,6 +81,7 @@ export interface ScanStatus {
 
   active_phase?: string | null;
   active_phase_started_at?: string | null;
+  initialization_stage?: string | null;
   completed_phases?: string[];
   phase_durations?: Record<string, PhaseDurationInfo | number>;
 

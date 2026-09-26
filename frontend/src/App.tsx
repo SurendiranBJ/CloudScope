@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ScanLifecycleProvider } from './context/ScanLifecycleContext.tsx';
 import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
 import { SimulationBanner } from './components/SimulationBanner';
@@ -26,41 +27,43 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Router>
-        <div className="flex h-screen w-screen overflow-hidden bg-enterprise-bg text-gray-200">
-          {/* Collapsible Left Sidebar */}
-          <Sidebar collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
+      <ScanLifecycleProvider>
+        <Router>
+          <div className="flex h-screen w-screen overflow-hidden bg-enterprise-bg text-gray-200">
+            {/* Collapsible Left Sidebar */}
+            <Sidebar collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
 
-          {/* Right Main Content Column */}
-          <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-            {/* Top Navigation */}
-            <Navbar
-              onSearchChange={setSearchQuery}
-            />
+            {/* Right Main Content Column */}
+            <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+              {/* Top Navigation */}
+              <Navbar
+                onSearchChange={setSearchQuery}
+              />
 
-            {/* Main Page Content Body */}
-            <main className="flex-1 min-h-0 overflow-hidden flex flex-col">
-              {/* Simulation active banner */}
-              <SimulationBanner />
-              <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/resources" element={<Resources search={searchQuery} />} />
-                <Route path="/graph" element={<IdentityGraphPage />} />
-                <Route path="/attack-paths" element={<AttackPaths />} />
-                <Route path="/risks" element={<RiskAssessment search={searchQuery} />} />
-                <Route path="/simulation" element={<AttackSimulation />} />
-                <Route path="/alerts" element={<Alerts />} />
-                <Route path="/copilot" element={<Copilot />} />
-                <Route path="/reports" element={<Reports />} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="/policies" element={<Policies />} />
-                <Route path="/relationships" element={<Relationships />} />
-                <Route path="/changes" element={<Changes />} />
-              </Routes>
-            </main>
+              {/* Main Page Content Body */}
+              <main className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                {/* Simulation active banner */}
+                <SimulationBanner />
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/resources" element={<Resources search={searchQuery} />} />
+                  <Route path="/graph" element={<IdentityGraphPage />} />
+                  <Route path="/attack-paths" element={<AttackPaths />} />
+                  <Route path="/risks" element={<RiskAssessment search={searchQuery} />} />
+                  <Route path="/simulation" element={<AttackSimulation />} />
+                  <Route path="/alerts" element={<Alerts />} />
+                  <Route path="/copilot" element={<Copilot />} />
+                  <Route path="/reports" element={<Reports />} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/policies" element={<Policies />} />
+                  <Route path="/relationships" element={<Relationships />} />
+                  <Route path="/changes" element={<Changes />} />
+                </Routes>
+              </main>
+            </div>
           </div>
-        </div>
-      </Router>
+        </Router>
+      </ScanLifecycleProvider>
     </QueryClientProvider>
   );
 }

@@ -1,20 +1,18 @@
 import React, { useState } from 'react';
 import { Search, Bell, ChevronDown, User, AlertOctagon } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
-import { useScanLifecycle } from '../hooks/useScanLifecycle';
+import { useScanLifecycle } from '../hooks/useScanLifecycle.ts';
 
 interface NavbarProps {
   onSearchChange?: (val: string) => void;
-  // selectedRegion / setSelectedRegion props removed — region selector had no
-  // effect on any API call (all queries are region-agnostic at the backend level).
-  // Documented as a future roadmap item: implement per-region scoped queries
-  // when multi-region support is added to the backend.
 }
 
 export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isDashboard = location.pathname === '/' || location.pathname === '/dashboard';
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
 
@@ -45,11 +43,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
 
       {/* Right Controls */}
       <div className="flex items-center gap-4">
-        {/* Global Scan Status Indicator (Requirement 10) */}
-        {isScanning ? (
+        {/* Global Scan Status Indicator: shown on subpages only to prevent duplicate on Dashboard */}
+        {!isDashboard && isScanning ? (
           <button
             type="button"
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate('/')}
             title="Scan in progress — click to view on Dashboard"
             className="flex items-center gap-2 bg-blue-500/10 border border-blue-500/25 px-2.5 py-1 rounded-full text-xs font-medium text-blue-400 hover:bg-blue-500/20 transition-colors cursor-pointer"
           >
@@ -59,10 +57,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
             </span>
             <span>Scanning</span>
           </button>
-        ) : (hasCompletedSnapshot || scanJustCompleted) ? (
+        ) : !isDashboard && (hasCompletedSnapshot || scanJustCompleted) ? (
           <button
             type="button"
-            onClick={() => navigate('/dashboard')}
+            onClick={() => navigate('/')}
             title={`Snapshot: ${currentSnapshotId ? currentSnapshotId.slice(0, 8) : 'active'} — click to view on Dashboard`}
             className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-full text-xs font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors cursor-pointer"
           >
