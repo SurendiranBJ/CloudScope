@@ -480,7 +480,7 @@ CloudScope utilizes an enterprise-grade, multi-phase CI pipeline defined in [`.g
 
 - **Pipeline Architecture**:
   1. **`preflight`** (`ubuntu-latest`):
-     - Validates runtime environments (Python 3.11, Node.js 20, npm).
+     - Validates runtime environments (Python 3.11, Node.js 22, npm).
      - Confirms zero syntax or import errors via `python -m compileall app tests`.
      - Validates test collection and dependency tree.
   2. **7 Partitioned Backend Jobs** (Parallel execution):
