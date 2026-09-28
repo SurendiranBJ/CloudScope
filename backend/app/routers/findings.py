@@ -10,6 +10,11 @@ from fastapi import APIRouter, HTTPException, Query
 from app.schemas import APIResponse, SecurityFinding
 from app.services.findings.finding_service import finding_service
 from app.services.scanner.scan_manager import scan_manager
+from app.services.scanner.current_snapshot import (
+    get_current_snapshot_id,
+    get_current_snapshot_published_at,
+    has_published_snapshot,
+)
 from app.cache import cache
 
 router = APIRouter(prefix="/findings", tags=["Security Findings"])
@@ -141,6 +146,8 @@ def get_security_findings(
         success=True,
         message="Unified security findings retrieved successfully",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=get_current_snapshot_id(),
+        snapshot_published_at=get_current_snapshot_published_at(),
         data=paginated
     )
 
@@ -156,6 +163,8 @@ def get_finding_by_id(finding_id: str):
         success=True,
         message="Finding retrieved successfully",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=get_current_snapshot_id(),
+        snapshot_published_at=get_current_snapshot_published_at(),
         data=finding
     )
 

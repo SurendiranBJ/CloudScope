@@ -1418,8 +1418,45 @@ class ScanManager:
                 "v1:scan_metadata": scan_metadata,
             }
 
-            # Atomic publication under single lock: replaces previous cache atomically
-            cache.set_many(new_snapshot)
+            # Atomic publication: update SnapshotStore and persistent versioned keys without TTL
+            try:
+                from app.services.scanner.snapshot_store import snapshot_store
+                snapshot_store.publish(
+                    snapshot_id=scan_id,
+                    status=final_scan_status,
+                    published_at=scan_timestamp,
+                    region_metadata={
+                        "scan_mode": resolved_scan_mode,
+                        "scanned_regions": scanned_regions,
+                        "resolved_regions": effective_regions,
+                        "successful_regions": scan_successful_regions,
+                        "failed_regions": scan_failed_regions,
+                        "regional_status": regional_collector_status,
+                    },
+                    collection_completeness={
+                        "is_complete": len(scan_failed_regions) == 0,
+                        "total_regions": len(effective_regions),
+                        "failed_count": len(scan_failed_regions),
+                        "success_count": len(scan_successful_regions),
+                    },
+                    users=working_inventory.users,
+                    roles=working_inventory.roles,
+                    groups=working_inventory.groups,
+                    policies=working_inventory.policies,
+                    resources=new_snapshot["v1:resources"],
+                    alerts=working_inventory.alerts,
+                    findings=[f.model_dump() for f in canonical_findings],
+                    risks=critical_risks,
+                    attack_paths=attack_paths,
+                    graph=cytoscape_elements,
+                    effective_access=effective_access_records,
+                    dashboard=dashboard_summary,
+                    scan_metadata=scan_metadata,
+                )
+            except Exception as store_err:
+                logger.warning(f"Failed to publish to SnapshotStore: {store_err}")
+
+            cache.set_many(new_snapshot, ttl_seconds=None)
             self._published_snapshot = dict(new_snapshot)
             logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id}, status={final_scan_status})")
 

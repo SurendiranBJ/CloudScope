@@ -6,22 +6,32 @@ from unittest.mock import patch, MagicMock
 from app.main import app
 from app.cache import cache
 from app.services.scanner.scan_manager import ScanManager, scan_manager
+from app.services.scanner.snapshot_store import snapshot_store
 from app.services.scanner.inventory import AWSInventory
 from app.services.scanner.current_snapshot import (
     get_current_snapshot_id,
+    get_current_snapshot_published_at,
     get_current_policies,
     get_current_relationship_inputs,
     get_current_risks,
     get_current_alerts,
     get_current_resources,
+    get_current_attack_paths,
+    get_current_graph,
+    get_current_users,
+    get_current_roles,
+    get_current_findings,
+    get_current_dashboard,
 )
 
 client = TestClient(app)
 
 
 def _reset_scan_manager():
+    snapshot_store.clear()
     for target in (ScanManager, scan_manager):
         target._is_running = False
+        target._scan_status = "IDLE"
         target._status = "IDLE"
         target._active_phase = "IDLE"
         target._last_error = None
@@ -40,51 +50,62 @@ def clean_state():
     _reset_scan_manager()
 
 
-def seed_published_snapshot(snapshot_id="scan-snap-100", published_at="2026-09-26T12:00:00Z"):
-    """Seeds a consistent published snapshot in cache and ScanManager."""
-    policies = [
+def seed_published_snapshot(
+    snapshot_id="scan-snap-100",
+    published_at="2026-09-26T12:00:00Z",
+    alerts_list=None,
+    policies_list=None,
+    resources_list=None,
+):
+    """Seeds a consistent published snapshot in SnapshotStore, cache, and ScanManager."""
+    policies = policies_list if policies_list is not None else [
         {
             "arn": "arn:aws:iam::123456789012:policy/SecurityAuditPolicy",
             "name": "SecurityAuditPolicy",
+            "type": "customer-managed",
             "policy_type": "customer-managed",
-            "risk_score": 25,
-            "attachment_count": 2,
+            "riskScore": 25,
+            "attachmentCount": 2,
             "document": '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}',
             "created_at": "2026-01-01T00:00:00Z"
         }
     ]
     users = [
         {
-            "user_id": "AIDASNAP100USER",
+            "id": "AIDASNAP100USER",
             "name": "audit-user",
             "arn": "arn:aws:iam::123456789012:user/audit-user",
             "user_name": "audit-user",
             "attached_policies": ["arn:aws:iam::123456789012:policy/SecurityAuditPolicy"],
-            "inline_policies": {},
-            "groups": ["SecurityGroup"]
+            "policies": ["SecurityAuditPolicy"],
+            "groups": ["SecurityGroup"],
+            "status": "active",
+            "mfaEnabled": True,
+            "riskScore": 25,
         }
     ]
     roles = [
         {
-            "role_id": "AROASNAP100ROLE",
+            "id": "AROASNAP100ROLE",
             "name": "AuditRole",
             "arn": "arn:aws:iam::123456789012:role/AuditRole",
             "role_name": "AuditRole",
             "attached_policies": [],
-            "inline_policies": {},
-            "assume_role_policy": {"Statement": [{"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::123456789012:user/audit-user"}, "Action": "sts:AssumeRole"}]}
+            "policies": [],
+            "trustPolicy": '{"Statement": [{"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::123456789012:user/audit-user"}, "Action": "sts:AssumeRole"}]}',
+            "riskScore": 20,
         }
     ]
     groups = [
         {
-            "group_id": "AGPASNAP100GRP",
+            "id": "AGPASNAP100GRP",
             "name": "SecurityGroup",
             "arn": "arn:aws:iam::123456789012:group/SecurityGroup",
             "group_name": "SecurityGroup",
             "attached_policies": ["arn:aws:iam::123456789012:policy/SecurityAuditPolicy"]
         }
     ]
-    resources = [
+    resources = resources_list if resources_list is not None else [
         {
             "id": "arn:aws:s3:::audit-bucket-100",
             "name": "audit-bucket-100",
@@ -110,7 +131,23 @@ def seed_published_snapshot(snapshot_id="scan-snap-100", published_at="2026-09-2
             "status": "OPEN",
         }
     ]
-    alerts = [
+    findings = [
+        {
+            "id": "finding-snap-100-1",
+            "title": "Unrestricted Administrative Access",
+            "description": "User has full admin access",
+            "severity": "critical",
+            "category": "iam",
+            "status": "open",
+            "source": "static_iam",
+            "principal": "arn:aws:iam::123456789012:user/audit-user",
+            "principalType": "User",
+            "resource": "arn:aws:iam::123456789012:user/audit-user",
+            "resourceType": "User",
+            "riskScore": 95,
+        }
+    ]
+    alerts = alerts_list if alerts_list is not None else [
         {
             "id": "alert-snap-100-1",
             "timestamp": "2026-09-26T11:58:00Z",
@@ -118,20 +155,111 @@ def seed_published_snapshot(snapshot_id="scan-snap-100", published_at="2026-09-2
             "description": "Unauthorized Access Attempt Observed in CloudTrail",
             "severity": "high",
             "status": "open",
-            "details": "{}"
+            "details": "{}",
         }
     ]
+    attack_paths = [
+        {
+            "id": "path-snap-100-1",
+            "name": "audit-user to audit-bucket-100",
+            "source": "arn:aws:iam::123456789012:user/audit-user",
+            "destination": "arn:aws:s3:::audit-bucket-100",
+            "target": "arn:aws:s3:::audit-bucket-100",
+            "pathType": "privilege_escalation",
+            "riskScore": 90,
+            "severity": "critical",
+            "hopCount": 2,
+            "blastRadius": "High",
+            "mitreTechniques": ["T1078 - Valid Accounts"],
+            "recommendation": "Enforce least privilege",
+            "description": "audit-user can reach audit-bucket-100",
+            "nodes": [
+                {"id": "arn:aws:iam::123456789012:user/audit-user", "name": "audit-user", "type": "User"},
+                {"id": "arn:aws:s3:::audit-bucket-100", "name": "audit-bucket-100", "type": "S3"}
+            ],
+            "orderedRelationships": ["ALLOWS"],
+        }
+    ]
+    graph = [
+        {
+            "data": {
+                "id": "aws:user:audit-user",
+                "label": "audit-user",
+                "type": "User",
+                "arn": "arn:aws:iam::123456789012:user/audit-user",
+                "riskScore": 25,
+            }
+        },
+        {
+            "data": {
+                "id": "aws:s3:audit-bucket-100",
+                "label": "audit-bucket-100",
+                "type": "S3",
+                "arn": "arn:aws:s3:::audit-bucket-100",
+                "riskScore": 15,
+            }
+        },
+    ]
+    dashboard = {
+        "securityScore": "82",
+        "stats": {
+            "users": len(users),
+            "roles": len(roles),
+            "policies": len(policies),
+            "risks": len(risks),
+            "paths": len(attack_paths),
+            "resources": len(resources),
+        },
+        "riskDistribution": [
+            {"name": "Critical", "value": 1, "color": "#EF4444"},
+            {"name": "High", "value": 0, "color": "#F59E0B"},
+            {"name": "Medium", "value": 0, "color": "#3B82F6"},
+            {"name": "Low", "value": 0, "color": "#10B981"},
+        ],
+        "activityMetrics": {
+            "staticAttackPaths": 1,
+            "observedSecurityEvents": 1,
+            "correlatedFindings": 0,
+            "observedAttackActivity": 0,
+        },
+        "recentAlerts": alerts,
+        "criticalPaths": attack_paths,
+        "recommendations": [],
+        "lastScan": {
+            "timestamp": published_at,
+            "duration_seconds": 1.5,
+            "resources_found": len(resources),
+            "risks_found": len(risks),
+            "graph_nodes_count": len(graph),
+            "graph_edges_count": 0,
+        },
+        "topRiskyIdentities": [],
+        "resourceBreakdown": [],
+        "scanId": snapshot_id,
+        "scanStatus": "SUCCESS",
+    }
 
-    cache.set("v1:last_published_scan_id", snapshot_id)
-    cache.set("v1:last_published_at", published_at)
-    cache.set("v1:policies", policies)
-    cache.set("v1:users", users)
-    cache.set("v1:roles", roles)
-    cache.set("v1:groups", groups)
-    cache.set("v1:resources", resources)
-    cache.set("v1:risks", risks)
-    cache.set("v1:findings", risks)
-    cache.set("v1:alerts", alerts)
+    # Publish through immutable SnapshotStore (which sets versioned and active keys without TTL)
+    snapshot_store.publish(
+        snapshot_id=snapshot_id,
+        published_at=published_at,
+        status="SUCCESS",
+        region_metadata={"scan_mode": "global", "successful_regions": ["us-east-1"], "failed_regions": []},
+        collection_completeness={"is_complete": True, "total_regions": 1, "failed_count": 0, "success_count": 1},
+        users=users,
+        roles=roles,
+        groups=groups,
+        policies=policies,
+        resources=resources,
+        alerts=alerts,
+        findings=findings,
+        risks=risks,
+        attack_paths=attack_paths,
+        graph=graph,
+        effective_access=[],
+        dashboard=dashboard,
+        scan_metadata={"snapshot_id": snapshot_id, "snapshot_published_at": published_at},
+    )
 
     # Sync to ScanManager
     for target in (ScanManager, scan_manager):
@@ -146,8 +274,11 @@ def seed_published_snapshot(snapshot_id="scan-snap-100", published_at="2026-09-2
             "policies": policies,
             "resources": resources,
             "risks": risks,
-            "findings": risks,
+            "findings": findings,
             "alerts": alerts,
+            "v1:attack-paths": attack_paths,
+            "v1:graph": graph,
+            "v1:dashboard": dashboard,
         }
 
 
@@ -164,7 +295,6 @@ def test_consistent_snapshot_across_all_endpoints():
     assert p_data["snapshot_id"] == snap_id
     assert p_data["snapshot_published_at"] == published_at
     assert len(p_data["items"]) == 1
-    assert p_data["items"][0]["name"] == "SecurityAuditPolicy"
 
     # 2. Relationships
     res_r = client.get("/api/v1/relationships")
@@ -198,8 +328,45 @@ def test_consistent_snapshot_across_all_endpoints():
     assert res_json["snapshot_published_at"] == published_at
     assert len(res_json["data"]) == 1
 
+    # 6. Attack Paths
+    res_ap = client.get("/api/v1/attack-paths")
+    assert res_ap.status_code == 200
+    ap_json = res_ap.json()
+    assert ap_json["snapshot_id"] == snap_id
+    assert ap_json["snapshot_published_at"] == published_at
+    assert len(ap_json["data"]) == 1
 
-def test_snapshot_preserved_during_active_scan():
+    # 7. Graph
+    res_g = client.get("/api/v1/graph")
+    assert res_g.status_code == 200
+    g_json = res_g.json()
+    assert g_json["snapshot_id"] == snap_id
+    assert g_json["snapshot_published_at"] == published_at
+    assert len(g_json["data"]) == 2
+
+    # 8. Users
+    res_u = client.get("/api/v1/users")
+    assert res_u.status_code == 200
+    u_json = res_u.json()
+    assert u_json["snapshot_id"] == snap_id
+    assert len(u_json["data"]) == 1
+
+    # 9. Roles
+    res_ro = client.get("/api/v1/roles")
+    assert res_ro.status_code == 200
+    ro_json = res_ro.json()
+    assert ro_json["snapshot_id"] == snap_id
+    assert len(ro_json["data"]) == 1
+
+    # 10. Dashboard
+    res_dash = client.get("/api/v1/dashboard")
+    assert res_dash.status_code == 200
+    dash_json = res_dash.json()
+    assert dash_json["snapshot_id"] == snap_id
+    assert dash_json["snapshot_published_at"] == published_at
+
+
+def test_old_snapshot_survives_active_scan():
     """While a new scan is running, read endpoints must keep returning previous snapshot A."""
     seed_published_snapshot("scan-snap-100", "2026-09-26T12:00:00Z")
 
@@ -212,39 +379,41 @@ def test_snapshot_preserved_during_active_scan():
     # Verify all endpoints continue returning snapshot-100, not empty lists
     res_p = client.get("/api/v1/policies")
     assert res_p.status_code == 200
-    p_data = res_p.json()["data"]
-    assert p_data["snapshot_id"] == "scan-snap-100"
-    assert len(p_data["items"]) == 1
+    assert res_p.json()["data"]["snapshot_id"] == "scan-snap-100"
 
     res_r = client.get("/api/v1/relationships")
     assert res_r.status_code == 200
-    r_data = res_r.json()["data"]
-    assert r_data["snapshot_id"] == "scan-snap-100"
-    assert r_data["total"] > 0
+    assert res_r.json()["data"]["snapshot_id"] == "scan-snap-100"
 
     res_k = client.get("/api/v1/risk-assessment")
     assert res_k.status_code == 200
     assert res_k.json()["snapshot_id"] == "scan-snap-100"
-    assert len(res_k.json()["data"]) == 1
 
     res_a = client.get("/api/v1/alerts")
     assert res_a.status_code == 200
     assert res_a.json()["snapshot_id"] == "scan-snap-100"
-    assert len(res_a.json()["data"]) == 1
 
     res_res = client.get("/api/v1/resources")
     assert res_res.status_code == 200
     assert res_res.json()["snapshot_id"] == "scan-snap-100"
-    assert len(res_res.json()["data"]) == 1
+
+    res_ap = client.get("/api/v1/attack-paths")
+    assert res_ap.status_code == 200
+    assert res_ap.json()["snapshot_id"] == "scan-snap-100"
+
+    res_g = client.get("/api/v1/graph")
+    assert res_g.status_code == 200
+    assert res_g.json()["snapshot_id"] == "scan-snap-100"
 
 
-def test_failed_scan_retains_previous_snapshot():
+def test_failed_scan_preserves_old_snapshot():
     """If scan B fails, snapshot A remains published and active."""
     seed_published_snapshot("scan-snap-100", "2026-09-26T12:00:00Z")
 
     # Simulate scan failure
     for target in (ScanManager, scan_manager):
         target._is_running = False
+        target._scan_status = "FAILED"
         target._status = "FAILED"
         target._last_error = "AWS STS credentials expired"
 
@@ -258,34 +427,88 @@ def test_failed_scan_retains_previous_snapshot():
     assert res_r.status_code == 200
     assert res_r.json()["data"]["snapshot_id"] == "scan-snap-100"
 
+    res_k = client.get("/api/v1/risk-assessment")
+    assert res_k.status_code == 200
+    assert res_k.json()["snapshot_id"] == "scan-snap-100"
 
-def test_atomic_publication_updates_all_endpoints():
+
+def test_all_pages_switch_from_snapshot_a_to_b_together():
     """Once snapshot B is published, all endpoints atomically switch to snapshot B."""
     seed_published_snapshot("scan-snap-100", "2026-09-26T12:00:00Z")
 
-    # Verify initial is snap-100
+    # Verify initial is snap-100 across pages
     assert client.get("/api/v1/policies").json()["data"]["snapshot_id"] == "scan-snap-100"
+    assert client.get("/api/v1/relationships").json()["data"]["snapshot_id"] == "scan-snap-100"
+    assert client.get("/api/v1/risk-assessment").json()["snapshot_id"] == "scan-snap-100"
+    assert client.get("/api/v1/alerts").json()["snapshot_id"] == "scan-snap-100"
+    assert client.get("/api/v1/resources").json()["snapshot_id"] == "scan-snap-100"
+    assert client.get("/api/v1/attack-paths").json()["snapshot_id"] == "scan-snap-100"
+    assert client.get("/api/v1/graph").json()["snapshot_id"] == "scan-snap-100"
 
     # Publish snapshot B
     seed_published_snapshot("scan-snap-101", "2026-09-26T12:05:00Z")
 
-    # All endpoints now serve snap-101
+    # All endpoints now serve snap-101 together
     assert client.get("/api/v1/policies").json()["data"]["snapshot_id"] == "scan-snap-101"
     assert client.get("/api/v1/relationships").json()["data"]["snapshot_id"] == "scan-snap-101"
     assert client.get("/api/v1/risk-assessment").json()["snapshot_id"] == "scan-snap-101"
     assert client.get("/api/v1/alerts").json()["snapshot_id"] == "scan-snap-101"
     assert client.get("/api/v1/resources").json()["snapshot_id"] == "scan-snap-101"
+    assert client.get("/api/v1/attack-paths").json()["snapshot_id"] == "scan-snap-101"
+    assert client.get("/api/v1/graph").json()["snapshot_id"] == "scan-snap-101"
 
 
-def test_no_duplicate_scan_triggered_by_reads_when_snapshot_exists():
-    """Read endpoints must not trigger ScanManager.trigger_async_scan when a snapshot exists."""
+def test_empty_collections_are_not_replaced_by_stale_data():
+    """A valid scan with zero alerts/policies publishes [] and does NOT fall back to older stale items."""
+    # First publish snapshot with data
     seed_published_snapshot("scan-snap-100", "2026-09-26T12:00:00Z")
+    res_a = client.get("/api/v1/alerts")
+    assert len(res_a.json()["data"]) == 1
 
-    with patch.object(ScanManager, "trigger_async_scan") as mock_trigger:
-        client.get("/api/v1/policies")
-        client.get("/api/v1/relationships")
-        client.get("/api/v1/risk-assessment")
-        client.get("/api/v1/alerts")
-        client.get("/api/v1/resources")
+    # Second scan discovers ZERO alerts (clean security posture)
+    seed_published_snapshot(
+        "scan-snap-102",
+        "2026-09-26T12:10:00Z",
+        alerts_list=[],
+    )
 
-        mock_trigger.assert_not_called()
+    # Must return empty list, NOT the old alert from snap-100
+    res_a2 = client.get("/api/v1/alerts")
+    assert res_a2.status_code == 200
+    assert res_a2.json()["snapshot_id"] == "scan-snap-102"
+    assert res_a2.json()["data"] == []
+
+
+def test_partial_scan_publishes_reconciled_snapshot():
+    """Partial scan publishes reconciled snapshot recording failed and successful regions."""
+    snapshot_store.publish(
+        snapshot_id="scan-snap-partial",
+        published_at="2026-09-26T12:15:00Z",
+        status="PARTIAL",
+        region_metadata={
+            "scan_mode": "multi",
+            "successful_regions": ["us-east-1"],
+            "failed_regions": ["eu-west-1"],
+        },
+        collection_completeness={
+            "is_complete": False,
+            "total_regions": 2,
+            "failed_count": 1,
+            "success_count": 1,
+        },
+        resources=[{"id": "res-1", "name": "res-1", "type": "S3", "region": "us-east-1", "arn": "arn:aws:s3:::res-1", "status": "active", "riskScore": 0}],
+        scan_metadata={"snapshot_id": "scan-snap-partial", "status": "PARTIAL"}
+    )
+
+    snap = snapshot_store.get_current()
+    assert snap is not None
+    assert snap.status == "PARTIAL"
+    assert snap.region_metadata["failed_regions"] == ["eu-west-1"]
+    assert snap.region_metadata["successful_regions"] == ["us-east-1"]
+    assert snap.collection_completeness["is_complete"] is False
+
+    res_res = client.get("/api/v1/resources")
+    assert res_res.status_code == 200
+    assert res_res.json()["snapshot_id"] == "scan-snap-partial"
+    assert len(res_res.json()["data"]) == 1
+

@@ -53,10 +53,13 @@ class CacheManager:
                 return dict(val)
             return val
 
-    def set(self, key: str, value: any, ttl_seconds: int = 300):
+    def set(self, key: str, value: any, ttl_seconds: int | None = None):
         if self.redis_client:
             try:
-                self.redis_client.setex(key, ttl_seconds, json.dumps(value))
+                if ttl_seconds and ttl_seconds > 0:
+                    self.redis_client.setex(key, ttl_seconds, json.dumps(value))
+                else:
+                    self.redis_client.set(key, json.dumps(value))
             except Exception as e:
                 logger.error(f"Redis set error: {str(e)}")
         
@@ -64,16 +67,20 @@ class CacheManager:
         with self._lock:
             self.local_cache[key] = value
 
-    def set_many(self, mapping: dict, ttl_seconds: int = 300):
+    def set_many(self, mapping: dict, ttl_seconds: int | None = None):
         """Atomically set multiple cache keys simultaneously.
         In Redis, uses a single pipeline transaction.
+        When ttl_seconds is None or <= 0, keys are stored persistently without expiration.
         In local fallback, updates dictionary under thread lock.
         """
         if self.redis_client:
             try:
                 pipe = self.redis_client.pipeline()
                 for k, v in mapping.items():
-                    pipe.setex(k, ttl_seconds, json.dumps(v))
+                    if ttl_seconds and ttl_seconds > 0:
+                        pipe.setex(k, ttl_seconds, json.dumps(v))
+                    else:
+                        pipe.set(k, json.dumps(v))
                 pipe.execute()
             except Exception as e:
                 logger.error(f"Redis set_many error: {str(e)}")

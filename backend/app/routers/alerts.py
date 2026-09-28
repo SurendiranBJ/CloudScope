@@ -19,10 +19,18 @@ def get_security_alerts():
     """Retrieve security audit alerts discovered from CloudTrail and security configurations."""
     raw_alerts = get_current_alerts()
     if raw_alerts:
-        data = [
-            SecurityAlert(**a) if isinstance(a, dict) else a
-            for a in raw_alerts
-        ]
+        import json
+        data = []
+        for a in raw_alerts:
+            if isinstance(a, dict):
+                norm = dict(a)
+                if "details" not in norm or norm["details"] is None:
+                    norm["details"] = "{}"
+                elif not isinstance(norm["details"], str):
+                    norm["details"] = json.dumps(norm["details"])
+                data.append(SecurityAlert(**norm))
+            else:
+                data.append(a)
     elif not has_published_snapshot() and not scan_manager.is_running:
         scan_manager.trigger_async_scan()
         data = []

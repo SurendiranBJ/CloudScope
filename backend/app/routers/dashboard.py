@@ -1,7 +1,12 @@
 from fastapi import APIRouter
 from app.schemas import APIResponse, DashboardData
-from app.cache import cache
 from app.services.scanner.scan_manager import scan_manager
+from app.services.scanner.current_snapshot import (
+    get_current_dashboard,
+    get_current_snapshot_id,
+    get_current_snapshot_published_at,
+    has_published_snapshot,
+)
 from datetime import datetime
 
 router = APIRouter(tags=["Dashboard"])
@@ -20,7 +25,7 @@ def get_dashboard_summary():
     last_successful_id = status_info.get("last_successful_scan_id")
     service_status = status_info.get("service_status", {})
 
-    cached_dashboard = cache.get("v1:dashboard")
+    cached_dashboard = get_current_dashboard()
     if (
         cached_dashboard 
         and isinstance(cached_dashboard, dict) 
@@ -58,6 +63,8 @@ def get_dashboard_summary():
             success=True,
             message="Dashboard summary retrieved successfully",
             timestamp=datetime.utcnow().isoformat() + "Z",
+            snapshot_id=get_current_snapshot_id(),
+            snapshot_published_at=get_current_snapshot_published_at(),
             data=data
         )
 
@@ -121,5 +128,7 @@ def get_dashboard_summary():
         success=True,
         message="Dashboard status retrieved",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=get_current_snapshot_id(),
+        snapshot_published_at=get_current_snapshot_published_at(),
         data=empty_data
     )

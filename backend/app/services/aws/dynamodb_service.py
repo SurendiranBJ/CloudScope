@@ -1,19 +1,24 @@
 import logging
 import concurrent.futures
 import time
+from typing import Dict, List, Any
 from app.services.aws.session import get_account_id, get_boto_config
-from app.services.aws.region_cache import get_all_regions, make_region_sessions
+from app.services.aws.region_cache import get_all_regions, make_region_sessions, RegionalCollectionResult
 
 logger = logging.getLogger("scanner")
 
-def collect_dynamodb_tables() -> list:
-    tables = []
+def collect_dynamodb_tables() -> RegionalCollectionResult:
+    tables: List[Dict[str, Any]] = []
+    regional_status: Dict[str, str] = {}
+    successful_regions: List[str] = []
+    failed_regions: List[str] = []
+
     try:
         account_id = get_account_id()
         regions = get_all_regions()
         region_sessions = make_region_sessions(regions)
 
-        def fetch_region_ddb(region_name):
+        def fetch_region_ddb(region_name: str):
             start = time.time()
             region_tables = []
             try:
@@ -55,18 +60,29 @@ def collect_dynamodb_tables() -> list:
                             })
                         except Exception as e:
                             logger.debug(f"Failed to describe table {table_name} in {region_name}: {e}")
+                elapsed = time.time() - start
+                logger.info(f"DynamoDB collection for region {region_name} completed in {elapsed:.2f}s")
+                return (region_name, "success" if region_tables else "empty", region_tables)
             except Exception as e:
                 logger.debug(f"Failed to fetch DynamoDB in {region_name}: {e}")
-            elapsed = time.time() - start
-            logger.info(f"DynamoDB collection for region {region_name} completed in {elapsed:.2f}s")
-            return region_tables
+                return (region_name, "failed", [])
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            for res in executor.map(fetch_region_ddb, regions):
-                tables.extend(res)
+            for rname, status, res in executor.map(fetch_region_ddb, regions):
+                regional_status[rname] = status
+                if status in ["success", "empty"]:
+                    successful_regions.append(rname)
+                    tables.extend(res)
+                else:
+                    failed_regions.append(rname)
 
-        logger.info(f"DynamoDB Collector: Discovered {len(tables)} tables across all regions")
-        return tables
+        logger.info(f"DynamoDB Collector: Discovered {len(tables)} tables across {len(successful_regions)} region(s) ({len(failed_regions)} failed)")
+        return RegionalCollectionResult(
+            items=tables,
+            regional_status=regional_status,
+            successful_regions=successful_regions,
+            failed_regions=failed_regions
+        )
     except Exception as e:
         logger.error(f"DynamoDB Collector failed: {e}")
         raise e

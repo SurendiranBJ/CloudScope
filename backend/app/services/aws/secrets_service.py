@@ -2,25 +2,30 @@ import logging
 import concurrent.futures
 import time
 from datetime import datetime
+from typing import Dict, List, Any
 from app.services.aws.session import get_account_id, get_boto_config
-from app.services.aws.region_cache import get_all_regions, make_region_sessions
+from app.services.aws.region_cache import get_all_regions, make_region_sessions, RegionalCollectionResult
 
 logger = logging.getLogger("scanner")
 
 
-def collect_secrets() -> list:
+def collect_secrets() -> RegionalCollectionResult:
     """Discover Secrets Manager metadata across all configured regions.
 
     SECURITY MANDATE: Collects metadata only (name, ARN, rotation status,
     tags, dates). NEVER retrieves or exposes secret values.
     """
-    secrets = []
+    secrets: List[Dict[str, Any]] = []
+    regional_status: Dict[str, str] = {}
+    successful_regions: List[str] = []
+    failed_regions: List[str] = []
+
     try:
         account_id = get_account_id()
         regions = get_all_regions()
         region_sessions = make_region_sessions(regions)
 
-        def fetch_region_secrets(region_name):
+        def fetch_region_secrets(region_name: str):
             start = time.time()
             region_secrets = []
             try:
@@ -58,18 +63,29 @@ def collect_secrets() -> list:
                                 "description": description
                             }
                         })
+                elapsed = time.time() - start
+                logger.info(f"Secrets collection for region {region_name} completed in {elapsed:.2f}s")
+                return (region_name, "success" if region_secrets else "empty", region_secrets)
             except Exception as e:
                 logger.debug(f"Failed to fetch Secrets in {region_name}: {e}")
-            elapsed = time.time() - start
-            logger.info(f"Secrets collection for region {region_name} completed in {elapsed:.2f}s")
-            return region_secrets
+                return (region_name, "failed", [])
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            for res in executor.map(fetch_region_secrets, regions):
-                secrets.extend(res)
+            for rname, status, res in executor.map(fetch_region_secrets, regions):
+                regional_status[rname] = status
+                if status in ["success", "empty"]:
+                    successful_regions.append(rname)
+                    secrets.extend(res)
+                else:
+                    failed_regions.append(rname)
 
-        logger.info(f"Secrets Collector: Discovered {len(secrets)} secrets across all regions")
-        return secrets
+        logger.info(f"Secrets Collector: Discovered {len(secrets)} secrets across {len(successful_regions)} region(s) ({len(failed_regions)} failed)")
+        return RegionalCollectionResult(
+            items=secrets,
+            regional_status=regional_status,
+            successful_regions=successful_regions,
+            failed_regions=failed_regions
+        )
     except Exception as e:
         logger.error(f"Secrets Collector failed: {e}")
         raise e

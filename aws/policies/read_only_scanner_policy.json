@@ -2,9 +2,11 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "IAMReadOnlyCollection",
       "Effect": "Allow",
       "Action": [
         "iam:ListUsers",
+        "iam:GetUser",
         "iam:ListGroups",
         "iam:ListRoles",
         "iam:ListPolicies",
@@ -19,38 +21,49 @@
         "iam:GetGroupPolicy",
         "iam:GetPolicy",
         "iam:GetPolicyVersion",
-        "iam:ListMFADevices"
+        "iam:ListMFADevices",
+        "iam:ListAccessKeys",
+        "iam:GetAccessKeyLastUsed",
+        "iam:ListGroupsForUser"
       ],
       "Resource": "*"
     },
     {
+      "Sid": "EC2ReadOnlyCollection",
       "Effect": "Allow",
       "Action": [
         "ec2:DescribeInstances",
         "ec2:DescribeSecurityGroups",
-        "ec2:DescribeIamInstanceProfileAssociations"
+        "ec2:DescribeIamInstanceProfileAssociations",
+        "ec2:DescribeRegions"
       ],
       "Resource": "*"
     },
     {
+      "Sid": "S3ReadOnlyCollection",
       "Effect": "Allow",
       "Action": [
         "s3:ListAllMyBuckets",
         "s3:GetBucketLocation",
         "s3:GetBucketPolicy",
         "s3:GetBucketEncryption",
-        "s3:GetPublicAccessBlock"
+        "s3:GetPublicAccessBlock",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketTagging"
       ],
       "Resource": "*"
     },
     {
+      "Sid": "LambdaReadOnlyCollection",
       "Effect": "Allow",
       "Action": [
-        "lambda:ListFunctions"
+        "lambda:ListFunctions",
+        "lambda:ListTags"
       ],
       "Resource": "*"
     },
     {
+      "Sid": "SecretsManagerReadOnlyCollection",
       "Effect": "Allow",
       "Action": [
         "secretsmanager:ListSecrets"
@@ -58,6 +71,25 @@
       "Resource": "*"
     },
     {
+      "Sid": "RDSReadOnlyCollection",
+      "Effect": "Allow",
+      "Action": [
+        "rds:DescribeDBInstances"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DynamoDBReadOnlyCollection",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:ListTables",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeContinuousBackups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AccessAnalyzerReadOnlyCollection",
       "Effect": "Allow",
       "Action": [
         "accessanalyzer:ListAnalyzers",
@@ -66,6 +98,7 @@
       "Resource": "*"
     },
     {
+      "Sid": "CloudTrailReadOnlyCollection",
       "Effect": "Allow",
       "Action": [
         "cloudtrail:LookupEvents"

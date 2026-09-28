@@ -28,13 +28,14 @@ def collect_recent_alerts() -> list:
 
                 def fetch_events_for_name(event_name):
                     try:
-                        response = client.lookup_events(
-                            LookupAttributes=[
-                                {'AttributeKey': 'EventName', 'AttributeValue': event_name}
-                            ],
-                            MaxResults=5
-                        )
-                        return response.get('Events', [])
+                        paginator = client.get_paginator('lookup_events')
+                        events = []
+                        for page in paginator.paginate(
+                            LookupAttributes=[{'AttributeKey': 'EventName', 'AttributeValue': event_name}],
+                            PaginationConfig={'MaxItems': 50, 'PageSize': 20}
+                        ):
+                            events.extend(page.get('Events', []))
+                        return events
                     except Exception as e:
                         logger.debug(f"Failed to lookup CloudTrail events for {event_name} in {region_name}: {e}")
                         return []
@@ -63,14 +64,14 @@ def collect_recent_alerts() -> list:
             username = event.get('Username', 'Unknown')
             name = event.get('EventName', 'ConfigDrift')
 
-            # Map severity based on event type
+            # Map severity based strictly on action semantics — zero name/content heuristics
             severity = 'medium'
             if name in ['PutBucketPolicy', 'DeleteBucketPolicy']:
                 severity = 'high'
             elif name in ['AttachUserPolicy', 'PutRolePolicy', 'CreateAccessKey']:
                 severity = 'high'
-            elif name == 'AssumeRole' and 'Admin' in event.get('CloudTrailEvent', ''):
-                severity = 'critical'
+            elif name == 'AssumeRole':
+                severity = 'medium'
             elif name == 'CreateUser':
                 severity = 'medium'
 
