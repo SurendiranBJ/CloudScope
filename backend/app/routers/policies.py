@@ -18,6 +18,7 @@ from datetime import datetime
 from app.schemas import APIResponse, PolicyCatalogEntry, PaginatedPolicyCatalog
 from app.cache import cache
 from app.services.attack.policy_evaluator import evaluate_policy_document_risk
+from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
     get_current_policies,
     get_current_users,
@@ -46,8 +47,6 @@ def get_policy_catalog(
     The search and type filters operate across the COMPLETE cached catalog.
     Documents are never loaded or fetched during catalog listing to ensure high performance.
     """
-    from app.services.scanner.scan_manager import scan_manager
-
     # Retrieve policies strictly from current published snapshot
     scan_policies = get_current_policies()
     catalog_cached = cache.get("v1:policy_catalog")
@@ -331,10 +330,10 @@ def get_policy_detail(policy_id: str):
         entry["documentParsed"] = None
         entry["documentUnavailable"] = True
 
-    # Find attachment locations across users, roles, and groups
-    users = cache.get("v1:users") or getattr(scan_manager.inventory, "users", []) or []
-    roles = cache.get("v1:roles") or getattr(scan_manager.inventory, "roles", []) or []
-    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
+    # Find attachment locations across users, roles, and groups from authoritative published snapshot
+    users = get_current_users()
+    roles = get_current_roles()
+    groups = get_current_groups()
     pol_name = entry.get("name", "")
     pol_arn = entry.get("arn", "")
     clean_pol_name = pol_name.replace("[inline] ", "")
@@ -356,31 +355,34 @@ def get_policy_detail(policy_id: str):
         return False
 
     for u in users:
-        u_pols = u.get("policies", []) + u.get("attachedPolicies", [])
-        u_arns = u.get("attachedPolicyArns", {})
+        u_pols = u.get("policies", []) + u.get("attachedPolicies", []) + u.get("attached_policies", [])
+        u_arns = u.get("attachedPolicyArns", {}) or u.get("attached_policy_arns", {})
         if _matches_policy(u_pols, u_arns):
-            key = ("User", u.get("name", ""))
+            uname = u.get("name") or u.get("user_name") or u.get("userName") or "unknown-user"
+            key = ("User", uname)
             if key not in seen_attachments:
                 seen_attachments.add(key)
-                attached_to.append({"type": "User", "name": u["name"], "arn": u.get("arn", "")})
+                attached_to.append({"type": "User", "name": uname, "arn": u.get("arn", "")})
 
     for r in roles:
-        r_pols = r.get("attachedPolicies", []) + r.get("policies", [])
-        r_arns = r.get("attachedPolicyArns", {})
+        r_pols = r.get("attachedPolicies", []) + r.get("attached_policies", []) + r.get("policies", [])
+        r_arns = r.get("attachedPolicyArns", {}) or r.get("attached_policy_arns", {})
         if _matches_policy(r_pols, r_arns):
-            key = ("Role", r.get("name", ""))
+            rname = r.get("name") or r.get("role_name") or r.get("roleName") or "unknown-role"
+            key = ("Role", rname)
             if key not in seen_attachments:
                 seen_attachments.add(key)
-                attached_to.append({"type": "Role", "name": r["name"], "arn": r.get("arn", "")})
+                attached_to.append({"type": "Role", "name": rname, "arn": r.get("arn", "")})
 
     for g in groups:
-        g_pols = g.get("attachedPolicies", []) + g.get("policies", [])
-        g_arns = g.get("attachedPolicyArns", {})
+        g_pols = g.get("attachedPolicies", []) + g.get("attached_policies", []) + g.get("policies", [])
+        g_arns = g.get("attachedPolicyArns", {}) or g.get("attached_policy_arns", {})
         if _matches_policy(g_pols, g_arns):
-            key = ("Group", g.get("name", ""))
+            gname = g.get("name") or g.get("group_name") or g.get("groupName") or "unknown-group"
+            key = ("Group", gname)
             if key not in seen_attachments:
                 seen_attachments.add(key)
-                attached_to.append({"type": "Group", "name": g["name"], "arn": g.get("arn", "")})
+                attached_to.append({"type": "Group", "name": gname, "arn": g.get("arn", "")})
 
     entry["attachedTo"] = attached_to
 

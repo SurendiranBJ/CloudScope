@@ -416,43 +416,95 @@ CloudScope features an interactive, path-centric Identity Graph designed specifi
 
 ### Local Commands to Match CI
 
-The developer can reproduce the exact GitHub Actions CI execution locally:
+You can reproduce the exact GitHub Actions CI execution phases locally:
 
-#### Backend Automated Testing
+#### 1. Preflight & Byte Compilation
 ```bash
 cd backend
-python -m pytest tests/ -v --tb=short
+python -m compileall app tests
+python -m pytest --collect-only -q tests/
+
+cd ../frontend
+npm ci --dry-run
 ```
 
-#### Frontend Dependency Installation & Production Build
+#### 2. Partitioned Backend Test Suites
+```bash
+cd backend
+# Phase 1: Core & APIs
+python -m pytest tests/test_api_endpoints.py tests/test_aws_session.py tests/test_region_cache.py -v --tb=short
+
+# Phase 2: Security Engines & Policies
+python -m pytest tests/test_policy_evaluator.py tests/test_resource_boundary_and_conditions.py tests/test_trust_assumption.py tests/test_phase2_iam_hardening.py tests/test_cloudtrail_correlation.py tests/test_phase4_cloudtrail_correlation.py -v --tb=short
+
+# Phase 3: Graph & Attack Paths
+python -m pytest tests/test_graph_construction.py tests/test_duplicate_nodes.py tests/test_graph_reconciliation.py tests/test_identity_graph_resources.py tests/test_path_engine.py tests/test_attack_path_grouping.py tests/test_carol_lambda_effective_access.py tests/test_effective_access_multihop.py tests/test_role_target_downstream_assets.py tests/test_phase3_provenance_attack_paths.py -v --tb=short
+
+# Phase 4: Scanner & Snapshot Consistency
+python -m pytest tests/test_scan_lifecycle.py tests/test_published_snapshot_consistency.py tests/test_phase1_regional_discovery.py tests/test_scan_iam_reconciliation.py tests/test_phase6_hardening_performance_e2e.py -v --tb=short
+
+# Phase 5: Policies, Risk & Alerts
+python -m pytest tests/test_policies_relationships_integration.py tests/test_risk_engine.py tests/test_phase5_unified_findings.py -v --tb=short
+
+# Phase 6: AI & Copilot
+python -m pytest tests/test_ai_context_builder.py tests/test_ai_provider.py tests/test_copilot.py -v --tb=short
+
+# Phase 7: Policy Simulation
+python -m pytest tests/test_simulation.py tests/test_simulation_pass.py -v --tb=short
+```
+
+#### 3. Complete Backend Regression with Coverage
+```bash
+cd backend
+python -m pytest tests/ --cov=app --cov-report=term-missing --cov-report=xml:test-results/coverage.xml --junitxml=test-results/backend-full.xml -v --tb=short --durations=20
+```
+
+#### 4. Frontend Verification
 ```bash
 cd frontend
-npm ci
-npm run build
+npm test          # Native ESM test runner
+npm run lint      # oxlint static analysis
+npm run build     # TypeScript strict compilation & Vite bundle
 ```
 
 ---
 
 ## 🚀 Continuous Integration (GitHub Actions)
 
-CloudScope uses automated CI configured in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) to continuously validate changes across both backend and frontend layers:
+CloudScope utilizes an enterprise-grade, multi-phase CI pipeline defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) consisting of **13 specialized jobs** executing in parallel where possible:
 
 - **Triggers**:
   - `push` to the `sura` branch.
   - `pull_request` targeting `sura`.
   - Manual execution via `workflow_dispatch`.
 
-- **Independent Parallel Jobs**:
-  1. **`backend-tests`** (`ubuntu-latest`, Python 3.11):
-     - Sets up Python 3.11 with pip dependency caching.
-     - Upgrades `pip` and installs dependencies from `backend/requirements.txt` and `backend/requirements-dev.txt`.
-     - Executes the full 320+ test suite covering Phases 1 through 6 via `python -m pytest tests/ -v --tb=short`.
-  2. **`frontend-build`** (`ubuntu-latest`, Node.js 20):
-     - Sets up Node.js 20 with npm caching from `frontend/package-lock.json`.
-     - Installs clean dependencies via `npm ci`.
-     - Compiles TypeScript and builds the production bundle via `npm run build`.
+- **Pipeline Architecture**:
+  1. **`preflight`** (`ubuntu-latest`):
+     - Validates runtime environments (Python 3.11, Node.js 20, npm).
+     - Confirms zero syntax or import errors via `python -m compileall app tests`.
+     - Validates test collection and dependency tree.
+  2. **7 Partitioned Backend Jobs** (Parallel execution):
+     - `backend-core`: API endpoints, AWS session management, and regional caching.
+     - `backend-security-engines`: Policy evaluator, boundary conditions, trust assumption, IAM hardening, and CloudTrail correlation.
+     - `backend-graph-and-attack-paths`: Graph construction, reconciliation, identity graph resources, path engine, and multi-hop attack paths.
+     - `backend-scanner-and-snapshots`: Scan lifecycle, published snapshot consistency, regional discovery, and end-to-end performance.
+     - `backend-policies-risk-alerts`: Policies and relationships integration, risk scoring engine, and unified findings synthesis.
+     - `backend-ai-and-copilot`: AI context builder, AI provider fallbacks, and Copilot intelligence.
+     - `backend-simulation`: Policy simulation and blast radius impact analysis.
+     - *Artifacts*: Each backend phase exports JUnit XML reports (`test-results-backend-*.xml`).
+  3. **3 Frontend Jobs** (Parallel execution):
+     - `frontend-tests`: Unit tests verifying graph styling, scan refresh logic, and cache invalidation.
+     - `frontend-lint`: Fast static analysis with `oxlint`.
+     - `frontend-build`: Strict TypeScript verification (`tsc -b`) and Vite production bundle generation (`frontend-dist` artifact).
+  4. **`backend-full-regression`** (Runs after partitioned phases):
+     - Complete test suite execution across all test modules.
+     - Full code coverage reporting with `pytest-cov` (terminal table + XML artifact).
+     - Slowest 20 tests duration profiling via `--durations=20`.
+  5. **`ci-summary`** (Pipeline Gatekeeper):
+     - Runs unconditionally (`if: ${{ always() }}`) after all jobs complete.
+     - Aggregates status across all 12 prior jobs.
+     - Fails the workflow if ANY phase failed, ensuring zero regressions reach `sura`.
 
-- **Validation Requirement**: Both `backend-tests` and `frontend-build` must pass for the CI workflow to be green. A change should not be considered validated until the GitHub Actions workflow passes.
 - **AWS Credential Isolation**: Normal CI jobs never configure or access real AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or `AWS_SESSION_TOKEN`). All security evaluation, attack path, and graph construction tests run in hermetic environments using verified in-memory models and stubs.
 
 ---

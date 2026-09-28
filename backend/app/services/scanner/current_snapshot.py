@@ -54,7 +54,24 @@ def get_current_snapshot_published_at() -> Optional[str]:
 
 def has_published_snapshot() -> bool:
     """Return True if at least one verified published snapshot exists."""
-    return bool(get_current_snapshot_id())
+    if cache.get("v1:last_published_scan_id") and (
+        cache.get("v1:policies") is not None
+        or cache.get("v1:policy_catalog") is not None
+        or cache.get("v1:users") is not None
+        or cache.get("v1:resources") is not None
+    ):
+        return True
+    snap = getattr(scan_manager, "published_snapshot", None)
+    if snap and isinstance(snap, dict) and any(bool(v) for v in snap.values()):
+        return True
+    if (
+        cache.get("v1:policies") is not None
+        or cache.get("v1:policy_catalog") is not None
+        or cache.get("v1:users") is not None
+        or cache.get("v1:roles") is not None
+    ):
+        return True
+    return False
 
 
 def get_current_snapshot_metadata() -> Dict[str, Any]:
@@ -84,15 +101,14 @@ def get_current_users() -> List[dict]:
     if isinstance(cached, list) and len(cached) > 0:
         return list(cached)
 
-    inv = getattr(scan_manager, "inventory", None)
-    if inv and getattr(inv, "users", None):
-        return list(inv.users)
-
     snap = getattr(scan_manager, "published_snapshot", {})
-    if snap.get("v1:users"):
-        return list(snap["v1:users"])
+    if isinstance(snap, dict):
+        if snap.get("users"):
+            return list(snap["users"])
+        if snap.get("v1:users"):
+            return list(snap["v1:users"])
 
-    return list(cached) if isinstance(cached, list) else []
+    return []
 
 
 def get_current_roles() -> List[dict]:
@@ -101,15 +117,14 @@ def get_current_roles() -> List[dict]:
     if isinstance(cached, list) and len(cached) > 0:
         return list(cached)
 
-    inv = getattr(scan_manager, "inventory", None)
-    if inv and getattr(inv, "roles", None):
-        return list(inv.roles)
-
     snap = getattr(scan_manager, "published_snapshot", {})
-    if snap.get("v1:roles"):
-        return list(snap["v1:roles"])
+    if isinstance(snap, dict):
+        if snap.get("roles"):
+            return list(snap["roles"])
+        if snap.get("v1:roles"):
+            return list(snap["v1:roles"])
 
-    return list(cached) if isinstance(cached, list) else []
+    return []
 
 
 def get_current_groups() -> List[dict]:
@@ -118,15 +133,14 @@ def get_current_groups() -> List[dict]:
     if isinstance(cached, list) and len(cached) > 0:
         return list(cached)
 
-    inv = getattr(scan_manager, "inventory", None)
-    if inv and getattr(inv, "groups", None):
-        return list(inv.groups)
-
     snap = getattr(scan_manager, "published_snapshot", {})
-    if snap.get("v1:groups"):
-        return list(snap["v1:groups"])
+    if isinstance(snap, dict):
+        if snap.get("groups"):
+            return list(snap["groups"])
+        if snap.get("v1:groups"):
+            return list(snap["v1:groups"])
 
-    return list(cached) if isinstance(cached, list) else []
+    return []
 
 
 def get_current_policies() -> List[dict]:
@@ -135,15 +149,14 @@ def get_current_policies() -> List[dict]:
     if isinstance(cached, list) and len(cached) > 0:
         return list(cached)
 
-    inv = getattr(scan_manager, "inventory", None)
-    if inv and getattr(inv, "policies", None):
-        return list(inv.policies)
-
     snap = getattr(scan_manager, "published_snapshot", {})
-    if snap.get("v1:policies"):
-        return list(snap["v1:policies"])
+    if isinstance(snap, dict):
+        if snap.get("policies"):
+            return list(snap["policies"])
+        if snap.get("v1:policies"):
+            return list(snap["v1:policies"])
 
-    return list(cached) if isinstance(cached, list) else []
+    return []
 
 
 def get_current_resources() -> List[dict]:
@@ -153,14 +166,13 @@ def get_current_resources() -> List[dict]:
         return list(cached)
 
     snap = getattr(scan_manager, "published_snapshot", {})
-    if snap.get("v1:resources"):
-        return list(snap["v1:resources"])
+    if isinstance(snap, dict):
+        if snap.get("resources"):
+            return list(snap["resources"])
+        if snap.get("v1:resources"):
+            return list(snap["v1:resources"])
 
-    inv = getattr(scan_manager, "inventory", None)
-    if inv and (inv.users or inv.roles or inv.s3 or inv.ec2):
-        return list(inv.users + inv.roles + inv.ec2 + inv.s3 + inv.lambdas + inv.secrets + inv.rds + inv.dynamodb)
-
-    return list(cached) if isinstance(cached, list) else []
+    return []
 
 
 def get_current_alerts() -> List[dict]:
@@ -169,15 +181,14 @@ def get_current_alerts() -> List[dict]:
     if isinstance(cached, list) and len(cached) > 0:
         return list(cached)
 
-    inv = getattr(scan_manager, "inventory", None)
-    if inv and getattr(inv, "alerts", None):
-        return list(inv.alerts)
-
     snap = getattr(scan_manager, "published_snapshot", {})
-    if snap.get("v1:alerts"):
-        return list(snap["v1:alerts"])
+    if isinstance(snap, dict):
+        if snap.get("alerts"):
+            return list(snap["alerts"])
+        if snap.get("v1:alerts"):
+            return list(snap["v1:alerts"])
 
-    return list(cached) if isinstance(cached, list) else []
+    return []
 
 
 def get_current_findings() -> List[dict]:

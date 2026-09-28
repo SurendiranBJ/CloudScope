@@ -9,12 +9,16 @@ on:
       - sura
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  backend-tests:
-    name: backend-tests
+  preflight:
+    name: Preflight & Environment Validation
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -26,23 +30,340 @@ jobs:
             backend/requirements.txt
             backend/requirements-dev.txt
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install backend dependencies
+      - name: Tool and Runtime Versions
         run: |
+          echo "=== Python Version ==="
+          python --version
+          echo "=== Node Version ==="
+          node --version
+          echo "=== NPM Version ==="
+          npm --version
+
+      - name: Upgrade pip and install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
           pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 
-      - name: Run backend tests
+      - name: Validate Python byte compilation
         working-directory: backend
-        run: |
-          python -m pytest tests/ -v --tb=short
+        run: python -m compileall app tests
 
-  frontend-build:
-    name: frontend-build
+      - name: Discover backend tests
+        working-directory: backend
+        run: python -m pytest --collect-only -q tests/
+
+      - name: Validate frontend dependencies (dry-run)
+        working-directory: frontend
+        run: npm ci --dry-run
+
+  # ─── 7 PARTITIONED BACKEND TEST PHASES ────────────────────────────────────
+
+  backend-core:
+    name: Backend - Core & APIs
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run Core & API tests
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest \
+            tests/test_api_endpoints.py \
+            tests/test_aws_session.py \
+            tests/test_region_cache.py \
+            -v --tb=short \
+            --junitxml=test-results/backend-core.xml
+
+      - name: Upload Core Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-core
+          path: backend/test-results/backend-core.xml
+
+  backend-security-engines:
+    name: Backend - Security Engines & Policies
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run Security Engine tests
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest \
+            tests/test_policy_evaluator.py \
+            tests/test_resource_boundary_and_conditions.py \
+            tests/test_trust_assumption.py \
+            tests/test_phase2_iam_hardening.py \
+            tests/test_cloudtrail_correlation.py \
+            tests/test_phase4_cloudtrail_correlation.py \
+            -v --tb=short \
+            --junitxml=test-results/backend-security-engines.xml
+
+      - name: Upload Security Engine Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-security-engines
+          path: backend/test-results/backend-security-engines.xml
+
+  backend-graph-and-attack-paths:
+    name: Backend - Graph & Attack Paths
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run Graph & Attack Path tests
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest \
+            tests/test_graph_construction.py \
+            tests/test_duplicate_nodes.py \
+            tests/test_graph_reconciliation.py \
+            tests/test_identity_graph_resources.py \
+            tests/test_path_engine.py \
+            tests/test_attack_path_grouping.py \
+            tests/test_carol_lambda_effective_access.py \
+            tests/test_effective_access_multihop.py \
+            tests/test_role_target_downstream_assets.py \
+            tests/test_phase3_provenance_attack_paths.py \
+            -v --tb=short \
+            --junitxml=test-results/backend-graph-and-attack-paths.xml
+
+      - name: Upload Graph Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-graph-and-attack-paths
+          path: backend/test-results/backend-graph-and-attack-paths.xml
+
+  backend-scanner-and-snapshots:
+    name: Backend - Scanner & Snapshot Consistency
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run Scanner & Snapshot tests
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest \
+            tests/test_scan_lifecycle.py \
+            tests/test_published_snapshot_consistency.py \
+            tests/test_phase1_regional_discovery.py \
+            tests/test_scan_iam_reconciliation.py \
+            tests/test_phase6_hardening_performance_e2e.py \
+            -v --tb=short \
+            --junitxml=test-results/backend-scanner-and-snapshots.xml
+
+      - name: Upload Scanner Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-scanner-and-snapshots
+          path: backend/test-results/backend-scanner-and-snapshots.xml
+
+  backend-policies-risk-alerts:
+    name: Backend - Policies, Risk & Alerts
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run Policies, Risk & Alerts tests
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest \
+            tests/test_policies_relationships_integration.py \
+            tests/test_risk_engine.py \
+            tests/test_phase5_unified_findings.py \
+            -v --tb=short \
+            --junitxml=test-results/backend-policies-risk-alerts.xml
+
+      - name: Upload Policies, Risk & Alerts Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-policies-risk-alerts
+          path: backend/test-results/backend-policies-risk-alerts.xml
+
+  backend-ai-and-copilot:
+    name: Backend - AI & Copilot
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run AI & Copilot tests
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest \
+            tests/test_ai_context_builder.py \
+            tests/test_ai_provider.py \
+            tests/test_copilot.py \
+            -v --tb=short \
+            --junitxml=test-results/backend-ai-and-copilot.xml
+
+      - name: Upload AI Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-ai-and-copilot
+          path: backend/test-results/backend-ai-and-copilot.xml
+
+  backend-simulation:
+    name: Backend - Policy Simulation
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run Policy Simulation tests
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest \
+            tests/test_simulation.py \
+            tests/test_simulation_pass.py \
+            -v --tb=short \
+            --junitxml=test-results/backend-simulation.xml
+
+      - name: Upload Simulation Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-simulation
+          path: backend/test-results/backend-simulation.xml
+
+  # ─── FRONTEND PHASES ──────────────────────────────────────────────────────
+
+  frontend-tests:
+    name: Frontend - Unit Tests
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node
@@ -52,10 +373,184 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend dependencies
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+  frontend-lint:
+    name: Frontend - Code Quality & Lint
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend linter
+        working-directory: frontend
+        run: npm run lint
+
+  frontend-build:
+    name: Frontend - Production Build
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
         working-directory: frontend
         run: npm ci
 
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+      - name: Upload Frontend Production Bundle
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  # ─── COMPLETE REGRESSION SUITE ────────────────────────────────────────────
+
+  backend-full-regression:
+    name: Backend - Full Regression & Coverage
+    needs:
+      - backend-core
+      - backend-security-engines
+      - backend-graph-and-attack-paths
+      - backend-scanner-and-snapshots
+      - backend-policies-risk-alerts
+      - backend-ai-and-copilot
+      - backend-simulation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Upgrade pip & install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run complete regression suite with coverage & durations
+        working-directory: backend
+        run: |
+          mkdir -p test-results
+          python -m pytest tests/ \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:test-results/coverage.xml \
+            --junitxml=test-results/backend-full.xml \
+            -v --tb=short --durations=20
+
+      - name: Upload Full Regression Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend-full-regression
+          path: |
+            backend/test-results/backend-full.xml
+            backend/test-results/coverage.xml
+
+  # ─── CI SUMMARY & AGGREGATOR ──────────────────────────────────────────────
+
+  ci-summary:
+    name: CI Pipeline Summary
+    needs:
+      - preflight
+      - backend-core
+      - backend-security-engines
+      - backend-graph-and-attack-paths
+      - backend-scanner-and-snapshots
+      - backend-policies-risk-alerts
+      - backend-ai-and-copilot
+      - backend-simulation
+      - frontend-tests
+      - frontend-lint
+      - frontend-build
+      - backend-full-regression
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate pipeline job statuses
+        run: |
+          echo "=================================================="
+          echo "            CLOUDSCOPE CI PIPELINE SUMMARY        "
+          echo "=================================================="
+          echo "Preflight:                       ${{ needs.preflight.result }}"
+          echo "Backend - Core & APIs:           ${{ needs.backend-core.result }}"
+          echo "Backend - Security Engines:      ${{ needs.backend-security-engines.result }}"
+          echo "Backend - Graph & Attack Paths:  ${{ needs.backend-graph-and-attack-paths.result }}"
+          echo "Backend - Scanner & Snapshots:   ${{ needs.backend-scanner-and-snapshots.result }}"
+          echo "Backend - Policies, Risk, Alerts:${{ needs.backend-policies-risk-alerts.result }}"
+          echo "Backend - AI & Copilot:          ${{ needs.backend-ai-and-copilot.result }}"
+          echo "Backend - Policy Simulation:     ${{ needs.backend-simulation.result }}"
+          echo "Frontend - Unit Tests:           ${{ needs.frontend-tests.result }}"
+          echo "Frontend - Linter:               ${{ needs.frontend-lint.result }}"
+          echo "Frontend - Build:                ${{ needs.frontend-build.result }}"
+          echo "Backend - Full Regression:       ${{ needs.backend-full-regression.result }}"
+          echo "=================================================="
+
+          STATUSES=(
+            "${{ needs.preflight.result }}"
+            "${{ needs.backend-core.result }}"
+            "${{ needs.backend-security-engines.result }}"
+            "${{ needs.backend-graph-and-attack-paths.result }}"
+            "${{ needs.backend-scanner-and-snapshots.result }}"
+            "${{ needs.backend-policies-risk-alerts.result }}"
+            "${{ needs.backend-ai-and-copilot.result }}"
+            "${{ needs.backend-simulation.result }}"
+            "${{ needs.frontend-tests.result }}"
+            "${{ needs.frontend-lint.result }}"
+            "${{ needs.frontend-build.result }}"
+            "${{ needs.backend-full-regression.result }}"
+          )
+
+          FAILED=0
+          for status in "${STATUSES[@]}"; do
+            if [ "$status" != "success" ]; then
+              FAILED=1
+              break
+            fi
+          done
+
+          if [ $FAILED -ne 0 ]; then
+            echo "❌ CI FAILED: One or more pipeline stages did not succeed."
+            exit 1
+          else
+            echo "✅ ALL CI PHASES PASSED SUCCESSFULLY!"
+            exit 0
+          fi

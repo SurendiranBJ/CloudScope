@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SCAN_DEPENDENT_QUERY_KEYS, refreshScanDependentQueries } from '../src/hooks/useScanDataRefresh.ts';
+import { SCAN_DEPENDENT_QUERY_KEYS, refreshScanDependentQueries } from '../src/utils/scanLifecycleUtils.ts';
 
 // Helper to simulate hierarchical React Query matching
 function matchesQueryKey(invalidatedKey, queryKey) {
