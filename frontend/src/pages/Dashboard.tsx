@@ -24,6 +24,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { ScanTrigger, useScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
+import { LastScannedBadge } from '../components/LastScannedBadge';
 import { GlobalScanStatus } from '../components/GlobalScanStatus';
 import { apiClient } from '../api/client';
 
@@ -155,6 +156,7 @@ export const Dashboard: React.FC = () => {
               />
             )}
             <ScannedRegionBadge />
+            <LastScannedBadge />
             <ScanTrigger />
           </div>
           <GlobalScanStatus />

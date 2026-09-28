@@ -1,18 +1,30 @@
 from fastapi import APIRouter
 from typing import List
 from app.schemas import APIResponse, RiskFinding
-from app.cache import cache
 from app.services.scanner.scan_manager import scan_manager
+from app.services.scanner.current_snapshot import (
+    get_current_risks,
+    get_current_findings,
+    get_current_snapshot_id,
+    get_current_snapshot_published_at,
+    has_published_snapshot,
+)
 from datetime import datetime
 
 router = APIRouter(tags=["Risk"])
 
+
 @router.get("/risk-assessment", response_model=APIResponse[List[RiskFinding]])
 def get_risk_assessment_findings():
-    data = cache.get("v1:risks")
-    if not data:
-        # Fall back to canonical findings store
-        findings = cache.get("v1:findings")
+    raw_risks = get_current_risks()
+    if raw_risks:
+        data = [
+            RiskFinding(**d) if isinstance(d, dict) else d
+            for d in raw_risks
+        ]
+    else:
+        # Fall back to canonical findings store from published snapshot
+        findings = get_current_findings()
         if findings:
             data = [
                 RiskFinding(
@@ -28,15 +40,20 @@ def get_risk_assessment_findings():
                 if f.get("status") == "OPEN" and f.get("riskScore", 0) >= 40
             ]
             data.sort(key=lambda x: x.riskScore, reverse=True)
-        elif not scan_manager.is_running:
+        elif not has_published_snapshot() and not scan_manager.is_running:
             scan_manager.trigger_async_scan()
             data = []
         else:
             data = []
-        
+
+    snapshot_id = get_current_snapshot_id()
+    snapshot_published_at = get_current_snapshot_published_at()
+
     return APIResponse(
         success=True,
         message="Risk assessment findings retrieved successfully",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=snapshot_id,
+        snapshot_published_at=snapshot_published_at,
         data=data
     )

@@ -3,6 +3,9 @@ import type { FC } from 'react';
 import { Bell, AlertOctagon, Search, RefreshCw, ChevronDown, ChevronUp, Check, Copy } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getSecurityAlerts } from '../api/alerts';
+import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
+import { LastScannedBadge } from '../components/LastScannedBadge';
+import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 import type { SecurityAlert } from '../types';
 
 export const Alerts: FC = () => {
@@ -12,6 +15,8 @@ export const Alerts: FC = () => {
   // Client-side dismiss set — cleared on each new scan (component remounts via queryKey invalidation)
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
   const [copyAlertId, setCopyAlertId] = useState<string | null>(null);
+
+  const { isScanning, hasCompletedSnapshot } = useScanDataRefresh();
 
   const { data } = useQuery({
     queryKey: ['securityAlerts'],
@@ -89,25 +94,37 @@ export const Alerts: FC = () => {
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
       {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
             <Bell className="w-6 h-6 text-enterprise-warning" />
             <span>CloudTrail Threat Alerts</span>
           </h1>
-          <p className="text-xs text-enterprise-subtext mt-1">
-            Real-time security log alerts listing permission drifts and credential assumption events.
-          </p>
+          <div className="flex flex-wrap items-center gap-2 mt-1">
+            <p className="text-xs text-enterprise-subtext">
+              Real-time security log alerts listing permission drifts and credential assumption events.
+            </p>
+            {isScanning && (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-400 text-[11px] animate-pulse">
+                <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
+                Updating from latest AWS scan...
+              </span>
+            )}
+          </div>
         </div>
-        <button
-          onClick={handleClearResolved}
-          disabled={resolvedCount === 0}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-enterprise-card hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition-colors border border-enterprise-border"
-          title={resolvedCount === 0 ? 'No resolved alerts to clear' : `Hide ${resolvedCount} resolved alert${resolvedCount > 1 ? 's' : ''} from view`}
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>Clear Resolved{resolvedCount > 0 ? ` (${resolvedCount})` : ''}</span>
-        </button>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <ScannedRegionBadge />
+          <LastScannedBadge />
+          <button
+            onClick={handleClearResolved}
+            disabled={resolvedCount === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-enterprise-card hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition-colors border border-enterprise-border"
+            title={resolvedCount === 0 ? 'No resolved alerts to clear' : `Hide ${resolvedCount} resolved alert${resolvedCount > 1 ? 's' : ''} from view`}
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Clear Resolved{resolvedCount > 0 ? ` (${resolvedCount})` : ''}</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter and Search controls */}
@@ -224,7 +241,21 @@ export const Alerts: FC = () => {
               ) : (
                 <tr>
                   <td colSpan={6} className="text-center p-8 text-enterprise-subtext font-medium text-xs">
-                    No active threat logs detected matching criteria.
+                    {isScanning && !hasCompletedSnapshot ? (
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <RefreshCw className="w-6 h-6 text-enterprise-accent animate-spin" />
+                        <span className="text-white font-medium">Initial AWS scan is running...</span>
+                        <span>Correlating CloudTrail threat events. This will populate automatically.</span>
+                      </div>
+                    ) : isScanning && hasCompletedSnapshot ? (
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <RefreshCw className="w-6 h-6 text-blue-400 animate-spin" />
+                        <span className="text-white font-medium">Updating from latest AWS scan...</span>
+                        <span>Preserving current alert logs until scan completes.</span>
+                      </div>
+                    ) : (
+                      'No active threat logs detected matching criteria.'
+                    )}
                   </td>
                 </tr>
               )}

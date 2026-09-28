@@ -12,6 +12,8 @@ import { getIAMUsers } from '../api/users';
 import { getIAMRoles } from '../api/roles';
 import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 import { SimulationPreviewModal } from '../components/SimulationPreviewModal';
+import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
+import { LastScannedBadge } from '../components/LastScannedBadge';
 import type { PolicyCatalogEntry } from '../types';
 
 type FilterType = 'all' | 'aws-managed' | 'customer-managed' | 'inline';
@@ -234,7 +236,9 @@ export const Policies: React.FC = () => {
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              <ScannedRegionBadge />
+              <LastScannedBadge />
               {simState?.simulation_active && (
                 <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
                   <Activity className="w-3.5 h-3.5" />
@@ -325,6 +329,14 @@ export const Policies: React.FC = () => {
                 <div>
                   <p className="text-sm font-semibold text-white">Initial CloudScope scan is running...</p>
                   <p className="text-xs text-enterprise-subtext mt-1">Discovering AWS IAM data and building policy catalog. This will populate automatically.</p>
+                </div>
+              </div>
+            ) : isScanning && hasCompletedSnapshot ? (
+              <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
+                <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
+                <div>
+                  <p className="text-sm font-semibold text-white">Updating from latest AWS scan...</p>
+                  <p className="text-xs text-enterprise-subtext mt-1">Re-evaluating IAM policies from active scan snapshot.</p>
                 </div>
               </div>
             ) : search || filter !== 'all' ? (

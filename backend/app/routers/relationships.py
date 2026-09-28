@@ -22,9 +22,31 @@ from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources,
 )
 from app.services.scanner.scan_manager import scan_manager
+from app.services.scanner.current_snapshot import (
+    get_current_relationship_inputs,
+    has_published_snapshot,
+)
 
 logger = logging.getLogger("scanner")
 router = APIRouter(tags=["Relationships"])
+
+
+def _get_entity_name(item: dict, default_type: str = "item") -> str:
+    if not isinstance(item, dict):
+        return str(item)
+    return (
+        item.get("name")
+        or item.get("user_name")
+        or item.get("userName")
+        or item.get("role_name")
+        or item.get("roleName")
+        or item.get("group_name")
+        or item.get("groupName")
+        or item.get("policy_name")
+        or item.get("policyName")
+        or (item.get("arn", "").split("/")[-1] if item.get("arn") else "")
+        or default_type
+    )
 
 
 def _build_raw_relationships(
@@ -41,9 +63,9 @@ def _build_raw_relationships(
     group_map: Dict[str, List[str]] = {}
     if groups:
         for g in groups:
-            gname = g.get("name")
+            gname = _get_entity_name(g, "group")
             if gname:
-                pols = g.get("attachedPolicies", []) or g.get("policies", []) or []
+                pols = g.get("attachedPolicies", []) or g.get("attached_policies", []) or g.get("policies", []) or []
                 group_map[gname] = list(pols)
     else:
         # Fallback to embedded user group names without fabricating policies
@@ -54,10 +76,11 @@ def _build_raw_relationships(
 
     # 1. User MEMBER_OF Group
     for u in users:
+        uname = _get_entity_name(u, "user")
         for gname in u.get("groups", []):
             relationships.append({
-                "source_id": f"aws:user:{u['name']}",
-                "source_label": u["name"],
+                "source_id": f"aws:user:{uname}",
+                "source_label": uname,
                 "source_type": "User",
                 "relationship": "MEMBER_OF",
                 "target_id": f"aws:group:{gname}",
@@ -67,12 +90,13 @@ def _build_raw_relationships(
 
     # 2. User HAS_POLICY (direct + inline)
     for u in users:
-        u_pols = u.get("policies", []) + u.get("attachedPolicies", [])
+        uname = _get_entity_name(u, "user")
+        u_pols = u.get("policies", []) + u.get("attachedPolicies", []) + u.get("attached_policies", [])
         for pname in u_pols:
             clean = pname.replace("[inline] ", "")
             relationships.append({
-                "source_id": f"aws:user:{u['name']}",
-                "source_label": u["name"],
+                "source_id": f"aws:user:{uname}",
+                "source_label": uname,
                 "source_type": "User",
                 "relationship": "HAS_POLICY",
                 "target_id": f"aws:policy:{clean}",
@@ -96,12 +120,13 @@ def _build_raw_relationships(
 
     # 4. Role HAS_POLICY
     for r in roles:
-        r_pols = r.get("attachedPolicies", []) + r.get("policies", [])
+        rname = _get_entity_name(r, "role")
+        r_pols = r.get("attachedPolicies", []) + r.get("attached_policies", []) + r.get("policies", [])
         for pname in r_pols:
             clean = pname.replace("[inline] ", "")
             relationships.append({
-                "source_id": f"aws:role:{r['name']}",
-                "source_label": r["name"],
+                "source_id": f"aws:role:{rname}",
+                "source_label": rname,
                 "source_type": "Role",
                 "relationship": "HAS_POLICY",
                 "target_id": f"aws:policy:{clean}",
@@ -111,13 +136,15 @@ def _build_raw_relationships(
 
     # 5. CAN_ASSUME via trust policies
     account_id = _get_account_id(users)
-    pol_doc_map = {p["name"]: p.get("document", "{}") for p in policies}
+    pol_doc_map = {_get_entity_name(p, "policy"): p.get("document", "{}") for p in policies}
     cached_groups = groups if groups else [{"name": gn, "attachedPolicies": gp} for gn, gp in group_map.items()]
 
     for r in roles:
+        rname = _get_entity_name(r, "role")
+        trust_policy_doc = r.get("trustPolicy") or r.get("assume_role_policy") or "{}"
         trust_ev = evaluate_assume_role_trust_with_evidence(
-            r.get("trustPolicy", "{}"),
-            r["name"],
+            trust_policy_doc,
+            rname,
             r.get("arn", ""),
             users,
             roles,
@@ -131,13 +158,14 @@ def _build_raw_relationships(
             if not tu_entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             tu = tu_entry["principal"]
+            tu_name = _get_entity_name(tu, "user")
             relationships.append({
-                "source_id": f"aws:user:{tu['name']}",
-                "source_label": tu["name"],
+                "source_id": f"aws:user:{tu_name}",
+                "source_label": tu_name,
                 "source_type": "User",
                 "relationship": "CAN_ASSUME",
-                "target_id": f"aws:role:{r['name']}",
-                "target_label": r["name"],
+                "target_id": f"aws:role:{rname}",
+                "target_label": rname,
                 "target_type": "Role",
             })
         for tr_entry in trust_ev.get("roles", []):
@@ -146,18 +174,20 @@ def _build_raw_relationships(
             if not tr_entry.get("evidence", {}).get("call_permission_verified"):
                 continue
             tr = tr_entry["principal"]
+            tr_name = _get_entity_name(tr, "role")
             relationships.append({
-                "source_id": f"aws:role:{tr['name']}",
-                "source_label": tr["name"],
+                "source_id": f"aws:role:{tr_name}",
+                "source_label": tr_name,
                 "source_type": "Role",
                 "relationship": "CAN_ASSUME",
-                "target_id": f"aws:role:{r['name']}",
-                "target_label": r["name"],
+                "target_id": f"aws:role:{rname}",
+                "target_label": rname,
                 "target_type": "Role",
             })
 
     # 6. Policy ALLOWS Resource
     for p in policies:
+        pname = _get_entity_name(p, "policy")
         doc = p.get("document", "{}")
         if not doc or doc == "{}":
             continue
@@ -166,8 +196,8 @@ def _build_raw_relationships(
             rname = res.get("name") or res.get("id", "")
             rtype = res.get("type", "Resource")
             relationships.append({
-                "source_id": f"aws:policy:{p['name']}",
-                "source_label": p["name"],
+                "source_id": f"aws:policy:{pname}",
+                "source_label": pname,
                 "source_type": "Policy",
                 "relationship": "ALLOWS",
                 "target_id": f"aws:{rtype.lower()}:{rname}",
@@ -201,23 +231,20 @@ def get_all_relationships(
     Relationships are built from scanned inventory — not inferred.
     All relationship labels are exact backend types.
     """
-    users = cache.get("v1:users")
-    roles = cache.get("v1:roles")
-    policies = cache.get("v1:policies")
+    # Retrieve all inputs coherently from the single current published snapshot
+    inputs = get_current_relationship_inputs()
+    users = inputs["users"]
+    roles = inputs["roles"]
+    policies = inputs["policies"]
+    groups = inputs["groups"]
+    resources = inputs["resources"]
+    snapshot_id = inputs["snapshot_id"]
+    snapshot_published_at = inputs["snapshot_published_at"]
 
-    # If cache is cold after startup, trigger scan
-    if users is None and roles is None and policies is None:
+    # If genuinely no snapshot has ever been published and idle, trigger initial scan
+    if not users and not roles and not policies and not has_published_snapshot():
         if not scan_manager.is_running:
             scan_manager.trigger_async_scan()
-        users = cache.get("v1:users")
-        roles = cache.get("v1:roles")
-        policies = cache.get("v1:policies")
-
-    users = users or getattr(scan_manager.inventory, "users", []) or []
-    roles = roles or getattr(scan_manager.inventory, "roles", []) or []
-    policies = policies or getattr(scan_manager.inventory, "policies", []) or []
-    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
-    resources = cache.get("v1:resources") or getattr(scan_manager.inventory, "resources", []) or []
 
     # Build raw relationships
     raw_relationships = _build_raw_relationships(users, roles, policies, groups, resources)
@@ -258,9 +285,13 @@ def get_all_relationships(
         success=True,
         message=f"Relationships: {len(relationships)} records returned",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=snapshot_id,
+        snapshot_published_at=snapshot_published_at,
         data={
             "total": len(relationships),
             "relationships": relationships,
+            "snapshot_id": snapshot_id,
+            "snapshot_published_at": snapshot_published_at,
             "entity_counts": {
                 "users": len(users),
                 "roles": len(roles),
@@ -282,11 +313,14 @@ def get_entity_relationships(
     entity_id can be canonical (aws:user:name, aws:role:name, aws:group:name, aws:policy:name)
     or type:name (User:name) or raw name.
     """
-    users = cache.get("v1:users") or getattr(scan_manager.inventory, "users", []) or []
-    roles = cache.get("v1:roles") or getattr(scan_manager.inventory, "roles", []) or []
-    policies = cache.get("v1:policies") or getattr(scan_manager.inventory, "policies", []) or []
-    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
-    resources = cache.get("v1:resources") or getattr(scan_manager.inventory, "resources", []) or []
+    inputs = get_current_relationship_inputs()
+    users = inputs["users"]
+    roles = inputs["roles"]
+    policies = inputs["policies"]
+    groups = inputs["groups"]
+    resources = inputs["resources"]
+    snapshot_id = inputs["snapshot_id"]
+    snapshot_published_at = inputs["snapshot_published_at"]
 
     # Parse entity ID cleanly
     if entity_id.startswith("aws:"):
@@ -340,10 +374,14 @@ def get_entity_relationships(
         success=True,
         message=f"Relationships for {entity_type} '{entity_name}'",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=snapshot_id,
+        snapshot_published_at=snapshot_published_at,
         data={
             "entity_id": entity_node_id,
             "entity_name": entity_name,
             "entity_type": entity_type,
+            "snapshot_id": snapshot_id,
+            "snapshot_published_at": snapshot_published_at,
             "relationships": filtered,
             "outgoing_count": len(outgoing),
             "incoming_count": len(incoming),

@@ -18,9 +18,10 @@ import {
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getCloudResources } from '../api/resources';
-import { getScanStatus } from '../api/graph';
-import { formatRegion } from '../utils/regionNames';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
+import { LastScannedBadge } from '../components/LastScannedBadge';
+import { useScanLifecycle } from '../hooks/useScanLifecycle';
+import { formatRegion } from '../utils/regionNames';
 import type { CloudResource } from '../types';
 
 interface ResourcesProps {
@@ -47,11 +48,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     refetchInterval: 10000
   });
 
-  const { data: scanStatus } = useQuery({
-    queryKey: ['scanStatus'],
-    queryFn: getScanStatus,
-    refetchInterval: 5000
-  });
+  const { failedRegions } = useScanLifecycle();
 
   const resources = data || [];
 
@@ -133,7 +130,6 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
 
   const resourceTypes = ['ALL', 'User', 'Role', 'S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB'];
 
-  const failedRegions = scanStatus?.failed_regions || [];
 
   const handleCopy = () => {
     if (inspectResource) {
@@ -155,6 +151,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
         </div>
         <div className="flex items-center gap-3">
           <ScannedRegionBadge />
+          <LastScannedBadge />
         </div>
       </div>
 

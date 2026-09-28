@@ -18,6 +18,15 @@ from datetime import datetime
 from app.schemas import APIResponse, PolicyCatalogEntry, PaginatedPolicyCatalog
 from app.cache import cache
 from app.services.attack.policy_evaluator import evaluate_policy_document_risk
+from app.services.scanner.current_snapshot import (
+    get_current_policies,
+    get_current_users,
+    get_current_roles,
+    get_current_groups,
+    get_current_snapshot_id,
+    get_current_snapshot_published_at,
+    has_published_snapshot,
+)
 
 logger = logging.getLogger("scanner")
 
@@ -39,24 +48,27 @@ def get_policy_catalog(
     """
     from app.services.scanner.scan_manager import scan_manager
 
-    # Ensure scan data availability if cache is empty
-    scan_policies = cache.get("v1:policies")
+    # Retrieve policies strictly from current published snapshot
+    scan_policies = get_current_policies()
     catalog_cached = cache.get("v1:policy_catalog")
 
-    if scan_policies is None and catalog_cached is None:
+    # Only trigger an initial scan if genuinely NO snapshot ever existed
+    if not scan_policies and catalog_cached is None and not has_published_snapshot():
         if not scan_manager.is_running:
             scan_manager.trigger_async_scan()
-        scan_policies = cache.get("v1:policies")
+        scan_policies = get_current_policies()
         catalog_cached = cache.get("v1:policy_catalog")
 
-    # Authoritative primary source is v1:policies
+    # Authoritative primary source is published snapshot
     scan_policies = scan_policies or []
     catalog = list(catalog_cached or [])
 
-    # Pre-calculate entity attachments from authoritative cache/inventory
-    users = cache.get("v1:users") or getattr(scan_manager.inventory, "users", []) or []
-    roles = cache.get("v1:roles") or getattr(scan_manager.inventory, "roles", []) or []
-    groups = cache.get("v1:groups") or getattr(scan_manager.inventory, "groups", []) or []
+    # Pre-calculate entity attachments from authoritative published snapshot
+    users = get_current_users()
+    roles = get_current_roles()
+    groups = get_current_groups()
+    snapshot_id = get_current_snapshot_id()
+    snapshot_published_at = get_current_snapshot_published_at()
 
     # Map policy identifier (name and ARN) to attachment counts
     attachment_counts: dict = {}
@@ -204,12 +216,16 @@ def get_policy_catalog(
         "page_size": effective_page_size,
         "total": total,
         "total_pages": total_pages,
+        "snapshot_id": snapshot_id,
+        "snapshot_published_at": snapshot_published_at,
     }
 
     return APIResponse(
         success=True,
         message=f"Policy catalog: {len(result)} of {total} policies returned (page {page}/{total_pages})",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=snapshot_id,
+        snapshot_published_at=snapshot_published_at,
         data=data,
     )
 
@@ -261,12 +277,10 @@ def get_policy_detail(policy_id: str):
 
     If the document is not cached, attempts to fetch from AWS.
     """
-    # Search catalog cache first
+    # Search catalog cache first, then current published snapshot
     catalog = cache.get("v1:policy_catalog") or []
-    scan_policies = cache.get("v1:policies") or []
-    from app.services.scanner.scan_manager import scan_manager
-    inv_policies = getattr(scan_manager.inventory, "policies", []) or []
-    all_policies = catalog + scan_policies + inv_policies
+    scan_policies = get_current_policies()
+    all_policies = catalog + scan_policies
 
     entry = _find_policy(all_policies, policy_id)
 
@@ -374,6 +388,8 @@ def get_policy_detail(policy_id: str):
         success=True,
         message=f"Policy details for '{pol_name}'",
         timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=get_current_snapshot_id(),
+        snapshot_published_at=get_current_snapshot_published_at(),
         data=entry,
     )
 

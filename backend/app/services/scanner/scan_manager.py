@@ -6,7 +6,7 @@ import logging
 import threading
 import concurrent.futures
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.services.scanner.inventory import AWSInventory
 from app.services.aws import (
     iam_service,
@@ -256,6 +256,7 @@ class ScanManager:
         self._last_successful_scan_id: str | None = None
         self._last_published_scan_id: str | None = None
         self._last_published_at: str | None = None
+        self._published_snapshot: Dict[str, Any] = {}
         self._last_error: str | None = None
         self._last_result: dict | None = None
         self._service_status: Dict[str, str] = {}
@@ -346,6 +347,22 @@ class ScanManager:
     @property
     def is_running(self) -> bool:
         return self._is_running
+
+    @property
+    def last_published_scan_id(self) -> Optional[str]:
+        return self._last_published_scan_id
+
+    @property
+    def last_published_at(self) -> Optional[str]:
+        return self._last_published_at
+
+    @property
+    def current_snapshot_id(self) -> Optional[str]:
+        return self._last_published_scan_id or self._last_successful_scan_id or self._last_completed_scan_id
+
+    @property
+    def published_snapshot(self) -> Dict[str, Any]:
+        return self._published_snapshot
 
     def _set_active_phase(self, phase_name: str) -> None:
         """Atomically advance the active scan phase and update progress heartbeat."""
@@ -1403,6 +1420,7 @@ class ScanManager:
 
             # Atomic publication under single lock: replaces previous cache atomically
             cache.set_many(new_snapshot)
+            self._published_snapshot = dict(new_snapshot)
             logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id}, status={final_scan_status})")
 
             publishing_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))

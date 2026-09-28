@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ShieldAlert, Search, ArrowUpDown, ShieldCheck, TrendingUp, TrendingDown, Activity } from 'lucide-react';
+import { ShieldAlert, Search, ArrowUpDown, ShieldCheck, TrendingUp, TrendingDown, Activity, RefreshCw } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -13,6 +13,8 @@ import { getReportsSummary } from '../api/reports';
 import { getSimulationState, getSimulationRisk } from '../api/simulation';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
+import { LastScannedBadge } from '../components/LastScannedBadge';
+import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 
 function SimulationRiskOverlay() {
   const { data: simState } = useQuery({
@@ -88,6 +90,8 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
 
   const queryClient = useQueryClient();
   const searchQuery = search || localSearch;
+
+  const { isScanning, hasCompletedSnapshot } = useScanDataRefresh();
 
   const { data: findingsData, refetch: refetchFindings } = useQuery({
     queryKey: ['securityFindings'],
@@ -205,12 +209,21 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
             <ShieldAlert className="w-6 h-6 text-enterprise-critical" />
             <span>Security Risk Assessment</span>
           </h1>
-          <p className="text-xs text-enterprise-subtext mt-1">
-            Verified security control posture evaluations and active configuration vulnerability findings.
-          </p>
+          <div className="flex flex-wrap items-center gap-2 mt-1">
+            <p className="text-xs text-enterprise-subtext">
+              Verified security control posture evaluations and active configuration vulnerability findings.
+            </p>
+            {isScanning && (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-400 text-[11px] animate-pulse">
+                <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
+                Updating from latest AWS scan...
+              </span>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <ScannedRegionBadge />
+          <LastScannedBadge />
           <ScanTrigger />
         </div>
       </div>
@@ -349,7 +362,21 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
               {filteredRisks.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-8 text-center text-enterprise-subtext">
-                    No risk findings matched your current filters.
+                    {isScanning && !hasCompletedSnapshot ? (
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <RefreshCw className="w-6 h-6 text-enterprise-accent animate-spin" />
+                        <span className="text-white font-medium">Initial AWS scan is running...</span>
+                        <span className="text-xs">Evaluating security controls and findings. This will populate automatically.</span>
+                      </div>
+                    ) : isScanning && hasCompletedSnapshot ? (
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <RefreshCw className="w-6 h-6 text-blue-400 animate-spin" />
+                        <span className="text-white font-medium">Updating from latest AWS scan...</span>
+                        <span className="text-xs">Preserving current findings snapshot until scan publication completes.</span>
+                      </div>
+                    ) : (
+                      'No risk findings matched your current filters.'
+                    )}
                   </td>
                 </tr>
               ) : (

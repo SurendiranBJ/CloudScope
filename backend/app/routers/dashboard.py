@@ -68,9 +68,12 @@ def get_dashboard_summary():
     elif current_scan_status == "FAILED":
         effective_status = "FAILED"
     else:
-        # Trigger initial async scan if idle
-        scan_manager.trigger_async_scan()
-        effective_status = "SCANNING"
+        from app.services.scanner.current_snapshot import has_published_snapshot
+        if not has_published_snapshot():
+            scan_manager.trigger_async_scan()
+            effective_status = "SCANNING"
+        else:
+            effective_status = "IDLE"
 
     empty_data = {
         "securityScore": "Scanning..." if effective_status == "SCANNING" else "N/A",

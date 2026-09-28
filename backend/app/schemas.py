@@ -8,6 +8,8 @@ class APIResponse(BaseModel, Generic[T]):
     success: bool
     message: str
     timestamp: str = datetime.utcnow().isoformat() + "Z"
+    snapshot_id: Optional[str] = None
+    snapshot_published_at: Optional[str] = None
     data: T
 
 # IAM Schemas matching types/index.ts
@@ -329,6 +331,8 @@ class PaginatedPolicyCatalog(BaseModel):
     page_size: int
     total: int
     total_pages: int
+    snapshot_id: Optional[str] = None
+    snapshot_published_at: Optional[str] = None
 
 
 # ─── Simulation ──────────────────────────────────────────────────────────────

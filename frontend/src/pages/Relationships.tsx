@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { getRelationships, getEntityRelationships } from '../api/relationships';
 import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
+import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
+import { LastScannedBadge } from '../components/LastScannedBadge';
 import type { RelationshipEntry } from '../types';
 
 const REL_COLORS: Record<string, { bg: string; text: string; border: string }> = {
@@ -160,10 +162,12 @@ export const Relationships: React.FC = () => {
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              <ScannedRegionBadge />
+              <LastScannedBadge />
               {relData && (
-                <div className="text-xs text-enterprise-subtext">
-                  {relData.total.toLocaleString()} relationship{relData.total !== 1 ? 's' : ''}
+                <div className="text-xs text-enterprise-subtext font-mono">
+                  {relData.total.toLocaleString()} rels
                 </div>
               )}
               <button
@@ -270,6 +274,14 @@ export const Relationships: React.FC = () => {
                 <div>
                   <p className="text-sm font-semibold text-white">Initial CloudScope scan is running...</p>
                   <p className="text-xs text-enterprise-subtext mt-1">Discovering AWS IAM data and identity relationships. This will populate automatically.</p>
+                </div>
+              </div>
+            ) : isScanning && hasCompletedSnapshot ? (
+              <div className="flex flex-col items-center justify-center h-48 gap-3 text-center p-6">
+                <RefreshCw className="w-8 h-8 text-enterprise-accent animate-spin" />
+                <div>
+                  <p className="text-sm font-semibold text-white">Updating from latest AWS scan...</p>
+                  <p className="text-xs text-enterprise-subtext mt-1">Preserving identity relationships until update is published.</p>
                 </div>
               </div>
             ) : search || typeFilter !== 'all' || relFilter !== 'all' ? (
