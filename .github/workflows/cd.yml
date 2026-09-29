@@ -1,0 +1,369 @@
+name: CloudScope CD
+
+on:
+  workflow_run:
+    workflows:
+      - "CloudScope CI"
+    branches:
+      - "sura"
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Branch, tag, or commit SHA to deploy"
+        required: true
+        default: "sura"
+
+concurrency:
+  group: cloudscope-cd-production
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build & Publish Docker Images
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+      actions: read
+    outputs:
+      commit_sha: ${{ steps.resolve-commit.outputs.commit_sha }}
+      selected_ref: ${{ steps.resolve-commit.outputs.selected_ref }}
+      ci_run_id: ${{ steps.resolve-commit.outputs.ci_run_id }}
+      ci_run_url: ${{ steps.resolve-commit.outputs.ci_run_url }}
+      owner_lc: ${{ steps.image-tags.outputs.owner_lc }}
+    steps:
+      - name: Resolve Commit and Verify CI Success Gate
+        id: resolve-commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_GIT_REF: ${{ inputs.git_ref }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          python3 - << 'EOF'
+          import os
+          import sys
+          import json
+          import urllib.request
+          import urllib.error
+
+          token = os.environ.get("GITHUB_TOKEN", "").strip()
+          repo = os.environ.get("GITHUB_REPOSITORY", "SurendiranBJ/CloudScope")
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          git_ref = os.environ.get("INPUT_GIT_REF", "sura").strip()
+          workflow_run_sha = os.environ.get("WORKFLOW_RUN_SHA", "").strip()
+          workflow_run_branch = os.environ.get("WORKFLOW_RUN_BRANCH", "").strip()
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "cloudscope-cd-gate",
+          }
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+
+          def get_json(url):
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req) as resp:
+                  return json.loads(resp.read().decode("utf-8"))
+
+          # 1. Resolve exact commit SHA
+          if event_name == "workflow_run":
+              if not workflow_run_sha:
+                  print("::error::Missing workflow_run head_sha")
+                  sys.exit(1)
+              resolved_sha = workflow_run_sha
+              selected_ref = workflow_run_branch if workflow_run_branch else "sura"
+              print(f"Trigger: workflow_run (CI completion on branch '{selected_ref}')")
+          else:
+              selected_ref = git_ref if git_ref else "sura"
+              print(f"Trigger: workflow_dispatch (manual ref '{selected_ref}')")
+              commit_url = f"https://api.github.com/repos/{repo}/commits/{selected_ref}"
+              try:
+                  commit_data = get_json(commit_url)
+                  resolved_sha = commit_data.get("sha")
+                  if not resolved_sha or len(resolved_sha) != 40:
+                      raise ValueError(f"Invalid SHA resolved: {resolved_sha}")
+              except Exception as e:
+                  print(f"::error::Failed to resolve ref '{selected_ref}': {e}")
+                  sys.exit(1)
+
+          # 2. Verify CI Success Gate for exact SHA
+          runs_url = f"https://api.github.com/repos/{repo}/actions/runs?head_sha={resolved_sha}"
+          try:
+              runs_data = get_json(runs_url)
+              workflow_runs = runs_data.get("workflow_runs", [])
+          except Exception as e:
+              print(f"::error::Failed to query GitHub Actions runs for SHA {resolved_sha}: {e}")
+              sys.exit(1)
+
+          ci_runs = [r for r in workflow_runs if r.get("name") == "CloudScope CI"]
+
+          if not ci_runs:
+              print("==================================================")
+              print(f"Selected ref: {selected_ref}")
+              print(f"Resolved SHA: {resolved_sha}")
+              print(f"CI run:       None found for exact SHA")
+              print(f"CI conclusion: None")
+              print("==================================================")
+              print(f"::error::Deployment blocked: Selected commit has no successful CloudScope CI run.")
+              sys.exit(1)
+
+          ci_runs.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+          latest_run = ci_runs[0]
+          run_id = latest_run.get("id")
+          run_status = latest_run.get("status")
+          run_conclusion = latest_run.get("conclusion")
+          run_url = latest_run.get("html_url")
+
+          print("==================================================")
+          print(f"Selected ref:  {selected_ref}")
+          print(f"Resolved SHA:  {resolved_sha}")
+          print(f"CI run:        #{run_id} ({run_url})")
+          print(f"CI conclusion: {run_conclusion}")
+          print("==================================================")
+
+          if run_status != "completed":
+              print(f"::error::Deployment blocked: CloudScope CI run {run_id} is '{run_status}'. Waiting for CI to finish.")
+              sys.exit(1)
+
+          if run_conclusion != "success":
+              print(f"::error::Deployment blocked: CloudScope CI run {run_id} concluded with '{run_conclusion}'. Only 'success' is permitted.")
+              sys.exit(1)
+
+          print(f"CI verification: PASSED (Run {run_id} succeeded)")
+
+          # Write outputs
+          github_env = os.environ.get("GITHUB_ENV")
+          if github_env:
+              with open(github_env, "a") as f:
+                  f.write(f"COMMIT_SHA={resolved_sha}\n")
+                  f.write(f"SELECTED_REF={selected_ref}\n")
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a") as f:
+                  f.write(f"commit_sha={resolved_sha}\n")
+                  f.write(f"selected_ref={selected_ref}\n")
+                  f.write(f"ci_run_id={run_id}\n")
+                  f.write(f"ci_run_url={run_url}\n")
+          EOF
+
+      - name: Record Build Selection in Workflow Summary
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SELECTED_REF: ${{ steps.resolve-commit.outputs.selected_ref }}
+          COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
+          CI_RUN_ID: ${{ steps.resolve-commit.outputs.ci_run_id }}
+          CI_RUN_URL: ${{ steps.resolve-commit.outputs.ci_run_url }}
+        run: |
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          ### 🚀 CloudScope CD: Build & Publish Initiated
+          | Property | Value |
+          |---|---|
+          | **Event Trigger** | \`${EVENT_NAME}\` |
+          | **Selected ref** | \`${SELECTED_REF}\` |
+          | **Resolved SHA** | \`${COMMIT_SHA}\` |
+          | **CI Verification** | [Run #${CI_RUN_ID}](${CI_RUN_URL}) (passed) |
+          EOF
+
+      - name: Checkout repository at exact tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve-commit.outputs.commit_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Registry Namespaces and Image Tags
+        id: image-tags
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER_LC=${OWNER_LC}" >> $GITHUB_ENV
+          echo "owner_lc=${OWNER_LC}" >> $GITHUB_OUTPUT
+          echo "Target Registry Namespace: ghcr.io/${OWNER_LC}"
+
+      - name: Build and push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.resolve-commit.outputs.commit_sha }}
+          tags: |
+            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-backend:${{ steps.resolve-commit.outputs.commit_sha }}
+            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-backend:sura-latest
+          labels: |
+            org.opencontainers.image.title=CloudScope Backend
+            org.opencontainers.image.description=CloudScope AWS IAM & Security Analysis Engine
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.resolve-commit.outputs.commit_sha }}
+          cache-from: type=gha,scope=cloudscope-backend
+          cache-to: type=gha,mode=max,scope=cloudscope-backend
+          provenance: true
+          sbom: true
+
+      - name: Build and push Frontend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-frontend:${{ steps.resolve-commit.outputs.commit_sha }}
+            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-frontend:sura-latest
+          labels: |
+            org.opencontainers.image.title=CloudScope Frontend
+            org.opencontainers.image.description=CloudScope React Web UI and API Proxy
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.resolve-commit.outputs.commit_sha }}
+          cache-from: type=gha,scope=cloudscope-frontend
+          cache-to: type=gha,mode=max,scope=cloudscope-frontend
+          provenance: true
+          sbom: true
+
+  deploy-production:
+    name: Deploy to Production Host
+    needs: build-and-publish
+    runs-on: [self-hosted, linux, x64, cloudscope-prod]
+    environment:
+      name: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Verify Host Prerequisites
+        run: |
+          echo "Verifying Docker and Docker Compose on production runner..."
+          docker version
+          docker compose version
+
+      - name: Checkout deployment manifests
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build-and-publish.outputs.commit_sha }}
+
+      - name: Log in to GitHub Container Registry on deployment host
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Deploy application via Docker Compose
+        env:
+          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
+          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
+          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
+          DEPLOY_DIR: /opt/cloudscope
+        run: |
+          echo "=================================================="
+          echo "Deploying CloudScope to ${DEPLOY_DIR}"
+          echo "Backend Image:  ${BACKEND_IMAGE}:${IMAGE_TAG}"
+          echo "Frontend Image: ${FRONTEND_IMAGE}:${IMAGE_TAG}"
+          echo "=================================================="
+          
+          sudo mkdir -p ${DEPLOY_DIR}
+          sudo chown -R $USER:$USER ${DEPLOY_DIR}
+          cp compose.release.yaml ${DEPLOY_DIR}/compose.release.yaml
+          
+          cd ${DEPLOY_DIR}
+          
+          # Pull exact immutable container images
+          docker compose -f compose.release.yaml pull
+          
+          # Update running containers (preserving existing persistent volumes)
+          docker compose -f compose.release.yaml up -d --remove-orphans
+
+      - name: Verify Service Health & Readiness
+        id: health-check
+        env:
+          DEPLOY_DIR: /opt/cloudscope
+          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
+          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
+          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
+        run: |
+          cd ${DEPLOY_DIR}
+          echo "Waiting for services to become healthy..."
+          
+          SUCCESS=0
+          for i in $(seq 1 24); do
+            echo "Healthcheck probe attempt $i/24..."
+            
+            FRONTEND_OK=0
+            if curl -fsS http://127.0.0.1/healthz >/dev/null 2>&1; then
+              FRONTEND_OK=1
+            fi
+            
+            BACKEND_OK=0
+            if docker compose -f compose.release.yaml exec -T backend curl -fsS http://127.0.0.1:8000/ready >/dev/null 2>&1; then
+              BACKEND_OK=1
+            fi
+            
+            if [ $FRONTEND_OK -eq 1 ] && [ $BACKEND_OK -eq 1 ]; then
+              echo "✅ Both Frontend (/healthz) and Backend (/ready) are healthy!"
+              SUCCESS=1
+              break
+            fi
+            
+            sleep 5
+          done
+          
+          echo "=== Container Status ==="
+          docker compose -f compose.release.yaml ps
+          
+          if [ $SUCCESS -ne 1 ]; then
+            echo "❌ Service readiness failed. Printing container logs:"
+            docker compose -f compose.release.yaml logs --tail=100
+            exit 1
+          fi
+
+      - name: Print Deployment Summary
+        if: always()
+        env:
+          DEPLOY_DIR: /opt/cloudscope
+          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
+          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
+          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
+          SELECTED_REF: ${{ needs.build-and-publish.outputs.selected_ref }}
+          CI_RUN_ID: ${{ needs.build-and-publish.outputs.ci_run_id }}
+          CI_RUN_URL: ${{ needs.build-and-publish.outputs.ci_run_url }}
+        run: |
+          echo "=================================================="
+          echo "CloudScope Deployment"
+          echo "---------------------"
+          echo "Source ref:        ${SELECTED_REF}"
+          echo "Resolved SHA:      ${IMAGE_TAG}"
+          echo "Backend image:     ${BACKEND_IMAGE}:${IMAGE_TAG}"
+          echo "Frontend image:    ${FRONTEND_IMAGE}:${IMAGE_TAG}"
+          echo "CI verification:   ${CI_RUN_URL}"
+          echo "Deployment host:   $(hostname)"
+          echo "Frontend health:   http://127.0.0.1/healthz"
+          echo "Backend readiness: http://127.0.0.1:8000/ready"
+          echo "=================================================="
+          
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          ### 📦 CloudScope Deployment Summary
+          | Field | Value |
+          |---|---|
+          | **Source ref** | \`${SELECTED_REF}\` |
+          | **Resolved SHA** | \`${IMAGE_TAG}\` |
+          | **Backend Image** | \`${BACKEND_IMAGE}:${IMAGE_TAG}\` |
+          | **Frontend Image** | \`${FRONTEND_IMAGE}:${IMAGE_TAG}\` |
+          | **CI Verification** | [CI Run #${CI_RUN_ID}](${CI_RUN_URL}) |
+          | **Deployment Host** | \`$(hostname)\` |
+          | **Frontend Health** | \`/healthz\` (HTTP 200) |
+          | **Backend Readiness** | \`/ready\` (HTTP 200) |
+          EOF
