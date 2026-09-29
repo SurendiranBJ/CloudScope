@@ -20,6 +20,24 @@ from app.security.models import AuthenticatedUser, Role
 security_scheme = HTTPBearer(auto_error=False)
 
 
+def is_auth_required() -> bool:
+    """Authentication is unconditionally mandatory in production."""
+    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        return True
+    if os.getenv("AUTH_REQUIRED", "false").lower() in ("true", "1", "yes"):
+        return True
+    return bool(globals().get("AUTH_REQUIRED", False))
+
+
+def is_dev_auth_mode() -> bool:
+    """DEV_AUTH_MODE is unconditionally forbidden in production."""
+    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        return False
+    if os.getenv("DEV_AUTH_MODE", "false").lower() in ("true", "1", "yes"):
+        return True
+    return bool(globals().get("DEV_AUTH_MODE", False))
+
+
 def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
@@ -27,9 +45,12 @@ def get_current_user(
     x_dev_subject: Optional[str] = Header(None, alias="X-Dev-Subject"),
 ) -> AuthenticatedUser:
     """Resolve and authenticate the calling principal."""
+    prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+    dev_mode = is_dev_auth_mode()
+    auth_req = is_auth_required()
 
-    # 1. Explicit Development Auth Bypass (Dev mode only)
-    if DEV_AUTH_MODE:
+    # 1. Explicit Development Auth Bypass (Dev mode only - prohibited in production)
+    if dev_mode and not prod:
         if x_dev_role:
             try:
                 role = Role(x_dev_role.strip().upper())
@@ -46,7 +67,7 @@ def get_current_user(
             )
 
         # In dev mode, if no bearer token is supplied and auth is not strictly required, provide dev admin
-        if not credentials and not AUTH_REQUIRED:
+        if not credentials and not auth_req:
             return AuthenticatedUser(
                 subject="local-dev-admin",
                 email="admin@cloudscope.dev",
@@ -62,8 +83,8 @@ def get_current_user(
         claims = decode_and_verify_token(token)
         return build_principal_from_claims(claims)
 
-    # 3. If Authentication is Required, reject unauthenticated requests
-    if AUTH_REQUIRED:
+    # 3. If Authentication is Required (mandatory in production), reject unauthenticated requests
+    if auth_req or prod:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required. Please provide a valid Bearer token.",

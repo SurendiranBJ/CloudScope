@@ -15,6 +15,7 @@ from app.persistence.database import get_db_session, init_db
 from app.persistence.models import (
     ScanRunModel,
     ScanSnapshotModel,
+    CurrentSnapshotPointerModel,
     FindingStateModel,
     AuditEventModel,
 )
@@ -137,6 +138,161 @@ def get_recent_scan_runs(limit: int = 10) -> List[Dict[str, Any]]:
 # SNAPSHOT METADATA REPOSITORY
 # ==============================================================================
 
+def save_authoritative_snapshot(
+    snapshot_id: str,
+    scan_id: str,
+    published_at: str,
+    status: str,
+    duration_seconds: float = 0.0,
+    region_metadata: Optional[Dict[str, Any]] = None,
+    collection_completeness: Optional[Dict[str, Any]] = None,
+    users: Optional[List[dict]] = None,
+    roles: Optional[List[dict]] = None,
+    groups: Optional[List[dict]] = None,
+    policies: Optional[List[dict]] = None,
+    resources: Optional[List[dict]] = None,
+    alerts: Optional[List[dict]] = None,
+    findings: Optional[List[dict]] = None,
+    risks: Optional[List[dict]] = None,
+    attack_paths: Optional[List[dict]] = None,
+    graph: Optional[List[dict]] = None,
+    effective_access: Optional[List[dict]] = None,
+    dashboard: Optional[Dict[str, Any]] = None,
+    scan_metadata: Optional[Dict[str, Any]] = None,
+    regions: Optional[Dict[str, Any]] = None,
+    resource_counts: Optional[Dict[str, Any]] = None,
+    finding_counts: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Atomically persist the complete authoritative snapshot payload into SQL
+    and transactionally update the current snapshot pointer.
+    """
+    try:
+        reg_meta = region_metadata or regions or {}
+        res_cnt = resource_counts or {"total": len(resources or [])}
+        find_cnt = finding_counts or {"total": len(findings or [])}
+
+        with get_db_session() as session:
+            # 1. Reset is_current flag on previous snapshots
+            session.query(ScanSnapshotModel).filter(ScanSnapshotModel.is_current == 1).update({"is_current": 0})
+
+            # 2. Upsert full snapshot row
+            snap = session.query(ScanSnapshotModel).filter_by(snapshot_id=snapshot_id).first()
+            if not snap:
+                snap = ScanSnapshotModel(snapshot_id=snapshot_id)
+                session.add(snap)
+
+            snap.scan_id = scan_id
+            snap.published_at = published_at
+            snap.status = status
+            snap.duration_seconds = duration_seconds
+            snap.regions_json = json.dumps(reg_meta)
+            snap.resource_counts_json = json.dumps(res_cnt)
+            snap.finding_counts_json = json.dumps(find_cnt)
+            snap.metadata_json = json.dumps(scan_metadata or {})
+
+            # Authoritative complete collections
+            snap.users_json = json.dumps(users or [])
+            snap.groups_json = json.dumps(groups or [])
+            snap.roles_json = json.dumps(roles or [])
+            snap.policies_json = json.dumps(policies or [])
+            snap.resources_json = json.dumps(resources or [])
+            snap.alerts_json = json.dumps(alerts or [])
+            snap.findings_json = json.dumps(findings or [])
+            snap.risks_json = json.dumps(risks or [])
+            snap.attack_paths_json = json.dumps(attack_paths or [])
+            snap.graph_json = json.dumps(graph or [])
+            snap.effective_access_json = json.dumps(effective_access or [])
+            snap.dashboard_json = json.dumps(dashboard or {})
+            snap.scan_metadata_json = json.dumps(scan_metadata or {})
+            snap.is_current = 1
+
+            # 3. Transactionally advance the singleton current snapshot pointer
+            ptr = session.query(CurrentSnapshotPointerModel).filter_by(id=1).first()
+            if not ptr:
+                ptr = CurrentSnapshotPointerModel(id=1, snapshot_id=snapshot_id, published_at=published_at)
+                session.add(ptr)
+            else:
+                ptr.snapshot_id = snapshot_id
+                ptr.published_at = published_at
+
+        # Enforce retention (preserving active snapshot)
+        cleanup_old_snapshots(retention_count=SNAPSHOT_RETENTION_COUNT, preserve_snapshot_id=snapshot_id)
+        logger.info(f"[DURABLE_STORAGE] Authoritative snapshot {snapshot_id} committed to SQL.")
+        return True
+    except Exception as e:
+        logger.error(f"[DURABLE_STORAGE] Failed to save authoritative snapshot {snapshot_id}: {e}")
+        return False
+
+
+def get_authoritative_current_snapshot_pointer() -> Optional[Dict[str, str]]:
+    """Query SQL for the authoritative current snapshot pointer."""
+    try:
+        with get_db_session() as session:
+            ptr = session.query(CurrentSnapshotPointerModel).filter_by(id=1).first()
+            if ptr:
+                return {"snapshot_id": ptr.snapshot_id, "published_at": ptr.published_at}
+            # Fallback to is_current=1
+            snap = session.query(ScanSnapshotModel).filter_by(is_current=1).first()
+            if snap:
+                return {"snapshot_id": snap.snapshot_id, "published_at": snap.published_at}
+            return None
+    except Exception as e:
+        logger.warning(f"Failed to query authoritative snapshot pointer: {e}")
+        return None
+
+
+def load_authoritative_snapshot(snapshot_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Load complete authoritative snapshot from SQL.
+    If snapshot_id is None, resolves the active current snapshot pointer.
+    """
+    try:
+        with get_db_session() as session:
+            target_id = snapshot_id
+            if not target_id:
+                ptr = session.query(CurrentSnapshotPointerModel).filter_by(id=1).first()
+                if ptr:
+                    target_id = ptr.snapshot_id
+
+            query = session.query(ScanSnapshotModel)
+            if target_id:
+                snap = query.filter_by(snapshot_id=target_id).first()
+            else:
+                snap = query.filter_by(is_current=1).first() or query.order_by(desc(ScanSnapshotModel.published_at)).first()
+
+            if not snap:
+                return None
+
+            return {
+                "snapshot_id": snap.snapshot_id,
+                "scan_id": snap.scan_id,
+                "published_at": snap.published_at,
+                "status": snap.status,
+                "duration_seconds": snap.duration_seconds,
+                "region_metadata": json.loads(snap.regions_json or "{}"),
+                "collection_completeness": json.loads(snap.regions_json or "{}"),
+                "users": json.loads(snap.users_json or "[]"),
+                "groups": json.loads(snap.groups_json or "[]"),
+                "roles": json.loads(snap.roles_json or "[]"),
+                "policies": json.loads(snap.policies_json or "[]"),
+                "resources": json.loads(snap.resources_json or "[]"),
+                "alerts": json.loads(snap.alerts_json or "[]"),
+                "findings": json.loads(snap.findings_json or "[]"),
+                "risks": json.loads(snap.risks_json or "[]"),
+                "attack_paths": json.loads(snap.attack_paths_json or "[]"),
+                "graph": json.loads(snap.graph_json or "[]"),
+                "effective_access": json.loads(snap.effective_access_json or "[]"),
+                "dashboard": json.loads(snap.dashboard_json or "{}"),
+                "scan_metadata": json.loads(snap.scan_metadata_json or "{}"),
+                "resource_counts": json.loads(snap.resource_counts_json or "{}"),
+                "finding_counts": json.loads(snap.finding_counts_json or "{}"),
+            }
+    except Exception as e:
+        logger.error(f"[DURABLE_STORAGE] Failed to load authoritative snapshot: {e}")
+        return None
+
+
 def record_snapshot_metadata(
     snapshot_id: str,
     scan_id: str,
@@ -148,7 +304,7 @@ def record_snapshot_metadata(
     finding_counts: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Store authoritative snapshot record and enforce retention policy."""
+    """Store authoritative snapshot metadata record and enforce retention policy."""
     try:
         with get_db_session() as session:
             existing = session.query(ScanSnapshotModel).filter_by(snapshot_id=snapshot_id).first()
@@ -163,8 +319,19 @@ def record_snapshot_metadata(
                     resource_counts_json=json.dumps(resource_counts or {}),
                     finding_counts_json=json.dumps(finding_counts or {}),
                     metadata_json=json.dumps(metadata or {}),
+                    is_current=1,
                 )
                 session.add(snap)
+            else:
+                existing.is_current = 1
+
+            # Update pointer
+            ptr = session.query(CurrentSnapshotPointerModel).filter_by(id=1).first()
+            if not ptr:
+                session.add(CurrentSnapshotPointerModel(id=1, snapshot_id=snapshot_id, published_at=published_at))
+            else:
+                ptr.snapshot_id = snapshot_id
+                ptr.published_at = published_at
 
         # Enforce snapshot retention count (preserves active snapshot)
         cleanup_old_snapshots(

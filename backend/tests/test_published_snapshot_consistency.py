@@ -29,6 +29,14 @@ client = TestClient(app)
 
 def _reset_scan_manager():
     snapshot_store.clear()
+    try:
+        from app.persistence.database import get_db_session
+        from app.persistence.models import ScanSnapshotModel, CurrentSnapshotPointerModel
+        with get_db_session() as session:
+            session.query(ScanSnapshotModel).delete()
+            session.query(CurrentSnapshotPointerModel).delete()
+    except Exception:
+        pass
     for target in (ScanManager, scan_manager):
         target._is_running = False
         target._scan_status = "IDLE"

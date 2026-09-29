@@ -35,13 +35,45 @@ from app.services.scanner.scan_manager import scan_manager
 client = TestClient(app)
 
 
+from app.services.scanner.snapshot_store import snapshot_store
+
+
+def _clean_scan_manager():
+    scan_manager._is_running = False
+    scan_manager._published_snapshot = None
+    scan_manager._last_published_scan_id = None
+    scan_manager._last_published_at = None
+    scan_manager._current_scan_id = None
+    scan_manager._scan_status = "IDLE"
+    scan_manager._status = "IDLE"
+    scan_manager._active_phase = "IDLE"
+
+
 @pytest.fixture(autouse=True)
 def reset_state():
     cache.clear()
-    scan_manager._is_running = False
+    snapshot_store.clear()
+    _clean_scan_manager()
+    try:
+        from app.persistence.database import get_db_session
+        from app.persistence.models import ScanSnapshotModel, CurrentSnapshotPointerModel
+        with get_db_session() as session:
+            session.query(ScanSnapshotModel).delete()
+            session.query(CurrentSnapshotPointerModel).delete()
+    except Exception:
+        pass
     yield
     cache.clear()
-    scan_manager._is_running = False
+    snapshot_store.clear()
+    _clean_scan_manager()
+    try:
+        from app.persistence.database import get_db_session
+        from app.persistence.models import ScanSnapshotModel, CurrentSnapshotPointerModel
+        with get_db_session() as session:
+            session.query(ScanSnapshotModel).delete()
+            session.query(CurrentSnapshotPointerModel).delete()
+    except Exception:
+        pass
 
 
 # 1. Policies endpoint with existing cache

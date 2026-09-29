@@ -74,3 +74,14 @@ class TestRateLimiting:
             assert r3.status_code == 429
             assert "Retry-After" in r3.headers
             assert r3.json()["error"]["code"] == "RATE_LIMIT_EXCEEDED"
+
+    def test_redis_failure_in_production_fails_closed(self, monkeypatch):
+        """In production, Redis failure MUST fail closed without in-memory bypass."""
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setattr("app.cache.cache.redis_client", None)
+
+        limiter = RateLimiter()
+        limited, retry_after = limiter.is_rate_limited("scan", "prod-user", max_requests=10, window_seconds=60)
+        assert limited is True
+        assert retry_after == 60
+

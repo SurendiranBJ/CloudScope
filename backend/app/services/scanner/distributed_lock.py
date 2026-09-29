@@ -50,9 +50,21 @@ class DistributedScanLock:
         """Attempt to acquire the distributed scan lock atomically."""
         lease = lease_seconds or self._lease_seconds
         token = str(uuid.uuid4())
+        prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+        client = cache.redis_client
+
+        if client is None:
+            if prod:
+                logger.error("[DISTRIBUTED_LOCK] Redis is unavailable in production. Failing closed.")
+                return None
+            # Standalone memory fallback ONLY in non-production local development
+            if not cache.get(self.lock_key):
+                cache.set(self.lock_key, token, ttl_seconds=lease)
+                self._current_owner_token = token
+                return token
+            return None
 
         try:
-            client = cache.redis_client
             # SET lock_key token NX EX lease
             acquired = client.set(self.lock_key, token, nx=True, ex=lease)
             if acquired:
@@ -65,8 +77,10 @@ class DistributedScanLock:
                 logger.info(f"[DISTRIBUTED_LOCK] Failed to acquire lock (already held by another worker)")
                 return None
         except Exception as e:
+            if prod:
+                logger.error(f"[DISTRIBUTED_LOCK] Redis lock acquire failure in production: {e}. Failing closed.")
+                return None
             logger.warning(f"[DISTRIBUTED_LOCK] Redis lock acquire fallback due to: {e}")
-            # Standalone memory fallback if Redis connection is temporarily interrupted
             if not cache.get(self.lock_key):
                 cache.set(self.lock_key, token, ttl_seconds=lease)
                 self._current_owner_token = token
@@ -76,14 +90,28 @@ class DistributedScanLock:
     def renew(self, owner_token: str, lease_seconds: Optional[int] = None) -> bool:
         """Extend the lock lease if the calling instance is the owner."""
         lease = lease_seconds or self._lease_seconds
+        prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+        client = cache.redis_client
+
+        if client is None:
+            if prod:
+                return False
+            val = cache.get(self.lock_key)
+            if val == owner_token:
+                cache.set(self.lock_key, owner_token, ttl_seconds=lease)
+                return True
+            return False
+
         try:
-            client = cache.redis_client
             res = client.eval(RENEW_LUA_SCRIPT, 1, self.lock_key, owner_token, str(lease))
             if res == 1:
                 logger.debug(f"[DISTRIBUTED_LOCK] Renewed lease for token {owner_token[:8]}... (lease={lease}s)")
                 return True
             return False
         except Exception as e:
+            if prod:
+                logger.error(f"[DISTRIBUTED_LOCK] Redis error renewing lock lease in production: {e}")
+                return False
             logger.warning(f"[DISTRIBUTED_LOCK] Error renewing lock lease: {e}")
             val = cache.get(self.lock_key)
             if val == owner_token:

@@ -156,3 +156,46 @@ class TestRBACAuthorization:
             resp = client.post("/api/v1/scan", headers=headers)
             assert resp.status_code == 200
             assert resp.json()["data"]["status"] == "STARTED"
+
+
+class TestProductionConfigurationInvariants:
+    def test_production_rejects_missing_auth_configuration(self, monkeypatch):
+        from app.security.config_validator import validate_startup_configuration, ConfigurationError
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("AUTH_ENABLED", "false")
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_startup_configuration()
+        assert "AUTH_ENABLED" in str(exc_info.value)
+
+    def test_production_rejects_dev_auth_mode(self, monkeypatch):
+        from app.security.config_validator import validate_startup_configuration, ConfigurationError
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("AUTH_ENABLED", "true")
+        monkeypatch.setenv("AUTH_REQUIRED", "true")
+        monkeypatch.setenv("DEV_AUTH_MODE", "true")
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_startup_configuration()
+        assert "DEV_AUTH_MODE" in str(exc_info.value)
+
+    def test_production_rejects_auth_required_false(self, monkeypatch):
+        from app.security.config_validator import validate_startup_configuration, ConfigurationError
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("AUTH_ENABLED", "true")
+        monkeypatch.setenv("AUTH_REQUIRED", "false")
+        monkeypatch.setenv("DEV_AUTH_MODE", "false")
+        with pytest.raises(ConfigurationError) as exc_info:
+            validate_startup_configuration()
+        assert "AUTH_REQUIRED" in str(exc_info.value)
+
+    def test_production_unauthenticated_request_fails_closed_with_401(self, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        resp = client.get("/api/v1/policies")
+        assert resp.status_code == 401
+        assert "authentication required" in resp.json()["detail"].lower()
+
+    def test_development_explicit_auth_bypass_allowed(self, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        monkeypatch.setattr("app.security.dependencies.DEV_AUTH_MODE", True)
+        resp = client.get("/api/v1/policies", headers={"X-Dev-Role": "ADMINISTRATOR"})
+        assert resp.status_code == 200
+

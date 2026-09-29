@@ -36,8 +36,36 @@ Base = declarative_base()
 
 
 def init_db() -> None:
-    """Create all relational tables if they do not already exist."""
+    """Create all relational tables if they do not already exist and migrate columns."""
     Base.metadata.create_all(bind=engine)
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(engine)
+        if "scan_snapshots" in inspector.get_table_names():
+            existing_cols = {c["name"] for c in inspector.get_columns("scan_snapshots")}
+            new_cols = [
+                ("users_json", "TEXT DEFAULT '[]'"),
+                ("groups_json", "TEXT DEFAULT '[]'"),
+                ("roles_json", "TEXT DEFAULT '[]'"),
+                ("policies_json", "TEXT DEFAULT '[]'"),
+                ("resources_json", "TEXT DEFAULT '[]'"),
+                ("alerts_json", "TEXT DEFAULT '[]'"),
+                ("findings_json", "TEXT DEFAULT '[]'"),
+                ("risks_json", "TEXT DEFAULT '[]'"),
+                ("attack_paths_json", "TEXT DEFAULT '[]'"),
+                ("graph_json", "TEXT DEFAULT '[]'"),
+                ("effective_access_json", "TEXT DEFAULT '[]'"),
+                ("dashboard_json", "TEXT DEFAULT '{}'"),
+                ("scan_metadata_json", "TEXT DEFAULT '{}'"),
+                ("is_current", "INTEGER DEFAULT 0"),
+            ]
+            with engine.connect() as conn:
+                for col_name, col_def in new_cols:
+                    if col_name not in existing_cols:
+                        conn.execute(text(f"ALTER TABLE scan_snapshots ADD COLUMN {col_name} {col_def}"))
+                conn.commit()
+    except Exception:
+        pass
 
 
 @contextmanager

@@ -123,3 +123,27 @@ class TestDistributedScanLock:
         token_b = lock_b.acquire(lease_seconds=60)
         assert token_b is not None
         assert token_b != token_a
+
+    def test_redis_failure_in_production_fails_closed(self, monkeypatch):
+        """In production, Redis failure MUST fail closed and NEVER fall back to in-memory lock."""
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setattr("app.cache.cache.redis_client", None)
+
+        lock = DistributedScanLock(lock_key="test:scan:lock")
+        token = lock.acquire(lease_seconds=60)
+        assert token is None
+
+    def test_two_workers_cannot_both_acquire_in_production_when_redis_fails(self, monkeypatch):
+        """Two simulated workers cannot both execute a scan when Redis is down in production."""
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setattr("app.cache.cache.redis_client", None)
+
+        worker_a_lock = DistributedScanLock(lock_key="test:scan:lock")
+        worker_b_lock = DistributedScanLock(lock_key="test:scan:lock")
+
+        token_a = worker_a_lock.acquire(lease_seconds=60)
+        token_b = worker_b_lock.acquire(lease_seconds=60)
+
+        assert token_a is None
+        assert token_b is None
+

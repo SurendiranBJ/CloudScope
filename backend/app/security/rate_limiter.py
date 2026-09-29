@@ -50,6 +50,7 @@ class RateLimiter:
         window_start = now - window_seconds
         limiter_key = f"{key_prefix}:{identifier}"
 
+        prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
         r = self.redis
         if r is not None:
             redis_key = f"rate_limit:{limiter_key}"
@@ -82,9 +83,15 @@ class RateLimiter:
 
                 return False, 0
             except Exception as e:
+                if prod:
+                    logger.error(f"[RATE_LIMITER] Redis rate limiter failure in production: {e}. Failing closed.")
+                    return True, window_seconds
                 logger.warning(f"RateLimiter Redis failure, falling back to local window: {e}")
+        elif prod:
+            logger.error("[RATE_LIMITER] Redis is unavailable in production. Failing closed for rate-limited operation.")
+            return True, window_seconds
 
-        # In-Memory sliding window fallback
+        # In-Memory sliding window fallback (ONLY in non-production local development)
         with self._local_lock:
             timestamps = self._local_windows.get(limiter_key, [])
             valid_ts = [t for t in timestamps if t > window_start]

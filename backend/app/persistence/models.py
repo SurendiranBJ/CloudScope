@@ -42,6 +42,32 @@ class ScanSnapshotModel(Base):
     finding_counts_json = Column(Text, default="{}")
     metadata_json = Column(Text, default="{}")
 
+    # Authoritative full snapshot collections
+    users_json = Column(Text, default="[]")
+    groups_json = Column(Text, default="[]")
+    roles_json = Column(Text, default="[]")
+    policies_json = Column(Text, default="[]")
+    resources_json = Column(Text, default="[]")
+    alerts_json = Column(Text, default="[]")
+    findings_json = Column(Text, default="[]")
+    risks_json = Column(Text, default="[]")
+    attack_paths_json = Column(Text, default="[]")
+    graph_json = Column(Text, default="[]")
+    effective_access_json = Column(Text, default="[]")
+    dashboard_json = Column(Text, default="{}")
+    scan_metadata_json = Column(Text, default="{}")
+
+    is_current = Column(Integer, default=0, index=True)
+
+
+class CurrentSnapshotPointerModel(Base):
+    __tablename__ = "current_snapshot_pointer"
+
+    id = Column(Integer, primary_key=True)  # Singleton record (ID=1)
+    snapshot_id = Column(String(64), nullable=False)
+    published_at = Column(String(64), nullable=False)
+
+
 
 class FindingStateModel(Base):
     __tablename__ = "finding_states"

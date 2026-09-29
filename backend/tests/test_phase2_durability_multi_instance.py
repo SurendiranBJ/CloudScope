@@ -26,6 +26,19 @@ from app.persistence.repository import (
 
 
 class TestDurableStateAndMultiInstance:
+    def teardown_method(self):
+        """Clean up database records after tests."""
+        try:
+            from app.persistence.database import get_db_session
+            from app.persistence.models import ScanSnapshotModel, CurrentSnapshotPointerModel, ScanRunModel, FindingStateModel
+            with get_db_session() as session:
+                session.query(ScanSnapshotModel).delete()
+                session.query(CurrentSnapshotPointerModel).delete()
+                session.query(ScanRunModel).delete()
+                session.query(FindingStateModel).delete()
+        except Exception:
+            pass
+
     def test_durable_snapshot_and_scan_run_persistence(self):
         # 1. Record scan run
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -86,6 +99,9 @@ class TestDurableStateAndMultiInstance:
 
     def test_multi_worker_concurrency_single_execution(self, monkeypatch):
         """Simulate two workers receiving simultaneous scan triggers."""
+        from app.services.scanner.scan_manager import scan_manager
+        scan_manager._is_running = False
+
         coord_a = ScanCoordinator()
         coord_b = ScanCoordinator()
 

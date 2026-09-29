@@ -26,6 +26,10 @@ async def lifespan(app: FastAPI):
     # Startup actions
     logger.info("Initializing CloudScope Production Backend Engine Server")
 
+    # 1. Enforce centralized startup configuration validation
+    from app.security.config_validator import validate_startup_configuration
+    validate_startup_configuration()
+
     # Display DEV_AUTH_MODE security warning if enabled
     dev_auth = os.getenv("DEV_AUTH_MODE", "false").lower() == "true"
     if dev_auth:
@@ -38,12 +42,23 @@ async def lifespan(app: FastAPI):
     try:
         # Initialize relational database schemas (SQLite / PostgreSQL)
         init_db()
+
+        # Recover authoritative published snapshot from durable SQL
+        from app.services.scanner.snapshot_store import snapshot_store
+        recovered = snapshot_store.recover_from_sql()
+        if recovered:
+            logger.info(f"Durable snapshot {recovered.snapshot_id} successfully restored from SQL on startup.")
+        else:
+            logger.info("No prior durable snapshot found in SQL.")
+
         # Initialize Neo4j driver
         get_driver()
         # Start distributed-safe scheduler
         start_scheduler()
     except Exception as e:
         logger.critical(f"Server startup failed: {str(e)}", exc_info=True)
+        if os.getenv("ENVIRONMENT", "").lower() == "production":
+            raise
 
     yield
 

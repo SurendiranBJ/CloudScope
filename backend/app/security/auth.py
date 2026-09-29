@@ -145,8 +145,9 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    # 3. Development Insecure Fallback (ONLY if DEV_AUTH_MODE explicitly enabled)
-    if DEV_AUTH_MODE:
+    # 3. Development Insecure Fallback (ONLY if DEV_AUTH_MODE explicitly enabled and NOT production)
+    is_prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+    if DEV_AUTH_MODE and not is_prod:
         try:
             payload = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
             return payload
