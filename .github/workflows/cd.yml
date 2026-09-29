@@ -1,0 +1,195 @@
+name: CloudScope CD
+
+on:
+  workflow_run:
+    workflows: ["CloudScope CI"]
+    branches: ["sura"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref or commit SHA to deploy (defaults to current commit)"
+        required: false
+        default: "sura"
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: cloudscope-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build & Publish Docker Images
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch')
+    outputs:
+      commit_sha: ${{ steps.resolve-commit.outputs.commit_sha }}
+      image_tag: ${{ steps.resolve-commit.outputs.image_tag }}
+      owner_lc: ${{ steps.image-tags.outputs.owner_lc }}
+    steps:
+      - name: Resolve Commit SHA
+        id: resolve-commit
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+          else
+            COMMIT_SHA="${{ github.sha }}"
+          fi
+          echo "COMMIT_SHA=${COMMIT_SHA}" >> $GITHUB_ENV
+          echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+          echo "image_tag=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+          echo "Resolved exact deployment commit SHA: ${COMMIT_SHA}"
+
+      - name: Checkout repository at exact tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMMIT_SHA }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Registry Namespaces and Image Tags
+        id: image-tags
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER_LC=${OWNER_LC}" >> $GITHUB_ENV
+          echo "owner_lc=${OWNER_LC}" >> $GITHUB_OUTPUT
+          echo "Target Registry Namespace: ghcr.io/${OWNER_LC}"
+
+      - name: Build and push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-backend:${{ env.COMMIT_SHA }}
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-backend:sura-latest
+          labels: |
+            org.opencontainers.image.title=CloudScope Backend
+            org.opencontainers.image.description=CloudScope AWS IAM & Security Analysis Engine
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+          cache-from: type=gha,scope=cloudscope-backend
+          cache-to: type=gha,mode=max,scope=cloudscope-backend
+          provenance: true
+          sbom: true
+
+      - name: Build and push Frontend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-frontend:${{ env.COMMIT_SHA }}
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-frontend:sura-latest
+          labels: |
+            org.opencontainers.image.title=CloudScope Frontend
+            org.opencontainers.image.description=CloudScope React Web UI and API Proxy
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
+          cache-from: type=gha,scope=cloudscope-frontend
+          cache-to: type=gha,mode=max,scope=cloudscope-frontend
+          provenance: true
+          sbom: true
+
+  deploy-production:
+    name: Deploy to Production Host
+    needs: build-and-publish
+    runs-on: [self-hosted, linux, x64, cloudscope-prod]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout deployment manifests
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build-and-publish.outputs.commit_sha }}
+
+      - name: Log in to GitHub Container Registry on deployment host
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Deploy application via Docker Compose
+        env:
+          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
+          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
+          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
+          DEPLOY_DIR: /opt/cloudscope
+        run: |
+          echo "=================================================="
+          echo "Deploying CloudScope to ${DEPLOY_DIR}"
+          echo "Backend Image:  ${BACKEND_IMAGE}:${IMAGE_TAG}"
+          echo "Frontend Image: ${FRONTEND_IMAGE}:${IMAGE_TAG}"
+          echo "=================================================="
+          
+          sudo mkdir -p ${DEPLOY_DIR}
+          sudo chown -R $USER:$USER ${DEPLOY_DIR}
+          cp compose.release.yaml ${DEPLOY_DIR}/compose.release.yaml
+          
+          cd ${DEPLOY_DIR}
+          
+          # Pull exact immutable container images
+          docker compose -f compose.release.yaml pull
+          
+          # Update running containers (preserving existing persistent volumes)
+          docker compose -f compose.release.yaml up -d --remove-orphans
+
+      - name: Verify Service Health & Readiness
+        env:
+          DEPLOY_DIR: /opt/cloudscope
+          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
+          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
+          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
+        run: |
+          cd ${DEPLOY_DIR}
+          echo "Waiting for services to become healthy..."
+          
+          # Wait up to 120 seconds for services to pass container healthchecks
+          SUCCESS=0
+          for i in $(seq 1 24); do
+            echo "Healthcheck probe attempt $i/24..."
+            
+            # Check frontend healthz probe
+            FRONTEND_OK=0
+            if curl -fsS http://127.0.0.1/healthz >/dev/null 2>&1; then
+              FRONTEND_OK=1
+            fi
+            
+            # Check backend ready probe
+            BACKEND_OK=0
+            if docker compose -f compose.release.yaml exec -T backend curl -fsS http://127.0.0.1:8000/ready >/dev/null 2>&1; then
+              BACKEND_OK=1
+            fi
+            
+            if [ $FRONTEND_OK -eq 1 ] && [ $BACKEND_OK -eq 1 ]; then
+              echo "✅ Both Frontend (/healthz) and Backend (/ready) are healthy!"
+              SUCCESS=1
+              break
+            fi
+            
+            sleep 5
+          done
+          
+          echo "=== Container Status ==="
+          docker compose -f compose.release.yaml ps
+          
+          if [ $SUCCESS -ne 1 ]; then
+            echo "❌ Service readiness failed. Printing container logs:"
+            docker compose -f compose.release.yaml logs --tail=100
+            exit 1
+          fi

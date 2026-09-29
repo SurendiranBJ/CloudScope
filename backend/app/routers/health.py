@@ -37,7 +37,7 @@ try:
         stderr=subprocess.DEVNULL
     ).decode("utf-8").strip()
 except Exception:
-    COMMIT_HASH = os.getenv("GIT_COMMIT", os.getenv("COMMIT_SHA", "unknown"))
+    COMMIT_HASH = os.getenv("GIT_COMMIT", os.getenv("COMMIT_SHA", os.getenv("APP_VERSION", os.getenv("IMAGE_TAG", "unknown"))))
 
 
 @router.get("/live", summary="Liveness probe for orchestrators/containers")

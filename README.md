@@ -162,12 +162,124 @@ CloudScope operates as a single, continuous, unified security analysis pipeline:
 
 ---
 
-## 🚀 Setup & Installation
+## 🐳 Production Docker Installation & Distribution
+
+CloudScope provides prebuilt, immutable Docker container images published to **GitHub Container Registry (GHCR)**. A new user can run the complete CloudScope stack (Frontend, Backend, Neo4j, Redis) without installing Python, Node.js, Redis, or Neo4j locally.
+
+### 1. Prerequisites
+- [Docker Engine](https://docs.docker.com/engine/install/) or [Docker Desktop](https://www.docker.com/products/docker-desktop/) (v24.0+ recommended)
+- Docker Compose v2.20+ (`docker compose version`)
+- AWS credentials file configured on the host machine (`~/.aws/credentials` or `%USERPROFILE%\.aws\credentials`)
+
+### 2. Quickstart with Prebuilt Release Images (Recommended)
+
+#### Step 1: Obtain Deployment Files
+```bash
+git clone https://github.com/SurendiranBJ/CloudScope.git
+cd CloudScope
+```
+
+#### Step 2: Configure Environment
+Copy the environment template and set your secure passwords:
+```bash
+cp .env.example .env
+```
+Edit `.env` to configure:
+1. `NEO4J_PASSWORD`: Strong password for the Neo4j database (e.g. `openssl rand -hex 16`).
+2. `JWT_SECRET`: Random 32+ character secret for JWT tokens (e.g. `openssl rand -hex 32`).
+3. `AWS_PROFILE`: The AWS CLI profile to use (default: `default` or `identityscope-scanner`).
+4. `AWS_CREDENTIALS_DIR`: Path to your AWS credentials directory:
+   - **Linux / macOS**: `~/.aws` (default)
+   - **Windows PowerShell**: `$env:USERPROFILE\.aws` (or `C:\Users\<username>\.aws`)
+5. *(Optional)* `GEMINI_API_KEY`: API key for Gemini Security Copilot.
+
+#### Step 3: Pull and Start CloudScope
+```bash
+# Pull official immutable images from GitHub Container Registry
+docker compose -f compose.release.yaml pull
+
+# Start all services in the background
+docker compose -f compose.release.yaml up -d
+```
+
+#### Step 4: Access Web Application
+- **CloudScope UI**: [http://localhost](http://localhost)
+- **API Health Check**: `http://localhost/healthz`
+- **Backend Readiness**: `docker compose -f compose.release.yaml exec -T backend curl -fsS http://127.0.0.1:8000/ready`
+- **Neo4j Console (Localhost only)**: [http://localhost:7474](http://localhost:7474) (User: `neo4j`, Password: configured in `.env`)
+
+---
+
+### 3. Service Management & Operations
+
+#### Check Service Status
+```bash
+docker compose -f compose.release.yaml ps
+```
+
+#### View Live Application Logs
+```bash
+# All services
+docker compose -f compose.release.yaml logs -f
+
+# Specific service (backend / frontend / neo4j / redis)
+docker compose -f compose.release.yaml logs -f backend
+```
+
+#### Stop CloudScope
+```bash
+docker compose -f compose.release.yaml down
+```
+> [!NOTE]
+> All graph data (`neo4j_data`), audit logs (`neo4j_logs`), cache state (`redis_data`), and authoritative scan snapshots (`app_storage`) are stored in persistent Docker volumes and remain completely safe across restarts.
+
+#### Update CloudScope to Latest Release
+```bash
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
+```
+No manual compilation, `npm install`, or `pip install` is required.
+
+#### Roll Back to a Specific Immutable Git Commit
+Every release build publishes an immutable tag matching the Git commit SHA:
+```bash
+# Pin to a specific known-good release commit SHA
+export IMAGE_TAG=79dfb74d34e4a031c5138a88490d07470537c1a8
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
+```
+On Windows PowerShell:
+```powershell
+$env:IMAGE_TAG="79dfb74d34e4a031c5138a88490d07470537c1a8"
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
+```
+
+---
+
+### 4. Development Workflow (Build from Source)
+
+For active local development and building images from local source:
+```bash
+docker compose -f compose.yaml up --build
+```
+
+---
+
+### 5. GitHub Container Registry (GHCR) Public Access
+By default, GitHub packages may be private. To allow anyone to pull images without authentication:
+1. Navigate to your repository on GitHub.
+2. Under **Packages**, select `cloudscope-backend` (and `cloudscope-frontend`).
+3. Click **Package settings** -> **Danger Zone** -> **Change package visibility** -> **Public**.
+4. Confirm the change. Users can now pull release images directly without logging into GHCR.
+
+---
+
+## 🛠️ Local Development & Manual Setup
 
 ### 1. Prerequisites
 - Python 3.10+
 - Node.js 18+
-- Docker & Docker Compose (optional for Neo4j/Redis)
 - AWS CLI configured with a read-only profile named `identityscope-scanner`:
   ```bash
   aws configure --profile identityscope-scanner
@@ -179,13 +291,6 @@ The scanner requires read-only metadata inspection permissions. **Secrets Manage
 Minimal required managed policies:
 - `SecurityAudit`
 - `ViewOnlyAccess`
-
-### 3. Running with Docker Compose
-Start Neo4j, Redis, and the Backend with a single command:
-```bash
-docker compose up -d
-```
-Neo4j Console: `http://localhost:7474` (Credentials: `neo4j` / `password`)
 
 ### 4. Running Locally
 
