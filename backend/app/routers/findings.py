@@ -51,6 +51,13 @@ VALID_SOURCES = {
 }
 
 
+from app.security.dependencies import require_viewer, require_security_officer
+from app.security.models import AuthenticatedUser
+from app.security.rate_limiter import rate_limit
+from app.services.audit.audit_service import audit_service
+from fastapi import Depends, Request
+
+
 @router.get("", response_model=APIResponse[List[SecurityFinding]])
 def get_security_findings(
     severity: Optional[str] = Query(None, description="Filter by severity: critical, high, medium, low"),
@@ -62,7 +69,8 @@ def get_security_findings(
     source: Optional[str] = Query(None, description="Filter by source: STATIC_IAM, RESOURCE_CONFIGURATION, ATTACK_PATH, CLOUDTRAIL, CORRELATION"),
     search: Optional[str] = Query(None, description="Full text search on title, description, principal, and resource"),
     limit: Optional[int] = Query(None, description="Maximum number of findings to return (1-200)"),
-    offset: Optional[int] = Query(None, description="Pagination offset (>= 0)")
+    offset: Optional[int] = Query(None, description="Pagination offset (>= 0)"),
+    current_user: AuthenticatedUser = Depends(require_viewer)
 ):
     """Retrieve unified security findings with strict multi-attribute validation and filtering."""
     # 1. Parameter Validation (Reject invalid inputs with HTTP 400)
@@ -153,7 +161,10 @@ def get_security_findings(
 
 
 @router.get("/{finding_id}", response_model=APIResponse[SecurityFinding])
-def get_finding_by_id(finding_id: str):
+def get_finding_by_id(
+    finding_id: str,
+    current_user: AuthenticatedUser = Depends(require_viewer)
+):
     """Retrieve detailed information for a specific security finding."""
     finding = finding_service.get_finding_by_id(finding_id)
     if not finding:
@@ -169,16 +180,32 @@ def get_finding_by_id(finding_id: str):
     )
 
 
-@router.post("/{finding_id}/acknowledge", response_model=APIResponse[SecurityFinding])
-def acknowledge_finding(finding_id: str):
+@router.post("/{finding_id}/acknowledge", response_model=APIResponse[SecurityFinding], dependencies=[Depends(rate_limit("finding"))])
+def acknowledge_finding(
+    finding_id: str,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_security_officer)
+):
     """Transition finding status to ACKNOWLEDGED."""
     try:
-        updated = finding_service.acknowledge_finding(finding_id)
+        updated = finding_service.acknowledge_finding(finding_id, changed_by=current_user.subject, change_reason="Acknowledged by user")
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="FINDING_ACKNOWLEDGED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="finding",
+        resource_id=finding_id,
+        snapshot_id=get_current_snapshot_id(),
+        result="SUCCESS",
+        ip_address=client_ip
+    )
 
     return APIResponse(
         success=True,
@@ -188,16 +215,32 @@ def acknowledge_finding(finding_id: str):
     )
 
 
-@router.post("/{finding_id}/resolve", response_model=APIResponse[SecurityFinding])
-def resolve_finding(finding_id: str):
+@router.post("/{finding_id}/resolve", response_model=APIResponse[SecurityFinding], dependencies=[Depends(rate_limit("finding"))])
+def resolve_finding(
+    finding_id: str,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_security_officer)
+):
     """Transition finding status to RESOLVED."""
     try:
-        updated = finding_service.resolve_finding(finding_id)
+        updated = finding_service.resolve_finding(finding_id, changed_by=current_user.subject, change_reason="Resolved by user")
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="FINDING_RESOLVED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="finding",
+        resource_id=finding_id,
+        snapshot_id=get_current_snapshot_id(),
+        result="SUCCESS",
+        ip_address=client_ip
+    )
 
     return APIResponse(
         success=True,
@@ -207,16 +250,32 @@ def resolve_finding(finding_id: str):
     )
 
 
-@router.post("/{finding_id}/suppress", response_model=APIResponse[SecurityFinding])
-def suppress_finding(finding_id: str):
+@router.post("/{finding_id}/suppress", response_model=APIResponse[SecurityFinding], dependencies=[Depends(rate_limit("finding"))])
+def suppress_finding(
+    finding_id: str,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_security_officer)
+):
     """Transition finding status to SUPPRESSED."""
     try:
-        updated = finding_service.suppress_finding(finding_id)
+        updated = finding_service.suppress_finding(finding_id, changed_by=current_user.subject, change_reason="Suppressed by user")
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="FINDING_SUPPRESSED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="finding",
+        resource_id=finding_id,
+        snapshot_id=get_current_snapshot_id(),
+        result="SUCCESS",
+        ip_address=client_ip
+    )
 
     return APIResponse(
         success=True,
@@ -226,16 +285,32 @@ def suppress_finding(finding_id: str):
     )
 
 
-@router.post("/{finding_id}/reopen", response_model=APIResponse[SecurityFinding])
-def reopen_finding(finding_id: str):
+@router.post("/{finding_id}/reopen", response_model=APIResponse[SecurityFinding], dependencies=[Depends(rate_limit("finding"))])
+def reopen_finding(
+    finding_id: str,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_security_officer)
+):
     """Transition finding status back to OPEN."""
     try:
-        updated = finding_service.reopen_finding(finding_id)
+        updated = finding_service.reopen_finding(finding_id, changed_by=current_user.subject, change_reason="Reopened by user")
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="FINDING_REOPENED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="finding",
+        resource_id=finding_id,
+        snapshot_id=get_current_snapshot_id(),
+        result="SUCCESS",
+        ip_address=client_ip
+    )
 
     return APIResponse(
         success=True,

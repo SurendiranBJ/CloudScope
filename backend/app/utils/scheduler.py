@@ -12,18 +12,27 @@ _scheduler = BackgroundScheduler()
 _current_interval: int | None = None
 
 
+def _trigger_scheduled_scan():
+    from app.services.scanner.scan_coordinator import scan_coordinator
+    scan_coordinator.request_scan(trigger_type="SCHEDULED", actor_id="scheduler", actor_role="SYSTEM")
+
+
 def start_scheduler():
     global _current_interval
     interval = settings.SCAN_INTERVAL_MINUTES
     _current_interval = interval
     logger.info(f"Starting background scanner scheduler job (Interval: {interval} minutes)")
 
-    # Run first scan immediately in a daemon thread so server boot is not blocked
-    threading.Thread(target=scan_manager.run_scan, daemon=True).start()
+    # Run first scan via coordinator in a daemon thread so server boot is not blocked
+    from app.services.scanner.scan_coordinator import scan_coordinator
+    threading.Thread(
+        target=lambda: scan_coordinator.request_scan(trigger_type="STARTUP", actor_id="startup", actor_role="SYSTEM"),
+        daemon=True
+    ).start()
 
     # Schedule interval scanning with max_instances=1 to prevent pile-ups
     _scheduler.add_job(
-        func=scan_manager.run_scan,
+        func=_trigger_scheduled_scan,
         trigger="interval",
         minutes=interval,
         id="aws_sync_scan_job",

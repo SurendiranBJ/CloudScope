@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import List
 from app.schemas import APIResponse, SecurityAlert, CorrelatedRiskFinding
 from app.cache import cache
@@ -10,8 +10,9 @@ from app.services.scanner.current_snapshot import (
     has_published_snapshot,
 )
 from datetime import datetime
+from app.security.dependencies import require_viewer
 
-router = APIRouter(tags=["Security Alerts & Activity"])
+router = APIRouter(tags=["Security Alerts & Activity"], dependencies=[Depends(require_viewer)])
 
 
 @router.get("/alerts", response_model=APIResponse[List[SecurityAlert]])

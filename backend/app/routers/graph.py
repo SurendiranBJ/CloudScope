@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import List
 from datetime import datetime
 from app.schemas import APIResponse, CytoscapeElement
@@ -10,8 +10,9 @@ from app.services.scanner.current_snapshot import (
     get_current_snapshot_published_at,
     has_published_snapshot,
 )
+from app.security.dependencies import require_viewer
 
-router = APIRouter(tags=["Graph"])
+router = APIRouter(tags=["Graph"], dependencies=[Depends(require_viewer)])
 
 @router.get("/graph", response_model=APIResponse[List[CytoscapeElement]])
 def get_graph_elements():

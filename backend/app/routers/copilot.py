@@ -7,9 +7,10 @@ No hardcoded mock responses; all insights are grounded in authoritative CloudSco
 """
 
 import logging
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends, Request
 
 from app.config import settings
 from app.schemas import (
@@ -33,10 +34,16 @@ from app.services.ai.base import (
 )
 from app.services.findings.finding_service import finding_service
 from app.cache import cache
+from app.security.dependencies import require_analyst
+from app.security.models import AuthenticatedUser
+from app.security.rate_limiter import rate_limit
+from app.services.audit.audit_service import audit_service
+from app.metrics import copilot_requests_total, copilot_latency_seconds
 
 logger = logging.getLogger("backend")
-router = APIRouter(tags=["Copilot"])
+router = APIRouter(tags=["Copilot"], dependencies=[Depends(require_analyst), Depends(rate_limit("copilot"))])
 context_builder = SecurityContextBuilder()
+MAX_PROMPT_CHARS = 10000
 
 
 def _format_code_block(ai_resp: CopilotAIResponse) -> Optional[str]:
@@ -131,7 +138,11 @@ def _handle_ai_exception(e: Exception) -> None:
 
 
 @router.post("/copilot", response_model=APIResponse[CopilotResponse])
-async def get_copilot_response(req: CopilotRequest):
+async def get_copilot_response(
+    req: CopilotRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_analyst)
+):
     """
     Generate an evidence-grounded AI response for general security questions,
     entity investigations, or simulation results.
@@ -143,13 +154,19 @@ async def get_copilot_response(req: CopilotRequest):
             detail="Prompt cannot be empty."
         )
 
+    if len(prompt) > MAX_PROMPT_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Prompt exceeds maximum allowed length of {MAX_PROMPT_CHARS} characters."
+        )
+
     # 1. Verify scan state — never invent posture if no scan has run
     if not context_builder.has_completed_scan():
         logger.info("Copilot query received but no completed scan exists")
         return APIResponse(
             success=True,
             message="No completed scan available",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat(),
             data=_build_no_scan_response()
         )
 
@@ -164,19 +181,37 @@ async def get_copilot_response(req: CopilotRequest):
         simulation_context=req.simulation_context,
     )
 
-    # 3. Call AI provider
+    # 3. Call AI provider with metrics and telemetry
+    start_time = time.perf_counter()
     try:
         provider = get_ai_provider()
         ai_resp = await provider.generate_security_response(prompt=prompt, security_context=context)
+        latency = time.perf_counter() - start_time
+        copilot_latency_seconds.observe(latency)
+        copilot_requests_total.labels(status="success").inc()
+
         data = _map_to_copilot_response(ai_resp)
+
+        client_ip = request.client.host if request.client else None
+        audit_service.log(
+            action="COPILOT_REQUESTED",
+            actor_id=current_user.subject,
+            actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+            resource_type="copilot",
+            resource_id=req.context_type or "general",
+            result="SUCCESS",
+            ip_address=client_ip,
+            metadata={"latency_seconds": round(latency, 2), "model": settings.GEMINI_MODEL}
+        )
 
         return APIResponse(
             success=True,
             message="AI Copilot analysis generated successfully",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat(),
             data=data
         )
     except Exception as e:
+        copilot_requests_total.labels(status="error").inc()
         _handle_ai_exception(e)
 
 

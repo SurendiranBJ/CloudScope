@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List
 from datetime import datetime
 from app.schemas import APIResponse, AttackPath
@@ -9,8 +9,9 @@ from app.services.scanner.current_snapshot import (
     get_current_snapshot_published_at,
     has_published_snapshot,
 )
+from app.security.dependencies import require_viewer
 
-router = APIRouter(tags=["Attack Paths"])
+router = APIRouter(tags=["Attack Paths"], dependencies=[Depends(require_viewer)])
 
 @router.get("/attack-paths", response_model=APIResponse[List[AttackPath]])
 def get_attack_paths():

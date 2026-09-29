@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import List
 from datetime import datetime
 from app.schemas import APIResponse, IAMUser
@@ -9,8 +9,9 @@ from app.services.scanner.current_snapshot import (
     get_current_snapshot_published_at,
     has_published_snapshot,
 )
+from app.security.dependencies import require_viewer
 
-router = APIRouter(tags=["AWS Resources"])
+router = APIRouter(tags=["AWS Resources"], dependencies=[Depends(require_viewer)])
 
 @router.get("/users", response_model=APIResponse[List[IAMUser]])
 def get_iam_users():

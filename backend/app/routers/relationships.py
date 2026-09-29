@@ -11,7 +11,7 @@ Never invents labels. All relationship labels are exact backend types.
 """
 
 import logging
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
 
@@ -26,9 +26,10 @@ from app.services.scanner.current_snapshot import (
     get_current_relationship_inputs,
     has_published_snapshot,
 )
+from app.security.dependencies import require_viewer
 
 logger = logging.getLogger("scanner")
-router = APIRouter(tags=["Relationships"])
+router = APIRouter(tags=["Relationships"], dependencies=[Depends(require_viewer)])
 
 
 def _get_entity_name(item: dict, default_type: str = "item") -> str:

@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import List
 from app.schemas import APIResponse, CloudResource
 from app.services.scanner.scan_manager import scan_manager
@@ -9,8 +9,9 @@ from app.services.scanner.current_snapshot import (
     has_published_snapshot,
 )
 from datetime import datetime
+from app.security.dependencies import require_viewer
 
-router = APIRouter(tags=["AWS Resources"])
+router = APIRouter(tags=["AWS Resources"], dependencies=[Depends(require_viewer)])
 
 
 @router.get("/resources", response_model=APIResponse[List[CloudResource]])

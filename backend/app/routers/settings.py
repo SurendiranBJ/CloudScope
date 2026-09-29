@@ -1,13 +1,17 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional
+from datetime import datetime, timezone
+
 from app.schemas import APIResponse
 from app.utils.scheduler import reschedule_scan_job
 from app.utils.region_names import REGION_FRIENDLY_NAMES
 from app.services.aws import region_cache
-from app.services.scanner.scan_manager import scan_manager
+from app.services.scanner.scan_coordinator import scan_coordinator
 from app.cache import cache
-from datetime import datetime
+from app.security.dependencies import require_admin, require_viewer
+from app.security.models import AuthenticatedUser
+from app.services.audit.audit_service import audit_service
 
 router = APIRouter(tags=["Settings"])
 
@@ -25,27 +29,37 @@ class ScanIntervalResponse(BaseModel):
     "/settings/scan-interval",
     response_model=APIResponse[ScanIntervalResponse],
     summary="Update the background scan interval at runtime",
-    description=(
-        "Reschedules the running APScheduler job to fire every `minutes` minutes. "
-        "Takes effect immediately without restarting the server. "
-        "The change is not persisted across server restarts — update SCAN_INTERVAL_MINUTES "
-        "in .env to make it permanent."
-    )
+    description="Reschedules the running scan job. Restricted to ADMINISTRATOR."
 )
-def update_scan_interval(body: ScanIntervalRequest):
+def update_scan_interval(
+    body: ScanIntervalRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_admin)
+):
     try:
         reschedule_scan_job(body.minutes)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reschedule job: {str(e)}")
 
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="SCAN_INTERVAL_CHANGED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="settings",
+        resource_id="scan_interval",
+        result="SUCCESS",
+        ip_address=client_ip,
+        metadata={"new_interval_minutes": body.minutes}
+    )
+
     return APIResponse(
         success=True,
         message=f"Scan interval updated to {body.minutes} minute(s)",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         data=ScanIntervalResponse(
             minutes=body.minutes,
-            message=f"Background scan job rescheduled to run every {body.minutes} minute(s). "
-                    f"Update SCAN_INTERVAL_MINUTES in .env to persist across restarts."
+            message=f"Background scan job rescheduled to run every {body.minutes} minute(s)."
         )
     )
 
@@ -54,25 +68,35 @@ def update_scan_interval(body: ScanIntervalRequest):
     "/settings/clear-cache",
     response_model=APIResponse[dict],
     summary="Manually clear the Redis and memory cache",
-    description="Flushes all cached scanner data and dashboard layouts."
+    description="Restricted to ADMINISTRATOR."
 )
-def clear_cache():
+def clear_cache(
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_admin)
+):
     try:
         cache.clear()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
 
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="CACHE_CLEARED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="cache",
+        resource_id="all",
+        result="SUCCESS",
+        ip_address=client_ip
+    )
+
     return APIResponse(
         success=True,
         message="Cache cleared successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         data={"cleared": True}
     )
 
-
-# ---------------------------------------------------------------------------
-# Region scanning endpoints
-# ---------------------------------------------------------------------------
 
 class ScanRegionRequest(BaseModel):
     mode: str = Field(..., description="Scan mode: 'single' or 'global'")
@@ -90,15 +114,13 @@ class ScanRegionResponse(BaseModel):
     "/settings/scan-region",
     response_model=APIResponse[ScanRegionResponse],
     summary="Change the active scan region at runtime",
-    description=(
-        "Updates the region(s) that the next scan will collect data from. "
-        "'single' restricts collection to one region; 'global' sweeps all enabled AWS regions "
-        "(significantly slower). "
-        "Takes effect immediately — a new scan is triggered automatically after the mode change. "
-        "The change is NOT persisted across server restarts — update SCAN_REGIONS in .env to make it permanent."
-    )
+    description="Restricted to ADMINISTRATOR."
 )
-def update_scan_region(body: ScanRegionRequest):
+def update_scan_region(
+    body: ScanRegionRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_admin)
+):
     if body.mode not in ("single", "global"):
         raise HTTPException(status_code=400, detail="mode must be 'single' or 'global'")
 
@@ -113,23 +135,34 @@ def update_scan_region(body: ScanRegionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update scan mode: {str(e)}")
 
-    # Do not invalidate current snapshot cache; the new scan will atomically replace the snapshot when complete
-    # Kick off a rescan immediately so the change is reflected without waiting
-    scan_manager.trigger_async_scan()
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="REGION_CONFIGURATION_CHANGED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="settings",
+        resource_id="scan_region",
+        result="SUCCESS",
+        ip_address=client_ip,
+        metadata={"mode": body.mode, "region": body.region}
+    )
+
+    # Kick off rescan via coordinator
+    scan_coordinator.request_scan(trigger_type="REGION_CHANGE", created_by=current_user.subject)
 
     resolved = region_cache.get_all_regions()
     return APIResponse(
         success=True,
         message=f"Scan region updated to {body.mode} mode" + (f" ({body.region})" if body.region else ""),
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         data=ScanRegionResponse(
             mode=body.mode,
             region=body.region,
             scan_regions=resolved,
             message=(
-                f"Scanning {body.region!r} only. Update SCAN_REGIONS in .env to persist across restarts."
+                f"Scanning {body.region!r} only."
                 if body.mode == "single"
-                else "Scanning all enabled AWS regions. Update SCAN_REGIONS in .env or omit it to persist across restarts."
+                else "Scanning all enabled AWS regions."
             )
         )
     )
@@ -143,14 +176,11 @@ class RegionOption(BaseModel):
 @router.get(
     "/settings/available-regions",
     response_model=APIResponse[list[RegionOption]],
-    summary="List available AWS regions for the scan-region selector",
-    description=(
-        "Returns a static list of well-known AWS region codes with friendly display names, "
-        "plus a 'global' pseudo-option. Intended to populate the frontend region dropdown "
-        "without requiring an AWS API call."
-    )
+    summary="List available AWS regions for the scan-region selector"
 )
-def get_available_regions():
+def get_available_regions(
+    current_user: AuthenticatedUser = Depends(require_viewer)
+):
     options: list[RegionOption] = [
         RegionOption(code="global", friendly_name="🌍 Global — All Regions")
     ]
@@ -160,6 +190,6 @@ def get_available_regions():
     return APIResponse(
         success=True,
         message="Available regions retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         data=options
     )

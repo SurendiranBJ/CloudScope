@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Search, Bell, ChevronDown, User, AlertOctagon } from 'lucide-react';
+import { Search, Bell, ChevronDown, User, AlertOctagon, Shield, Check } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { useScanLifecycle } from '../hooks/useScanLifecycle.ts';
+import { useAuth, type Role } from '../context/AuthContext';
 
 interface NavbarProps {
   onSearchChange?: (val: string) => void;
@@ -15,6 +16,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
   const isDashboard = location.pathname === '/' || location.pathname === '/dashboard';
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const { currentUser, activeDevRole, setDevRole, isDevMode } = useAuth();
 
   const { data } = useQuery({
     queryKey: ['dashboardSummary'],
@@ -112,20 +114,54 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
               <User className="w-4 h-4" />
             </div>
             <div className="text-left hidden md:block">
-              <p className="text-xs font-semibold text-white">Cloud Admin</p>
-              <p className="text-[10px] text-enterprise-subtext">Security Officer</p>
+              <p className="text-xs font-semibold text-white">{currentUser.id}</p>
+              <p className="text-[10px] text-enterprise-accent font-semibold">{activeDevRole}</p>
             </div>
             <ChevronDown className="w-4 h-4 text-enterprise-subtext" />
           </button>
 
           {showProfile && (
-            <div className="absolute right-0 mt-2 w-48 bg-enterprise-card border border-enterprise-border rounded-xl shadow-2xl overflow-hidden z-50 divide-y divide-enterprise-border">
+            <div className="absolute right-0 mt-2 w-56 bg-enterprise-card border border-enterprise-border rounded-xl shadow-2xl overflow-hidden z-50 divide-y divide-enterprise-border">
               <div className="p-3">
-                <p className="text-xs font-bold text-white">IdentityScope Sandbox</p>
-                <p className="text-[10px] text-enterprise-subtext">admin@identityscope.io</p>
+                <p className="text-xs font-bold text-white truncate">{currentUser.id}</p>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <Shield className="w-3 h-3 text-enterprise-accent" />
+                  <span className="text-[10px] text-enterprise-subtext uppercase font-semibold">{activeDevRole}</span>
+                </div>
               </div>
+
+              {isDevMode && (
+                <div className="p-2 space-y-1">
+                  <p className="text-[10px] text-enterprise-subtext font-semibold uppercase tracking-wider px-2 pt-1">
+                    Dev Role Switcher
+                  </p>
+                  {(['VIEWER', 'ANALYST', 'SECURITY_OFFICER', 'ADMINISTRATOR'] as Role[]).map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => {
+                        setDevRole(r);
+                        setShowProfile(false);
+                      }}
+                      className={`w-full text-left px-2.5 py-1.5 rounded text-xs flex items-center justify-between transition-colors ${
+                        activeDevRole === r
+                          ? 'bg-enterprise-accent/20 text-enterprise-accent font-semibold'
+                          : 'hover:bg-gray-800 text-gray-300'
+                      }`}
+                    >
+                      <span>{r}</span>
+                      {activeDevRole === r && <Check className="w-3.5 h-3.5" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div className="p-2 space-y-0.5">
-                {/* "My Profile" removed — no profile page/route exists in this version */}
+                <button
+                  onClick={() => { setShowProfile(false); navigate('/operations'); }}
+                  className="w-full text-left px-3 py-1.5 rounded hover:bg-gray-800 text-xs text-gray-200"
+                >
+                  Operations Center
+                </button>
                 <button
                   onClick={() => { setShowProfile(false); navigate('/settings'); }}
                   className="w-full text-left px-3 py-1.5 rounded hover:bg-gray-800 text-xs text-gray-200"

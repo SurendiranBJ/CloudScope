@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from app.schemas import APIResponse, DashboardData
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
@@ -8,8 +8,9 @@ from app.services.scanner.current_snapshot import (
     has_published_snapshot,
 )
 from datetime import datetime
+from app.security.dependencies import require_viewer
 
-router = APIRouter(tags=["Dashboard"])
+router = APIRouter(tags=["Dashboard"], dependencies=[Depends(require_viewer)])
 
 
 @router.get("/dashboard", response_model=APIResponse[DashboardData])

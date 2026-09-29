@@ -11,7 +11,7 @@ Two-level design (matching iam_service):
 
 import json
 import logging
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Optional
 from datetime import datetime
 
@@ -28,10 +28,11 @@ from app.services.scanner.current_snapshot import (
     get_current_snapshot_published_at,
     has_published_snapshot,
 )
+from app.security.dependencies import require_viewer
 
 logger = logging.getLogger("scanner")
 
-router = APIRouter(tags=["Policies"])
+router = APIRouter(tags=["Policies"], dependencies=[Depends(require_viewer)])
 
 
 @router.get("/policies", response_model=APIResponse[PaginatedPolicyCatalog])

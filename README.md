@@ -509,6 +509,43 @@ CloudScope utilizes an enterprise-grade, multi-phase CI pipeline defined in [`.g
 
 ---
 
+## 🛡️ Phase 2: Production Reliability, Security & Operations Hardening
+
+CloudScope incorporates enterprise production hardening designed for multi-instance distributed reliability, strict authorization, and complete auditability:
+
+### 1. Authentication & Role-Based Access Control (RBAC)
+- **OIDC / JWT Validation**: Cryptographic signature validation with claims normalization, supporting RSA/ECDSA JWKS and symmetric HMAC secrets.
+- **Monotonic Role Hierarchy**:
+  - `VIEWER` (Level 1): Read-only visibility into graphs, inventory, alerts, and risk assessments.
+  - `ANALYST` (Level 2): What-if policy simulations and natural language Copilot AI analysis.
+  - `SECURITY_OFFICER` (Level 3): Security finding lifecycle management (Acknowledge, Suppress, Resolve) and administrative audit log viewing.
+  - `ADMINISTRATOR` (Level 4): Full operational management, manual scan triggering, region configuration, and distributed lock inspection.
+- **Development Authentication**: Configurable `DEV_AUTH_MODE` for local development and UI testing with instant role switching.
+
+### 2. Distributed Scan Lock & Multi-Worker Coordination
+- **Atomic Locking**: Uses Redis `SET cloudscope:scan:lock <token> NX EX 120` to guarantee mutual exclusion across multiple instances.
+- **Heartbeat & Lease Renewal**: Active scan processes maintain an atomic Lua script heartbeat every 10 seconds to renew lease locks safely.
+- **Stale Lock Auto-Recovery**: Prevents permanent deadlocks in the event of hard worker termination.
+
+### 3. Durable Relational Persistence
+- **Decoupled Architecture**: Redis functions strictly as an ephemeral cache and lock coordinator.
+- **Relational Store**: Scan executions (`ScanRun`), published snapshots (`ScanSnapshot`), finding triage states (`FindingState`), and audit records (`AuditEvent`) are durably persisted in SQLite (dev) or PostgreSQL (prod).
+
+### 4. Sliding Window Rate Limiting
+- Dynamic sliding window rate limits keyed by authenticated user ID (with IP address fallback for unauthenticated probes).
+- Rejections return HTTP 429 Too Many Requests with compliant `Retry-After` headers and UI countdown banners.
+
+### 5. Administrative Audit Logging & Automated Secret Redaction
+- Comprehensive audit records for scan triggers, region configuration changes, finding lifecycle updates, simulations, and Copilot queries.
+- **Zero-Credential Leakage**: Centralized regex and dictionary-key masking (`sanitizer.py`) automatically strips AWS access keys, secret keys, session tokens, and Gemini API keys prior to storage or log emission.
+
+### 6. Observability, Health Probes & Operations Center
+- **Kubernetes Probes**: `/live` (in-memory liveness) and `/ready` (dependency check decoupled from AWS API availability).
+- **Prometheus Metrics**: `GET /metrics` exposing request counters, latency histograms, and scanner run counts.
+- **Operations Dashboard**: Dedicated UI at `/operations` (Restricted to `ADMINISTRATOR`) displaying real-time lock status, dependency health, scan execution history, and audit log inspector.
+
+---
+
 ## 🔒 Security & Limitations
 
 - **Read-Only Operation**: The scanner never modifies AWS infrastructure or policy configurations during discovery.
@@ -516,3 +553,4 @@ CloudScope utilizes an enterprise-grade, multi-phase CI pipeline defined in [`.g
 - **CloudTrail Latency**: CloudTrail monitoring operates via continuous/scheduled lookup rather than synchronous sub-second kernel streaming.
 - **IAM Condition Scope**: Implements standard Condition keys (`aws:PrincipalArn`, `aws:SourceIp`, MFA checks). Complex custom condition operator chaining outside AWS standard specs is reported as `CONDITIONAL`.
 - **Intended Purpose**: Designed for cloud security posture assessment, CIEM access analysis, and academic demonstration.
+

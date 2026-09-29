@@ -130,7 +130,13 @@ class FindingService:
                 return f
         return None
 
-    def transition_status(self, finding_id: str, new_status: str) -> Optional[SecurityFinding]:
+    def transition_status(
+        self,
+        finding_id: str,
+        new_status: str,
+        changed_by: Optional[str] = None,
+        change_reason: Optional[str] = None
+    ) -> Optional[SecurityFinding]:
         """Atomically validate and execute lifecycle status transition.
         
         Enforces strict state machine rules:
@@ -170,23 +176,40 @@ class FindingService:
 
             if matched:
                 self._save_findings(findings)
+                # Persist to relational durable store
+                try:
+                    from app.persistence.repository import record_finding_state
+                    from app.services.scanner.current_snapshot import get_current_snapshot_id
+                    record_finding_state(
+                        finding_id=matched.id,
+                        status=matched.status,
+                        first_seen=matched.firstSeen,
+                        last_seen=matched.lastSeen,
+                        resolved_at=matched.resolvedAt,
+                        snapshot_id=get_current_snapshot_id(),
+                        changed_by=changed_by,
+                        change_reason=change_reason
+                    )
+                except Exception as de:
+                    logger.warning(f"Failed to record durable finding state in DB: {de}")
+
             return matched
 
-    def acknowledge_finding(self, finding_id: str) -> Optional[SecurityFinding]:
+    def acknowledge_finding(self, finding_id: str, changed_by: Optional[str] = None, change_reason: Optional[str] = None) -> Optional[SecurityFinding]:
         """Transition finding status to ACKNOWLEDGED."""
-        return self.transition_status(finding_id, "ACKNOWLEDGED")
+        return self.transition_status(finding_id, "ACKNOWLEDGED", changed_by=changed_by, change_reason=change_reason)
 
-    def resolve_finding(self, finding_id: str) -> Optional[SecurityFinding]:
+    def resolve_finding(self, finding_id: str, changed_by: Optional[str] = None, change_reason: Optional[str] = None) -> Optional[SecurityFinding]:
         """Transition finding status to RESOLVED."""
-        return self.transition_status(finding_id, "RESOLVED")
+        return self.transition_status(finding_id, "RESOLVED", changed_by=changed_by, change_reason=change_reason)
 
-    def suppress_finding(self, finding_id: str) -> Optional[SecurityFinding]:
+    def suppress_finding(self, finding_id: str, changed_by: Optional[str] = None, change_reason: Optional[str] = None) -> Optional[SecurityFinding]:
         """Transition finding status to SUPPRESSED."""
-        return self.transition_status(finding_id, "SUPPRESSED")
+        return self.transition_status(finding_id, "SUPPRESSED", changed_by=changed_by, change_reason=change_reason)
 
-    def reopen_finding(self, finding_id: str) -> Optional[SecurityFinding]:
+    def reopen_finding(self, finding_id: str, changed_by: Optional[str] = None, change_reason: Optional[str] = None) -> Optional[SecurityFinding]:
         """Transition finding status back to OPEN."""
-        return self.transition_status(finding_id, "OPEN")
+        return self.transition_status(finding_id, "OPEN", changed_by=changed_by, change_reason=change_reason)
 
     def _save_findings(self, findings: List[SecurityFinding]):
         """Persist findings to in-memory store, durable disk storage, and Redis cache."""

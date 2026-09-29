@@ -1,72 +1,202 @@
 import logging
-import subprocess
 import os
+import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
 
 from app.config import settings
 from app.database import get_driver, close_driver
+from app.persistence.database import init_db
 from app.utils.scheduler import start_scheduler, stop_scheduler
-from app.schemas import APIResponse
-from app.cache import cache
-from app.services.aws.region_cache import get_all_regions, get_scan_mode_state
+from app.utils.logging_config import configure_logging
+from app.middleware.request_id import RequestCorrelationMiddleware, get_current_request_id
+from app.metrics import http_requests_total, http_request_duration_seconds, rate_limit_rejections_total
+from app.services.aws.session import get_aws_diagnostic_info
 
-# Set up logging reference
+# Configure structured logging
+configure_logging()
 logger = logging.getLogger("backend")
 
-# Retrieve git commit hash at startup
-try:
-    commit_hash = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], 
-        stderr=subprocess.DEVNULL
-    ).decode("utf-8").strip()
-except Exception:
-    commit_hash = os.getenv("GIT_COMMIT", "unknown")
-
-start_time = datetime.utcnow().isoformat() + "Z"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup actions
-    logger.info("Initializing IdentityScope Backend Engine Server")
-    
-    # Do not clear authoritative snapshot cache on startup to ensure existing data remains visible across restarts
+    logger.info("Initializing CloudScope Production Backend Engine Server")
+
+    # Display DEV_AUTH_MODE security warning if enabled
+    dev_auth = os.getenv("DEV_AUTH_MODE", "false").lower() == "true"
+    if dev_auth:
+        logger.warning(
+            "*** SECURITY WARNING: DEV_AUTH_MODE IS ENABLED. "
+            "AUTHENTICATION TOKENS ARE BYPASSED VIA X-DEV-ROLE. "
+            "DO NOT RUN WITH DEV_AUTH_MODE=true IN PRODUCTION ENVIRONMENTS! ***"
+        )
 
     try:
-        get_driver()  # Initialize Neo4j pool
-        start_scheduler()  # Start APScheduler cron scan job
+        # Initialize relational database schemas (SQLite / PostgreSQL)
+        init_db()
+        # Initialize Neo4j driver
+        get_driver()
+        # Start distributed-safe scheduler
+        start_scheduler()
     except Exception as e:
-        logger.critical(f"Server startup failed: {str(e)}")
-    
+        logger.critical(f"Server startup failed: {str(e)}", exc_info=True)
+
     yield
-    
+
     # Shutdown actions
-    logger.info("De-initializing IdentityScope Backend Engine Server")
+    logger.info("De-initializing CloudScope Backend Engine Server")
     stop_scheduler()
     close_driver()
 
+
 app = FastAPI(
-    title="IdentityScope REST API",
-    description="Backend API mapping AWS IAM configuration vulnerabilities and lateral privilege escalation paths.",
-    version="1.0.0",
+    title="CloudScope REST API",
+    description="Production-grade cloud security posture and lateral movement analysis engine.",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# CORS Policy configuration
+# 1. Mount Request Correlation Middleware
+app.add_middleware(RequestCorrelationMiddleware)
+
+# 2. CORS Policy configuration
+# Ensure credentials cannot be combined with wildcard origin
+cors_origins = [o.strip() for o in settings.CORS_ORIGINS if o.strip()]
+allow_creds = True
+if "*" in cors_origins:
+    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        logger.warning("CORS wildcard '*' with credentials detected in production. Restricting wildcard credentials.")
+        allow_creds = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=allow_creds,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
 
-# API v1 Router group
+
+# Telemetry middleware for Prometheus HTTP metrics
+@app.middleware("http")
+async def prometheus_metrics_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start
+
+    path = request.url.path
+    # Group parameterized IDs for Prometheus labels to avoid high cardinality
+    if not (path == "/metrics" or path == "/live"):
+        route_label = path
+        if "/findings/find-" in path:
+            route_label = "/api/v1/findings/{id}"
+        elif "/simulation/changes/" in path:
+            route_label = "/api/v1/simulation/changes/{id}"
+        elif "/policies/arn:" in path:
+            route_label = "/api/v1/policies/{id}"
+
+        http_requests_total.labels(
+            method=request.method,
+            endpoint=route_label,
+            status_code=str(response.status_code)
+        ).inc()
+
+        http_request_duration_seconds.labels(
+            method=request.method,
+            endpoint=route_label
+        ).observe(duration)
+
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Global Exception Handlers (Standardized & Sanitized Response Format)
+# ---------------------------------------------------------------------------
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    req_id = getattr(request.state, "request_id", None) or get_current_request_id()
+
+    headers = dict(exc.headers or {})
+    if req_id:
+        headers["X-Request-ID"] = req_id
+
+    if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+        rate_limit_rejections_total.labels(category="general").inc()
+
+    # Detail might already be a dict from rate_limiter or a simple string
+    if isinstance(exc.detail, dict):
+        body = {
+            "success": False,
+            "detail": exc.detail.get("error", {}).get("message", str(exc.detail)),
+            "error": exc.detail.get("error", {
+                "code": f"HTTP_{exc.status_code}",
+                "message": str(exc.detail)
+            }),
+            "request_id": req_id
+        }
+        if "retry_after" in exc.detail:
+            body["retry_after"] = exc.detail["retry_after"]
+    else:
+        body = {
+            "success": False,
+            "detail": exc.detail,
+            "error": {
+                "code": f"HTTP_{exc.status_code}",
+                "message": exc.detail
+            },
+            "request_id": req_id
+        }
+
+    return JSONResponse(status_code=exc.status_code, content=body, headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    req_id = getattr(request.state, "request_id", None) or get_current_request_id()
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "success": False,
+            "detail": exc.errors(),
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "Invalid request parameter or payload",
+                "details": exc.errors()
+            },
+            "request_id": req_id
+        },
+        headers={"X-Request-ID": req_id} if req_id else None
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    req_id = getattr(request.state, "request_id", None) or get_current_request_id()
+    logger.error(f"Internal server error processing {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "success": False,
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "An unexpected server error occurred. Please contact your administrator."
+            },
+            "request_id": req_id
+        },
+        headers={"X-Request-ID": req_id} if req_id else None
+    )
+
+
+# ---------------------------------------------------------------------------
+# API Routers Mount
+# ---------------------------------------------------------------------------
 api_v1_router = APIRouter(prefix="/api/v1")
 
-# Import Routers
 from app.routers import (
     dashboard,
     users,
@@ -79,14 +209,17 @@ from app.routers import (
     scan,
     copilot,
     risks,
-    settings,
+    settings as settings_router,
     policies,
     simulation,
     relationships,
-    findings
+    findings,
+    audit,
+    operations,
+    health
 )
 
-# Mount Routers
+# Mount Routers under /api/v1
 api_v1_router.include_router(dashboard.router)
 api_v1_router.include_router(users.router)
 api_v1_router.include_router(roles.router)
@@ -98,117 +231,16 @@ api_v1_router.include_router(reports.router)
 api_v1_router.include_router(scan.router)
 api_v1_router.include_router(copilot.router)
 api_v1_router.include_router(risks.router)
-api_v1_router.include_router(settings.router)
-# New routers: policy catalog, simulation, relationships, findings
+api_v1_router.include_router(settings_router.router)
 api_v1_router.include_router(policies.router)
 api_v1_router.include_router(simulation.router)
 api_v1_router.include_router(relationships.router)
 api_v1_router.include_router(findings.router)
+api_v1_router.include_router(audit.router)
+api_v1_router.include_router(operations.router)
+api_v1_router.include_router(health.router)
 
 app.include_router(api_v1_router)
 
-from app.services.aws.session import get_aws_diagnostic_info
-
-# Health & Metrics Endpoints
-@api_v1_router.get("/health/aws", tags=["Health"], response_model=APIResponse[dict])
-def get_api_v1_aws_health():
-    diag = get_aws_diagnostic_info()
-    return APIResponse(
-        success=diag["authenticated"],
-        message="AWS connection verified" if diag["authenticated"] else "AWS connection failed",
-        timestamp=datetime.utcnow().isoformat() + "Z",
-        data=diag
-    )
-
-@app.get("/health/aws", tags=["Health"], response_model=APIResponse[dict])
-def get_aws_health():
-    diag = get_aws_diagnostic_info()
-    return APIResponse(
-        success=diag["authenticated"],
-        message="AWS connection verified" if diag["authenticated"] else "AWS connection failed",
-        timestamp=datetime.utcnow().isoformat() + "Z",
-        data=diag
-    )
-
-@api_v1_router.get("/health", tags=["Health"], response_model=APIResponse[dict])
-def get_api_v1_health():
-    try:
-        regions = get_all_regions()
-        mode_state = get_scan_mode_state()
-    except Exception:
-        regions = "unavailable (check AWS credentials)"
-        mode_state = {"mode": "unknown", "selected_region": None, "resolved_regions": []}
-
-    aws_diag = get_aws_diagnostic_info()
-
-    return APIResponse(
-        success=True,
-        message="Service is running normally",
-        timestamp=datetime.utcnow().isoformat() + "Z",
-        data={
-            "status": "healthy",
-            "service": "CloudScope API",
-            "commit": commit_hash,
-            "start_time": start_time,
-            "scan_regions": regions,
-            "resolved_regions": mode_state.get("resolved_regions", regions),
-            "scan_mode": mode_state["mode"],
-            "selected_region": mode_state["selected_region"],
-            "aws_authenticated": aws_diag["authenticated"],
-            "aws_account_id": aws_diag["account_id"],
-            "aws_arn": aws_diag["arn"]
-        }
-    )
-
-@app.get("/health", tags=["Health"], response_model=APIResponse[dict])
-def get_health():
-    try:
-        regions = get_all_regions()
-        mode_state = get_scan_mode_state()
-    except Exception:
-        regions = "unavailable (check AWS credentials)"
-        mode_state = {"mode": "unknown", "selected_region": None, "resolved_regions": []}
-
-    aws_diag = get_aws_diagnostic_info()
-    return APIResponse(
-        success=True,
-        message="Service is running normally",
-        timestamp=datetime.utcnow().isoformat() + "Z",
-        data={
-            "status": "healthy",
-            "service": "CloudScope API",
-            "aws_authenticated": aws_diag["authenticated"],
-            "scan_mode": mode_state.get("mode"),
-            "scan_regions": regions,
-            "resolved_regions": mode_state.get("resolved_regions", regions),
-            "selected_region": mode_state.get("selected_region")
-        }
-    )
-
-@app.get("/ready", tags=["Health"], response_model=APIResponse[dict])
-@api_v1_router.get("/ready", tags=["Health"], response_model=APIResponse[dict])
-def get_readiness():
-    neo4j_ready = False
-    try:
-        driver = get_driver()
-        driver.verify_connectivity()
-        neo4j_ready = True
-    except Exception:
-        pass
-
-    aws_diag = get_aws_diagnostic_info()
-
-    return APIResponse(
-        success=aws_diag["authenticated"],
-        message="Readiness check finished",
-        timestamp=datetime.utcnow().isoformat() + "Z",
-        data={
-            "backend": "ok",
-            "aws": "ok" if aws_diag["authenticated"] else "failed",
-            "neo4j": "connected" if neo4j_ready else "disconnected",
-            "redis": "connected" if cache.is_redis else "in-memory fallback",
-            "aws_account": aws_diag.get("account_id"),
-            "aws_arn": aws_diag.get("arn"),
-            "ready": aws_diag["authenticated"]
-        }
-    )
+# Mount root health and liveness endpoints for Docker/Kubernetes/Prometheus
+app.include_router(health.router)

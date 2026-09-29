@@ -16,7 +16,8 @@ import {
   ShieldCheck,
   Lock,
   Share2,
-  Activity
+  Activity,
+  Sliders
 } from 'lucide-react';
 import { apiClient } from '../api/client';
 import { getSimulationState } from '../api/simulation';
@@ -63,6 +64,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
     { name: 'Relationships', path: '/relationships', icon: Share2 },
     { name: 'Alerts', path: '/alerts', icon: Bell },
     { name: 'Reports', path: '/reports', icon: FileBarChart },
+    { name: 'Operations', path: '/operations', icon: Sliders },
     { name: 'Settings', path: '/settings', icon: Settings }
   ];
 

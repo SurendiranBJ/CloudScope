@@ -95,6 +95,12 @@ jobs:
             tests/test_api_endpoints.py \
             tests/test_aws_session.py \
             tests/test_region_cache.py \
+            tests/test_phase2_audit_logging.py \
+            tests/test_phase2_authentication_rbac.py \
+            tests/test_phase2_distributed_lock.py \
+            tests/test_phase2_durability_multi_instance.py \
+            tests/test_phase2_health_endpoints.py \
+            tests/test_phase2_rate_limiting.py \
             -v --tb=short \
             --junitxml=test-results/backend-core.xml
 

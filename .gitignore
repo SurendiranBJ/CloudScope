@@ -33,6 +33,10 @@ venv/
 # Runtime local data
 **/data/*.json
 !**/data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+test-results/
 
 # Environment files
 .env

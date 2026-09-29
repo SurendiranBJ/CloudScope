@@ -9,3 +9,6 @@ apscheduler>=3.10.4
 python-dotenv>=1.0.1
 redis>=5.0.2
 google-genai>=2.25.0
+PyJWT[crypto]>=2.8.0
+sqlalchemy>=2.0.0
+prometheus-client>=0.20.0

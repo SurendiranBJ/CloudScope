@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import List
 from app.schemas import APIResponse, RiskFinding
 from app.services.scanner.scan_manager import scan_manager
@@ -10,8 +10,9 @@ from app.services.scanner.current_snapshot import (
     has_published_snapshot,
 )
 from datetime import datetime
+from app.security.dependencies import require_viewer
 
-router = APIRouter(tags=["Risk"])
+router = APIRouter(tags=["Risk"], dependencies=[Depends(require_viewer)])
 
 
 @router.get("/risk-assessment", response_model=APIResponse[List[RiskFinding]])

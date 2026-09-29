@@ -7,7 +7,9 @@ No fake certifications or fabricated percentages.
 
 import json
 import logging
-from fastapi import APIRouter
+from datetime import datetime, timezone
+from typing import Optional
+from fastapi import APIRouter, Depends, Request, Query
 from app.schemas import APIResponse
 from app.cache import cache
 from app.services.scanner.scan_manager import scan_manager
@@ -16,7 +18,10 @@ from app.services.risk.risk_constants import (
     SEVERITY_HIGH_THRESHOLD,
     SEVERITY_MEDIUM_THRESHOLD
 )
-from datetime import datetime
+from app.security.dependencies import require_viewer, require_security_officer
+from app.security.models import AuthenticatedUser
+from app.security.rate_limiter import rate_limit
+from app.services.audit.audit_service import audit_service
 
 logger = logging.getLogger("backend")
 router = APIRouter(tags=["Reports"])
@@ -164,8 +169,10 @@ def _compute_reports_from_cache() -> dict:
 
 
 @router.get("/reports/summary")
-def get_reports_summary():
-    """Return verified security control coverage report."""
+def get_reports_summary(
+    current_user: AuthenticatedUser = Depends(require_viewer)
+):
+    """Return verified security control coverage report. Accessible to VIEWER role."""
     users = cache.get("v1:users") or []
     if not users and not scan_manager.is_running:
         scan_manager.trigger_async_scan()
@@ -175,20 +182,34 @@ def get_reports_summary():
     return APIResponse(
         success=True,
         message="Verified security control report summary retrieved",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         data=report_data
     )
 
 
-@router.get("/reports/export/json")
-def export_security_report_json():
-    """Export complete security report as structured JSON with canonical findings and scan metadata."""
+@router.get("/reports/export/json", dependencies=[Depends(rate_limit("export"))])
+def export_security_report_json(
+    request: Request,
+    max_findings: int = Query(500, ge=1, le=2000, description="Maximum number of findings to include in export"),
+    current_user: AuthenticatedUser = Depends(require_security_officer)
+):
+    """
+    Export complete security report as structured JSON.
+    Restricted to SECURITY_OFFICER and ADMINISTRATOR roles.
+    Includes bounded export limits to prevent memory exhaustion.
+    """
     report = _compute_reports_from_cache()
     scan_meta = cache.get("v1:scan_metadata") or {}
     findings = cache.get("v1:findings") or []
 
+    bounded_findings = [
+        f if isinstance(f, dict) else f.model_dump()
+        for f in findings[:max_findings]
+    ]
+
     export_payload = {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "exported_by": current_user.subject,
         "platform": "CloudScope AWS Security Analysis",
         "scan_information": {
             "scan_id": scan_meta.get("scanId"),
@@ -201,15 +222,25 @@ def export_security_report_json():
         "security_summary": report.get("summary", {}),
         "control_coverage": report.get("compliance", []),
         "findings_by_severity": report.get("findings_by_severity", {}),
-        "canonical_findings": [
-            f if isinstance(f, dict) else f.model_dump()
-            for f in findings
-        ]
+        "canonical_findings": bounded_findings
     }
+
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="REPORT_EXPORTED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="report",
+        resource_id="json_export",
+        result="SUCCESS",
+        ip_address=client_ip,
+        metadata={"finding_count": len(bounded_findings), "format": "JSON"}
+    )
+
     return APIResponse(
         success=True,
         message="Security report exported successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         data=export_payload
     )
 

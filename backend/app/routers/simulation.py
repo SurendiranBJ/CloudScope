@@ -19,7 +19,7 @@ SIMULATION SAFETY:
 """
 
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Request
 from datetime import datetime
 from typing import List
 
@@ -35,9 +35,13 @@ from app.services.simulation.simulation_analyzer import (
     build_policy_preview_analysis,
 )
 from app.services.scanner.scan_manager import scan_manager
+from app.security.dependencies import require_analyst
+from app.security.models import AuthenticatedUser
+from app.security.rate_limiter import rate_limit
+from app.services.audit.audit_service import audit_service
 
 logger = logging.getLogger("scanner")
-router = APIRouter(tags=["Simulation"])
+router = APIRouter(tags=["Simulation"], dependencies=[Depends(require_analyst)])
 
 
 def _get_current_inventory():
@@ -126,8 +130,12 @@ def get_simulation_state():
     )
 
 
-@router.post("/simulation/changes", response_model=APIResponse[dict])
-def add_simulation_change(body: SimulationChangeRequest):
+@router.post("/simulation/changes", response_model=APIResponse[dict], dependencies=[Depends(rate_limit("simulation"))])
+def add_simulation_change(
+    body: SimulationChangeRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_analyst)
+):
     """Add a pending simulation change (ATTACH_POLICY or DETACH_POLICY).
 
     This does NOT modify AWS. This does NOT modify Neo4j.
@@ -155,6 +163,18 @@ def add_simulation_change(body: SimulationChangeRequest):
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="SIMULATION_EXECUTED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="simulation",
+        resource_id=body.principal_id,
+        result="SUCCESS",
+        ip_address=client_ip,
+        metadata={"simulation_action": action, "policy_arn": body.policy_arn}
+    )
 
     return APIResponse(
         success=True,
@@ -193,8 +213,12 @@ def reset_simulation():
     )
 
 
-@router.post("/simulation/preview", response_model=APIResponse[dict])
-def preview_simulation_change(body: SimulationPreviewRequest):
+@router.post("/simulation/preview", response_model=APIResponse[dict], dependencies=[Depends(rate_limit("simulation"))])
+def preview_simulation_change(
+    body: SimulationPreviewRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_analyst)
+):
     """Preview the security impact of a proposed change WITHOUT persisting it.
 
     Returns risk comparison, new reachable resources, new attack paths, etc.
@@ -221,6 +245,18 @@ def preview_simulation_change(body: SimulationPreviewRequest):
         current_policy_doc_map=policy_doc_map,
         current_attack_paths=current_attack_paths,
         current_global_posture=current_global_posture,
+    )
+
+    client_ip = request.client.host if request.client else None
+    audit_service.log(
+        action="SIMULATION_EXECUTED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="simulation_preview",
+        resource_id=body.principal_id,
+        result="SUCCESS",
+        ip_address=client_ip,
+        metadata={"action": body.action, "policy_arn": body.policy_arn}
     )
 
     return APIResponse(
