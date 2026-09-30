@@ -28,8 +28,8 @@ router = APIRouter(tags=["Health & Operations"])
 
 # Startup time and commit identification
 START_TIME = datetime.now(timezone.utc).isoformat()
-APP_VERSION = "2.0.0"
-BUILD_VERSION = os.getenv("BUILD_VERSION", "2.0.0-phase2")
+APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
+BUILD_VERSION = os.getenv("BUILD_VERSION", f"v{APP_VERSION}")
 
 try:
     COMMIT_HASH = subprocess.check_output(

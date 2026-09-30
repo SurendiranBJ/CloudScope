@@ -659,3 +659,109 @@ CloudScope incorporates enterprise production hardening designed for multi-insta
 - **IAM Condition Scope**: Implements standard Condition keys (`aws:PrincipalArn`, `aws:SourceIp`, MFA checks). Complex custom condition operator chaining outside AWS standard specs is reported as `CONDITIONAL`.
 - **Intended Purpose**: Designed for cloud security posture assessment, CIEM access analysis, and academic demonstration.
 
+---
+
+## 📦 Open Source Releases & Docker Distribution
+
+CloudScope provides prebuilt, hardened container images published to **GitHub Container Registry (GHCR)**. A user can run the entire CloudScope platform using only Docker and Docker Compose—**without installing Python, Node.js, Redis, or Neo4j on the host machine**.
+
+### 🚀 Quick Start (Production / Release Installation)
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/SurendiranBJ/CloudScope.git
+   cd CloudScope
+   ```
+
+2. **Configure your environment secrets:**
+   ```bash
+   cp .env.example .env
+   # Edit .env and configure NEO4J_PASSWORD, JWT_SECRET, and AWS_CREDENTIALS_DIR
+   ```
+
+3. **Pull and start the released images:**
+   ```bash
+   # Stable semantic version release (e.g. v1.0.0):
+   IMAGE_TAG=v1.0.0 docker compose -f compose.release.yaml pull
+   IMAGE_TAG=v1.0.0 docker compose -f compose.release.yaml up -d
+   ```
+
+4. **Access the application:**
+   - **Web UI & Graph Cytoscape:** [http://localhost](http://localhost)
+   - **Liveness Probe:** `http://localhost/healthz`
+   - **Backend Readiness:** `docker compose -f compose.release.yaml exec backend curl -fsS http://localhost:8000/ready`
+   - **Operations & Health Center:** [http://localhost/operations](http://localhost/operations)
+
+---
+
+### 🏷️ Release Policy & Automatic Semantic Versioning
+
+CloudScope uses automated **Semantic Versioning (`MAJOR.MINOR.PATCH`)**:
+
+```text
+git push origin sura
+        │
+        ▼
+   CloudScope CI (13/13 quality gate jobs)
+        │
+     SUCCESS
+        ▼
+   CloudScope CD (on default branch master)
+        │
+        ├─► Resolve exact CI commit SHA
+        ├─► Discover latest SemVer tag & increment PATCH (e.g. v1.0.0 -> v1.0.1)
+        ├─► Build multi-arch backend & frontend Docker images
+        ├─► Publish immutable tags to GHCR
+        ├─► Create annotated Git tag pointing to exact CI SHA
+        └─► Create GitHub Release with automated notes
+```
+
+- **Patch Increments**: Every push to development branch `sura` that passes all 13 CI jobs produces the next consecutive patch release (`v1.0.0` → `v1.0.1` → `v1.0.2`...).
+- **Strict Quality Invariant**: Failed, cancelled, or in-progress CI runs **never** trigger a release or tag creation.
+- **Commit Invariant**:
+  The Git commit tested by CI is the exact commit tagged, packaged, and released:
+  $$\text{CI-tested SHA} \equiv \text{Git Tag Target SHA} \equiv \text{Image Revision Label} \equiv \text{Release Commitish}$$
+
+---
+
+### 🐳 Published Container Images
+
+Published under the `ghcr.io/surendiranj` namespace:
+
+| Service | Image Repository | Tag Classes Published |
+|---|---|---|
+| **Backend** | `ghcr.io/surendiranj/cloudscope-backend` | `vX.Y.Z`, `<FULL_COMMIT_SHA>`, `sura-latest` |
+| **Frontend** | `ghcr.io/surendiranj/cloudscope-frontend` | `vX.Y.Z`, `<FULL_COMMIT_SHA>`, `sura-latest` |
+| **Graph DB** | `neo4j:5.18.0-community` *(Official)* | APOC enabled, loopback port binding |
+| **Cache/Lock** | `redis:7-alpine` *(Official)* | Internal network only, no published host ports |
+
+> **Note**: For each release, the semantic version tag (`v1.0.0`), the immutable commit SHA tag, and `sura-latest` all share the exact same cryptographic image digest.
+
+---
+
+### 🔄 Updating & Rolling Back Releases
+
+#### Updating to the Newest Release:
+```bash
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
+```
+
+#### Rolling Back to a Specific Pinned Release:
+To roll back without data loss (persistent database volumes `neo4j_data` and `app_storage` are retained):
+```bash
+IMAGE_TAG=v1.0.0 docker compose -f compose.release.yaml pull
+IMAGE_TAG=v1.0.0 docker compose -f compose.release.yaml up -d
+```
+
+---
+
+### 🌐 GHCR Package Visibility
+
+For public open-source distribution:
+1. In GitHub, navigate to **Packages** on your profile/organization.
+2. Select `cloudscope-backend` and `cloudscope-frontend`.
+3. Under **Package settings** → **Danger Zone**, set package visibility to **Public**.
+4. Once public, any user can run `docker pull ghcr.io/surendiranj/cloudscope-backend:v1.0.0` without requiring GitHub credentials.
+
+

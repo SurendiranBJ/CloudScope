@@ -11,33 +11,39 @@ on:
   workflow_dispatch:
     inputs:
       git_ref:
-        description: "Branch, tag, or commit SHA to deploy"
+        description: "Branch, tag, or commit SHA to deploy (defaults to sura)"
         required: true
         default: "sura"
 
 concurrency:
-  group: cloudscope-cd-production
+  group: cloudscope-release
   cancel-in-progress: false
 
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+  actions: read
+
 jobs:
-  build-and-publish:
-    name: Build & Publish Docker Images
+  release:
+    name: Build, Tag & Publish Release
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       (github.event_name == 'workflow_dispatch')
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-      actions: read
     outputs:
       commit_sha: ${{ steps.resolve-commit.outputs.commit_sha }}
       selected_ref: ${{ steps.resolve-commit.outputs.selected_ref }}
       ci_run_id: ${{ steps.resolve-commit.outputs.ci_run_id }}
       ci_run_url: ${{ steps.resolve-commit.outputs.ci_run_url }}
+      release_version: ${{ steps.determine-version.outputs.release_version }}
+      release_tag: ${{ steps.determine-version.outputs.release_tag }}
       owner_lc: ${{ steps.image-tags.outputs.owner_lc }}
+      backend_digest: ${{ steps.build-backend.outputs.digest }}
+      frontend_digest: ${{ steps.build-frontend.outputs.digest }}
+      release_url: ${{ steps.create-release.outputs.release_url }}
     steps:
       - name: Resolve Commit and Verify CI Success Gate
         id: resolve-commit
@@ -107,9 +113,9 @@ jobs:
 
           if not ci_runs:
               print("==================================================")
-              print(f"Selected ref: {selected_ref}")
-              print(f"Resolved SHA: {resolved_sha}")
-              print(f"CI run:       None found for exact SHA")
+              print(f"Selected ref:  {selected_ref}")
+              print(f"Resolved SHA:  {resolved_sha}")
+              print(f"CI run:        None found for exact SHA")
               print(f"CI conclusion: None")
               print("==================================================")
               print(f"::error::Deployment blocked: Selected commit has no successful CloudScope CI run.")
@@ -155,28 +161,108 @@ jobs:
                   f.write(f"ci_run_url={run_url}\n")
           EOF
 
-      - name: Record Build Selection in Workflow Summary
+      - name: Determine Next Semantic Version & Tag
+        id: determine-version
+        run: |
+          python3 - << 'EOF'
+          import subprocess
+          import re
+          import sys
+          import os
+
+          # Query tags from remote origin
+          try:
+              output = subprocess.check_output(
+                  ["git", "ls-remote", "--tags", "origin"],
+                  stderr=subprocess.DEVNULL
+              ).decode("utf-8")
+          except Exception as e:
+              print(f"Warning: git ls-remote failed: {e}")
+              output = ""
+
+          semver_pattern = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+          existing_tags = set()
+          parsed_versions = []
+
+          for line in output.strip().splitlines():
+              if not line:
+                  continue
+              parts = line.split("\t")
+              if len(parts) == 2:
+                  ref = parts[1].strip()
+                  if ref.startswith("refs/tags/"):
+                      tag_name = ref[len("refs/tags/"):].replace("^{}", "")
+                      existing_tags.add(tag_name)
+                      match = semver_pattern.match(tag_name)
+                      if match:
+                          major, minor, patch = map(int, match.groups())
+                          parsed_versions.append((major, minor, patch))
+
+          print(f"Discovered {len(existing_tags)} total tags on origin ({len(parsed_versions)} valid semver tags).")
+
+          if not parsed_versions:
+              next_ver = (1, 0, 0)
+              print("No existing semver release tags found. Initializing release at v1.0.0.")
+          else:
+              parsed_versions.sort(key=lambda t: (t[0], t[1], t[2]))
+              latest_major, latest_minor, latest_patch = parsed_versions[-1]
+              print(f"Highest existing semver release: v{latest_major}.{latest_minor}.{latest_patch}")
+              next_ver = (latest_major, latest_minor, latest_patch + 1)
+
+          next_version = f"{next_ver[0]}.{next_ver[1]}.{next_ver[2]}"
+          next_tag = f"v{next_version}"
+
+          # Duplicate protection / conflict avoidance
+          while next_tag in existing_tags or next_version in existing_tags:
+              print(f"Release tag {next_tag} already exists on remote! Incrementing patch...")
+              next_ver = (next_ver[0], next_ver[1], next_ver[2] + 1)
+              next_version = f"{next_ver[0]}.{next_ver[1]}.{next_ver[2]}"
+              next_tag = f"v{next_version}"
+
+          print("==================================================")
+          print(f"Allocated Release Version: {next_version}")
+          print(f"Allocated Release Tag:     {next_tag}")
+          print("==================================================")
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a") as f:
+                  f.write(f"release_version={next_version}\n")
+                  f.write(f"release_tag={next_tag}\n")
+
+          github_env = os.environ.get("GITHUB_ENV")
+          if github_env:
+              with open(github_env, "a") as f:
+                  f.write(f"RELEASE_VERSION={next_version}\n")
+                  f.write(f"RELEASE_TAG={next_tag}\n")
+          EOF
+
+      - name: Record Release Plan in Workflow Summary
         env:
           EVENT_NAME: ${{ github.event_name }}
           SELECTED_REF: ${{ steps.resolve-commit.outputs.selected_ref }}
           COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
           CI_RUN_ID: ${{ steps.resolve-commit.outputs.ci_run_id }}
           CI_RUN_URL: ${{ steps.resolve-commit.outputs.ci_run_url }}
+          RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.determine-version.outputs.release_version }}
         run: |
           cat << EOF >> $GITHUB_STEP_SUMMARY
-          ### 🚀 CloudScope CD: Build & Publish Initiated
+          ### 🚀 CloudScope Open Source Release Pipeline
           | Property | Value |
           |---|---|
           | **Event Trigger** | \`${EVENT_NAME}\` |
-          | **Selected ref** | \`${SELECTED_REF}\` |
-          | **Resolved SHA** | \`${COMMIT_SHA}\` |
-          | **CI Verification** | [Run #${CI_RUN_ID}](${CI_RUN_URL}) (passed) |
+          | **Target Release Version** | \`${RELEASE_VERSION}\` (\`${RELEASE_TAG}\`) |
+          | **Selected Source Ref** | \`${SELECTED_REF}\` |
+          | **Exact Commit SHA** | \`${COMMIT_SHA}\` |
+          | **CI Verification Gate** | [Run #${CI_RUN_ID}](${CI_RUN_URL}) (Passed) |
           EOF
 
       - name: Checkout repository at exact tested commit
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.resolve-commit.outputs.commit_sha }}
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -197,173 +283,201 @@ jobs:
           echo "Target Registry Namespace: ghcr.io/${OWNER_LC}"
 
       - name: Build and push Backend Image
+        id: build-backend
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile
           push: true
           build-args: |
-            APP_VERSION=${{ steps.resolve-commit.outputs.commit_sha }}
+            APP_VERSION=${{ steps.determine-version.outputs.release_version }}
           tags: |
-            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-backend:${{ steps.resolve-commit.outputs.commit_sha }}
-            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-backend:sura-latest
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-backend:${{ steps.determine-version.outputs.release_tag }}
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-backend:${{ steps.resolve-commit.outputs.commit_sha }}
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-backend:sura-latest
           labels: |
             org.opencontainers.image.title=CloudScope Backend
             org.opencontainers.image.description=CloudScope AWS IAM & Security Analysis Engine
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.resolve-commit.outputs.commit_sha }}
+            org.opencontainers.image.version=${{ steps.determine-version.outputs.release_version }}
           cache-from: type=gha,scope=cloudscope-backend
           cache-to: type=gha,mode=max,scope=cloudscope-backend
           provenance: true
           sbom: true
 
       - name: Build and push Frontend Image
+        id: build-frontend
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-frontend:${{ steps.resolve-commit.outputs.commit_sha }}
-            ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-frontend:sura-latest
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-frontend:${{ steps.determine-version.outputs.release_tag }}
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-frontend:${{ steps.resolve-commit.outputs.commit_sha }}
+            ghcr.io/${{ env.OWNER_LC }}/cloudscope-frontend:sura-latest
           labels: |
             org.opencontainers.image.title=CloudScope Frontend
             org.opencontainers.image.description=CloudScope React Web UI and API Proxy
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.resolve-commit.outputs.commit_sha }}
+            org.opencontainers.image.version=${{ steps.determine-version.outputs.release_version }}
           cache-from: type=gha,scope=cloudscope-frontend
           cache-to: type=gha,mode=max,scope=cloudscope-frontend
           provenance: true
           sbom: true
 
-  deploy-production:
-    name: Deploy to Production Host
-    needs: build-and-publish
-    runs-on: [self-hosted, linux, x64, cloudscope-prod]
-    environment:
-      name: production
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Verify Host Prerequisites
-        run: |
-          echo "Verifying Docker and Docker Compose on production runner..."
-          docker version
-          docker compose version
-
-      - name: Checkout deployment manifests
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.build-and-publish.outputs.commit_sha }}
-
-      - name: Log in to GitHub Container Registry on deployment host
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Deploy application via Docker Compose
-        env:
-          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
-          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
-          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
-          DEPLOY_DIR: /opt/cloudscope
+      - name: Verify Docker Image Publication
         run: |
           echo "=================================================="
-          echo "Deploying CloudScope to ${DEPLOY_DIR}"
-          echo "Backend Image:  ${BACKEND_IMAGE}:${IMAGE_TAG}"
-          echo "Frontend Image: ${FRONTEND_IMAGE}:${IMAGE_TAG}"
+          echo "Docker Image Publication Verified"
+          echo "Backend Digest:  ${{ steps.build-backend.outputs.digest }}"
+          echo "Frontend Digest: ${{ steps.build-frontend.outputs.digest }}"
           echo "=================================================="
-          
-          sudo mkdir -p ${DEPLOY_DIR}
-          sudo chown -R $USER:$USER ${DEPLOY_DIR}
-          cp compose.release.yaml ${DEPLOY_DIR}/compose.release.yaml
-          
-          cd ${DEPLOY_DIR}
-          
-          # Pull exact immutable container images
-          docker compose -f compose.release.yaml pull
-          
-          # Update running containers (preserving existing persistent volumes)
-          docker compose -f compose.release.yaml up -d --remove-orphans
-
-      - name: Verify Service Health & Readiness
-        id: health-check
-        env:
-          DEPLOY_DIR: /opt/cloudscope
-          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
-          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
-          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
-        run: |
-          cd ${DEPLOY_DIR}
-          echo "Waiting for services to become healthy..."
-          
-          SUCCESS=0
-          for i in $(seq 1 24); do
-            echo "Healthcheck probe attempt $i/24..."
-            
-            FRONTEND_OK=0
-            if curl -fsS http://127.0.0.1/healthz >/dev/null 2>&1; then
-              FRONTEND_OK=1
-            fi
-            
-            BACKEND_OK=0
-            if docker compose -f compose.release.yaml exec -T backend curl -fsS http://127.0.0.1:8000/ready >/dev/null 2>&1; then
-              BACKEND_OK=1
-            fi
-            
-            if [ $FRONTEND_OK -eq 1 ] && [ $BACKEND_OK -eq 1 ]; then
-              echo "✅ Both Frontend (/healthz) and Backend (/ready) are healthy!"
-              SUCCESS=1
-              break
-            fi
-            
-            sleep 5
-          done
-          
-          echo "=== Container Status ==="
-          docker compose -f compose.release.yaml ps
-          
-          if [ $SUCCESS -ne 1 ]; then
-            echo "❌ Service readiness failed. Printing container logs:"
-            docker compose -f compose.release.yaml logs --tail=100
+          if [ -z "${{ steps.build-backend.outputs.digest }}" ] || [ -z "${{ steps.build-frontend.outputs.digest }}" ]; then
+            echo "::error::Image digests missing after build-push-action!"
             exit 1
           fi
 
-      - name: Print Deployment Summary
+      - name: Create and Push Git Release Tag
+        id: create-tag
+        env:
+          RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
+          COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Creating annotated tag ${RELEASE_TAG} pointing to ${COMMIT_SHA}..."
+          git tag -a "${RELEASE_TAG}" "${COMMIT_SHA}" -m "CloudScope release ${RELEASE_TAG}"
+          git push origin "${RELEASE_TAG}"
+
+          RESOLVED_TAG_SHA=$(git rev-list -n 1 "${RELEASE_TAG}")
+          echo "Verified tag ${RELEASE_TAG} -> ${RESOLVED_TAG_SHA}"
+          if [ "${RESOLVED_TAG_SHA}" != "${COMMIT_SHA}" ]; then
+            echo "::error::Tag target SHA (${RESOLVED_TAG_SHA}) does not match CI SHA (${COMMIT_SHA})!"
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        id: create-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.determine-version.outputs.release_version }}
+          COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
+          OWNER_LC: ${{ steps.image-tags.outputs.owner_lc }}
+          BACKEND_DIGEST: ${{ steps.build-backend.outputs.digest }}
+          FRONTEND_DIGEST: ${{ steps.build-frontend.outputs.digest }}
+        run: |
+          cat << 'EOF' > release_body.md
+          ## CloudScope TAG_PLACEHOLDER
+
+          Official open-source release of CloudScope, automated from verified CI test runs on branch `sura`.
+
+          ### 🐳 Prebuilt Docker Images (GitHub Container Registry)
+          Pull and deploy directly using Docker Compose without installing Python, Node.js, Redis, or Neo4j:
+
+          - **Backend:** `ghcr.io/OWNER_PLACEHOLDER/cloudscope-backend:TAG_PLACEHOLDER`
+            *(Digest: `BACKEND_DIGEST_PLACEHOLDER`)*
+          - **Frontend:** `ghcr.io/OWNER_PLACEHOLDER/cloudscope-frontend:TAG_PLACEHOLDER`
+            *(Digest: `FRONTEND_DIGEST_PLACEHOLDER`)*
+
+          Additional immutable tags pointing to the identical image digest:
+          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-backend:SHA_PLACEHOLDER`
+          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-backend:sura-latest`
+          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-frontend:SHA_PLACEHOLDER`
+          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-frontend:sura-latest`
+
+          ### 🚀 Quick Start (Docker-Only Installation)
+          ```bash
+          # 1. Clone the repository
+          git clone https://github.com/SurendiranBJ/CloudScope.git
+          cd CloudScope
+
+          # 2. Configure environment template
+          cp .env.example .env
+
+          # 3. Pull and run this release
+          IMAGE_TAG=TAG_PLACEHOLDER docker compose -f compose.release.yaml pull
+          IMAGE_TAG=TAG_PLACEHOLDER docker compose -f compose.release.yaml up -d
+          ```
+
+          Access the web UI at: **http://localhost**
+          EOF
+
+          sed -i "s|OWNER_PLACEHOLDER|${OWNER_LC}|g" release_body.md
+          sed -i "s|TAG_PLACEHOLDER|${RELEASE_TAG}|g" release_body.md
+          sed -i "s|SHA_PLACEHOLDER|${COMMIT_SHA}|g" release_body.md
+          sed -i "s|BACKEND_DIGEST_PLACEHOLDER|${BACKEND_DIGEST}|g" release_body.md
+          sed -i "s|FRONTEND_DIGEST_PLACEHOLDER|${FRONTEND_DIGEST}|g" release_body.md
+
+          echo "Creating GitHub Release for ${RELEASE_TAG}..."
+          gh release create "${RELEASE_TAG}" \
+            --target "${COMMIT_SHA}" \
+            --title "CloudScope ${RELEASE_TAG}" \
+            --notes-file release_body.md \
+            --generate-notes
+
+          RELEASE_URL=$(gh release view "${RELEASE_TAG}" --json url -q .url)
+          echo "RELEASE_URL=${RELEASE_URL}" >> $GITHUB_ENV
+          echo "release_url=${RELEASE_URL}" >> $GITHUB_OUTPUT
+
+      - name: Smoke Test Release Compose on Runner
+        env:
+          IMAGE_TAG: ${{ steps.determine-version.outputs.release_tag }}
+          BACKEND_IMAGE: ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-backend
+          FRONTEND_IMAGE: ghcr.io/${{ steps.image-tags.outputs.owner_lc }}/cloudscope-frontend
+        run: |
+          echo "Validating release Compose configuration with IMAGE_TAG=${IMAGE_TAG}..."
+          NEO4J_PASSWORD="smoketest_neo4j_password_123" \
+          JWT_SECRET="smoketest_jwt_secret_must_be_32_chars_long!" \
+          docker compose -f compose.release.yaml config > /dev/null
+          echo "✅ compose.release.yaml config interpolation verified successfully!"
+
+      - name: Print Final Release Summary
         if: always()
         env:
-          DEPLOY_DIR: /opt/cloudscope
-          BACKEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-backend
-          FRONTEND_IMAGE: ghcr.io/${{ needs.build-and-publish.outputs.owner_lc }}/cloudscope-frontend
-          IMAGE_TAG: ${{ needs.build-and-publish.outputs.commit_sha }}
-          SELECTED_REF: ${{ needs.build-and-publish.outputs.selected_ref }}
-          CI_RUN_ID: ${{ needs.build-and-publish.outputs.ci_run_id }}
-          CI_RUN_URL: ${{ needs.build-and-publish.outputs.ci_run_url }}
+          RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.determine-version.outputs.release_version }}
+          COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
+          SELECTED_REF: ${{ steps.resolve-commit.outputs.selected_ref }}
+          CI_RUN_ID: ${{ steps.resolve-commit.outputs.ci_run_id }}
+          CI_RUN_URL: ${{ steps.resolve-commit.outputs.ci_run_url }}
+          OWNER_LC: ${{ steps.image-tags.outputs.owner_lc }}
+          BACKEND_DIGEST: ${{ steps.build-backend.outputs.digest }}
+          FRONTEND_DIGEST: ${{ steps.build-frontend.outputs.digest }}
+          RELEASE_URL: ${{ steps.create-release.outputs.release_url }}
         run: |
           echo "=================================================="
-          echo "CloudScope Deployment"
-          echo "---------------------"
-          echo "Source ref:        ${SELECTED_REF}"
-          echo "Resolved SHA:      ${IMAGE_TAG}"
-          echo "Backend image:     ${BACKEND_IMAGE}:${IMAGE_TAG}"
-          echo "Frontend image:    ${FRONTEND_IMAGE}:${IMAGE_TAG}"
-          echo "CI verification:   ${CI_RUN_URL}"
-          echo "Deployment host:   $(hostname)"
-          echo "Frontend health:   http://127.0.0.1/healthz"
-          echo "Backend readiness: http://127.0.0.1:8000/ready"
+          echo "CloudScope Open Source Release Summary"
+          echo "--------------------------------------------------"
+          echo "Release Tag:       ${RELEASE_TAG}"
+          echo "Release Version:   ${RELEASE_VERSION}"
+          echo "Release Commit:    ${COMMIT_SHA}"
+          echo "Source Ref:        ${SELECTED_REF}"
+          echo "CI Quality Gate:   ${CI_RUN_URL}"
+          echo "Backend Image:     ghcr.io/${OWNER_LC}/cloudscope-backend:${RELEASE_TAG}"
+          echo "Backend Digest:    ${BACKEND_DIGEST}"
+          echo "Frontend Image:    ghcr.io/${OWNER_LC}/cloudscope-frontend:${RELEASE_TAG}"
+          echo "Frontend Digest:   ${FRONTEND_DIGEST}"
+          echo "GitHub Release:    ${RELEASE_URL}"
           echo "=================================================="
-          
+
           cat << EOF >> $GITHUB_STEP_SUMMARY
-          ### 📦 CloudScope Deployment Summary
-          | Field | Value |
+          ### 📦 CloudScope Release Published Successfully!
+          | Property | Value |
           |---|---|
-          | **Source ref** | \`${SELECTED_REF}\` |
-          | **Resolved SHA** | \`${IMAGE_TAG}\` |
-          | **Backend Image** | \`${BACKEND_IMAGE}:${IMAGE_TAG}\` |
-          | **Frontend Image** | \`${FRONTEND_IMAGE}:${IMAGE_TAG}\` |
-          | **CI Verification** | [CI Run #${CI_RUN_ID}](${CI_RUN_URL}) |
-          | **Deployment Host** | \`$(hostname)\` |
-          | **Frontend Health** | \`/healthz\` (HTTP 200) |
-          | **Backend Readiness** | \`/ready\` (HTTP 200) |
+          | **Release Tag** | \`${RELEASE_TAG}\` |
+          | **Release Version** | \`${RELEASE_VERSION}\` |
+          | **Commit SHA** | \`${COMMIT_SHA}\` |
+          | **CI Quality Gate** | [CI Run #${CI_RUN_ID}](${CI_RUN_URL}) (Passed) |
+          | **Backend Image** | \`ghcr.io/${OWNER_LC}/cloudscope-backend:${RELEASE_TAG}\` |
+          | **Frontend Image** | \`ghcr.io/${OWNER_LC}/cloudscope-frontend:${RELEASE_TAG}\` |
+          | **GitHub Release** | [${RELEASE_TAG} Release Details](${RELEASE_URL}) |
+
+          #### Quick Run Command
+          \`\`\`bash
+          IMAGE_TAG=${RELEASE_TAG} docker compose -f compose.release.yaml up -d
+          \`\`\`
           EOF
