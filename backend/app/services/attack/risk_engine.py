@@ -14,7 +14,8 @@ from app.services.risk.risk_constants import (
     DANGEROUS_ESCALATION_ACTIONS,
     BROAD_ADMIN_ACTIONS,
     GLOBAL_SCORE_WEIGHTS,
-    get_severity_label
+    get_severity_label,
+    RISK_MODEL_VERSION
 )
 from app.services.attack.policy_evaluator import (
     parse_policy_document,
@@ -80,7 +81,8 @@ def get_user_risk_assessment(user: Dict[str, Any], policy_doc_map: Dict[str, str
     return {
         "score": final_score,
         "severity": get_severity_label(final_score),
-        "factors": factors
+        "factors": factors,
+        "risk_model_version": RISK_MODEL_VERSION
     }
 
 
@@ -116,7 +118,8 @@ def get_role_risk_assessment(role: Dict[str, Any], policy_doc_map: Dict[str, str
     return {
         "score": final_score,
         "severity": get_severity_label(final_score),
-        "factors": factors
+        "factors": factors,
+        "risk_model_version": RISK_MODEL_VERSION
     }
 
 
@@ -210,7 +213,8 @@ def get_resource_risk_assessment(res: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "score": final_score,
         "severity": get_severity_label(final_score),
-        "factors": factors
+        "factors": factors,
+        "risk_model_version": RISK_MODEL_VERSION
     }
 
 
@@ -348,5 +352,6 @@ def compute_global_security_score(
                 "weighted_score": round(monitoring_score * w["monitoring_coverage"], 2)
             }
         },
-        "summary": f"Calculated global security score of {overall_score}/100 across 5 verified security domains."
+        "summary": f"Calculated global security score of {overall_score}/100 across 5 verified security domains.",
+        "risk_model_version": RISK_MODEL_VERSION
     }

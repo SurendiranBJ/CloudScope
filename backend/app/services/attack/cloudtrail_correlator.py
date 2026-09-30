@@ -14,6 +14,7 @@ Enforces clear 4-state semantic distinction:
 - OBSERVED_ATTACK_ACTIVITY (CloudTrail event matching exact transition of an identified attack path)
 """
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ import networkx as nx
 from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
 from app.services.graph.graph_loader import get_node_id
+from app.services.risk.risk_constants import RISK_MODEL_VERSION
 
 logger = logging.getLogger("scanner")
 
@@ -293,6 +295,29 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     if not target_name and (raw_event.get('target') or raw_event.get('target_name')):
         target_name = raw_event.get('target') or raw_event.get('target_name')
 
+    raw_resp_elements = raw_event.get('ResponseElements') or ct_detail.get('responseElements') or raw_event.get('response_elements') or {}
+    if isinstance(raw_resp_elements, str):
+        try:
+            resp_elements = json.loads(raw_resp_elements)
+        except Exception:
+            resp_elements = {}
+    else:
+        resp_elements = raw_resp_elements
+
+    management_event = ct_detail.get('managementEvent', raw_event.get('management_event', True))
+    session_context = user_identity.get('sessionContext') or ct_detail.get('sessionContext') or raw_event.get('session_context') or {}
+
+    resource_names = []
+    for r in raw_event.get('Resources', []):
+        if isinstance(r, dict):
+            r_name = r.get('ResourceName') or r.get('ARN') or r.get('arn')
+            if r_name:
+                resource_names.append(r_name)
+
+    if not event_id:
+        stable_raw = f"{event_name}|{event_time or ''}|{actor_arn or actor_name}|{event_source}|{account_id}|{region}|{target_name}"
+        event_id = f"ct-{hashlib.sha256(stable_raw.encode('utf-8')).hexdigest()[:16]}"
+
     activity_type = get_activity_type(event_name)
     is_high_risk = activity_type in ["ASSUMED_ROLE", "MODIFIED_POLICY", "CREATED_ACCESS_KEY"]
 
@@ -317,6 +342,7 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
         "region": region,
         "account_id": account_id,
         "principal": actor_arn or actor_name,
+        "principal_id": actor_arn or actor_name,
         "actor_name": actor_name,
         "actor_arn": actor_arn,
         "actor_type": actor_type,
@@ -327,13 +353,18 @@ def normalize_cloudtrail_event(raw_event: Dict[str, Any]) -> Dict[str, Any]:
         "target_type": target_type,
         "target_arn": target_arn,
         "request_parameters": req_params,
+        "response_elements": resp_elements,
         "resources": raw_event.get('Resources', []),
+        "resource_names": resource_names,
+        "management_event": management_event,
+        "session_context": session_context,
         "is_high_risk": is_high_risk,
         "is_security_modification": is_sec_mod,
         "read_only": read_only,
         "error_code": error_code,
         "error_message": error_message,
-        "raw_details": ct_detail
+        "raw_details": ct_detail,
+        "source_type": "CLOUDTRAIL"
     }
 
 
@@ -655,6 +686,13 @@ def correlate_activity_with_graph(
 
     normalized_events = [normalize_cloudtrail_event(e) for e in deduped_raw]
 
+    # Temporal reasoning: Order events chronologically by event_time
+    def _parse_sort_key(ev: Dict[str, Any]) -> float:
+        dt = parse_timezone_aware_timestamp(ev.get("event_time"))
+        return dt.timestamp() if dt is not None else 0.0
+
+    normalized_events.sort(key=_parse_sort_key)
+
     # 2. Sync activity into Neo4j idempotently
     sync_activity_into_neo4j(normalized_events)
 
@@ -663,6 +701,7 @@ def correlate_activity_with_graph(
 
     role_risk_map = {r.get('name', ''): r.get('riskScore', 0) for r in getattr(real_inventory, 'roles', [])}
     matched_path_ids: Set[str] = set()
+    assumed_role_sessions: Dict[str, Dict[str, Any]] = {}
 
     for ev in normalized_events:
         event_id = ev["event_id"]
@@ -779,13 +818,16 @@ def correlate_activity_with_graph(
 
         target_risk = role_risk_map.get(target, 0)
 
-        # 7. Classify Finding
+        # 7. Classify Finding & Confidence
         if is_error:
             # Denied events must NEVER be treated as successful transitions or correlated authorizations
             finding_type = "OBSERVED_ACTIVITY"
             matched_static_rel = "NONE"
             static_path_id = None
             reason = f"Observed CloudTrail denied/error event '{ev_name}' with error code '{error_code}' by '{actor}'."
+            confidence_classification = "LOW"
+            confidence_score = 30
+            confidence_reason = f"Event recorded with error {error_code or 'UNKNOWN'}; action was denied or failed."
         elif matching_path and matched_transition:
             finding_type = "OBSERVED_ATTACK_ACTIVITY"
             matched_static_rel = matched_transition.get("relationship", act_type)
@@ -798,12 +840,20 @@ def correlate_activity_with_graph(
             })
             if act_type == "ASSUMED_ROLE":
                 action_desc = f"principal '{actor}' actively assumed privileged role '{target}'"
+                assumed_role_sessions[target] = {
+                    "actor": actor,
+                    "event_time": ev.get("event_time"),
+                    "event_id": event_id
+                }
             else:
                 action_desc = f"principal '{actor}' executed '{ev_name}' against target '{target}'"
             reason = (
                 f"Observed activity consistent with identified attack path '{static_path_id}' "
                 f"(matched transition: {matched_transition.get('description')}): {action_desc}."
             )
+            confidence_classification = "EXACT"
+            confidence_score = 100
+            confidence_reason = f"Observed activity matches verified transition in attack path '{static_path_id}' with exact principal and target correlation."
             # Annotate static edge in real_G
             if has_static_cap and matched_src and matched_tgt and real_G.has_edge(matched_src, matched_tgt):
                 real_G[matched_src][matched_tgt]["correlation_status"] = "CORRELATED_ACTIVITY"
@@ -814,12 +864,26 @@ def correlate_activity_with_graph(
             static_path_id = None
             if act_type == "ASSUMED_ROLE":
                 action_desc = f"'{actor}' actively assumed privileged role '{target}'"
+                assumed_role_sessions[target] = {
+                    "actor": actor,
+                    "event_time": ev.get("event_time"),
+                    "event_id": event_id
+                }
             else:
                 action_desc = f"'{actor}' executed '{ev_name}' against '{target}'"
             reason = (
                 f"Observed activity matches verified static IAM authorization in the security graph: "
                 f"{action_desc} via '{matched_static_rel}'."
             )
+            # Differentiate HIGH (exact ARN / id match) from MEDIUM (partial / friendly name)
+            if matched_src and (matched_src == actor_arn or matched_src.endswith(f":{actor}")):
+                confidence_classification = "HIGH"
+                confidence_score = 85
+                confidence_reason = "Observed activity matches verified static IAM capability in graph with exact identity binding."
+            else:
+                confidence_classification = "MEDIUM"
+                confidence_score = 65
+                confidence_reason = "Observed activity matches static IAM capability via broad policy or friendly identity mapping."
             # Annotate static edge in real_G
             if matched_src and matched_tgt and real_G.has_edge(matched_src, matched_tgt):
                 real_G[matched_src][matched_tgt]["correlation_status"] = "CORRELATED_ACTIVITY"
@@ -829,9 +893,17 @@ def correlate_activity_with_graph(
             matched_static_rel = "NONE"
             static_path_id = None
             reason = f"Observed CloudTrail management event '{ev_name}' executed by '{actor}' without verified static capability."
+            confidence_classification = "LOW"
+            confidence_score = 40
+            confidence_reason = "Observed activity without verified static capability in the current security graph."
 
             # If AssumeRole was observed without static permission, create anomalous dynamic edge
             if act_type == "ASSUMED_ROLE" and real_G and actor_in_g and target_in_g and not is_error:
+                assumed_role_sessions[target] = {
+                    "actor": actor,
+                    "event_time": ev.get("event_time"),
+                    "event_id": event_id
+                }
                 real_G.add_edge(
                     actor_in_g,
                     target_in_g,
@@ -841,6 +913,9 @@ def correlate_activity_with_graph(
                     eventId=event_id,
                     last_observed_event_id=event_id
                 )
+
+        # Check if actor is an assumed role from a prior session in this stream
+        prior_session = assumed_role_sessions.get(actor)
 
         # 8. Preserve dynamic relationship for graph visualization (when successful)
         if not is_error and actor_in_g and target_in_g and real_G is not None:
@@ -870,6 +945,12 @@ def correlate_activity_with_graph(
 
         severity = "critical" if (target_risk >= 80 or finding_type == "OBSERVED_ATTACK_ACTIVITY") else ("high" if target_risk >= 60 else "medium")
 
+        finding_sources = ["CLOUDTRAIL"]
+        if matching_path:
+            finding_sources = ["ATTACK_PATH", "CLOUDTRAIL"]
+        elif has_static_cap:
+            finding_sources = ["STATIC_ANALYSIS", "CLOUDTRAIL"]
+
         finding = {
             "id": f"corr-{event_id}",
             "type": finding_type,
@@ -894,17 +975,25 @@ def correlate_activity_with_graph(
             "severity": severity,
             "risk_score": max(target_risk, 30 if finding_type == "OBSERVED_ATTACK_ACTIVITY" else 15),
             "target_risk_score": target_risk,
+            "confidence_classification": confidence_classification,
+            "confidence": confidence_score,
+            "confidence_score": confidence_score,
+            "confidence_reason": confidence_reason,
+            "risk_model_version": RISK_MODEL_VERSION,
+            "source": "CORRELATION" if has_static_cap else "CLOUDTRAIL",
+            "source_types": finding_sources,
             "has_static_permission": has_static_cap,
             "matched_static_relationship": matched_static_rel,
             "matched_transition": matched_transition,
             "static_path_id": static_path_id,
+            "prior_session": prior_session,
             "reason": reason,
             "is_error": is_error,
             "error_code": error_code,
             "recommendation": "Review session activity and verify identity authorization.",
             "description": (
                 f"Identity '{actor}' executed '{ev_name}' against '{target}' "
-                f"from IP {ev['source_ip']} (Classification: {finding_type})."
+                f"from IP {ev['source_ip']} (Classification: {finding_type}, Confidence: {confidence_classification})."
             ),
             "evidence": {
                 "event_id": event_id,
@@ -912,9 +1001,14 @@ def correlate_activity_with_graph(
                 "source_ip": ev["source_ip"],
                 "region": ev["region"],
                 "request_parameters": ev.get("request_parameters", {}),
+                "response_elements": ev.get("response_elements", {}),
                 "matched_static_relationship": matched_static_rel,
                 "matched_transition": matched_transition,
                 "classification": finding_type,
+                "confidence_classification": confidence_classification,
+                "confidence_reason": confidence_reason,
+                "risk_model_version": RISK_MODEL_VERSION,
+                "prior_session": prior_session,
                 "limitations": "Observed activity consistent with telemetry; does not represent confirmed compromise."
             },
             "is_correlated": finding_type in ["CORRELATED_ACTIVITY", "OBSERVED_ATTACK_ACTIVITY"]

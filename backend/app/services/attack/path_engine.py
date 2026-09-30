@@ -8,9 +8,11 @@ and authoritative effective-access blast radius metrics.
 """
 
 import logging
+import hashlib
+import time
 import networkx as nx
 from typing import List, Dict, Any, Set, Tuple, Optional
-from app.services.risk.risk_constants import get_severity_label
+from app.services.risk.risk_constants import get_severity_label, RISK_MODEL_VERSION
 from app.services.attack.constants import MAX_ROLE_HOPS
 
 logger = logging.getLogger("scanner")
@@ -707,8 +709,16 @@ def find_attack_paths(
     inventory: Any = None,
     policy_doc_map: Optional[Dict[str, str]] = None,
     precomputed_records: Optional[List[Dict[str, Any]]] = None,
+    snapshot_id: Optional[str] = None,
+    max_paths_per_source: int = 25,
+    max_candidate_transitions: int = 1000,
+    max_execution_time_seconds: float = 10.0,
+    **kwargs: Any
 ) -> List[Dict[str, Any]]:
-    """Discover deterministic attack paths traversing identities, policies, and cloud resources."""
+    """Discover deterministic attack paths traversing identities, policies, and cloud resources.
+    
+    Enforces loop control, per-source path caps, candidate transition bounds, and timeout protection.
+    """
     if not G or G.number_of_nodes() == 0:
         return []
 
@@ -732,19 +742,45 @@ def find_attack_paths(
         and attr.get('is_canonical') is not False
     ]
 
+    # Deterministic sorting of entry and target nodes
+    starts.sort()
+    targets.sort()
+
     seen_paths = set()
     candidate_paths = []
+    start_time = time.monotonic()
+    is_truncated = False
+    truncation_reason: Optional[str] = None
+    total_transitions_evaluated = 0
 
     for source in starts:
+        if time.monotonic() - start_time > max_execution_time_seconds:
+            is_truncated = True
+            truncation_reason = f"Execution timeout ({max_execution_time_seconds}s limit reached)"
+            logger.warning(f"Attack path discovery truncated: {truncation_reason}")
+            break
+
+        paths_for_source = 0
         for target in targets:
             if source == target:
                 continue
+
+            if paths_for_source >= max_paths_per_source:
+                is_truncated = True
+                truncation_reason = f"Per-source candidate path limit reached ({max_paths_per_source})"
+                break
+
+            if total_transitions_evaluated >= max_candidate_transitions:
+                is_truncated = True
+                truncation_reason = f"Candidate transition evaluation limit reached ({max_candidate_transitions})"
+                break
 
             try:
                 if not nx.has_path(G, source, target):
                     continue
 
                 for path in nx.all_simple_paths(G, source, target, cutoff=max_hops):
+                    total_transitions_evaluated += 1
                     if not _validate_path_security_semantics(path, G):
                         continue
 
@@ -754,6 +790,9 @@ def find_attack_paths(
                     seen_paths.add(canonical_key)
 
                     candidate_paths.append(path)
+                    paths_for_source += 1
+                    if paths_for_source >= max_paths_per_source:
+                        break
             except Exception as e:
                 logger.debug(f"Path search exception for {source} -> {target}: {e}")
                 continue
@@ -1021,11 +1060,25 @@ def find_attack_paths(
     # Cap at MAX_ATTACK_PATHS
     final_paths = evaluated_paths[:MAX_ATTACK_PATHS]
 
-    # Assign IDs and names
+    # Assign IDs, canonical identifiers, snapshot provenance, and names
     for idx, p in enumerate(final_paths, start=1):
         s_lbl = G.nodes[p["source"]].get('label', p["source"])
         t_lbl = G.nodes[p["destination"]].get('label', p["destination"])
         p["id"] = f"path-{idx:03d}"
         p["name"] = f"Attack Path {idx}: {s_lbl} → {t_lbl}"
+
+        # Deterministic canonical ID based on semantic identity
+        rels_key = "->".join(p.get("ordered_relationships", []))
+        nodes_key = ",".join([str(n.get("id")) for n in p.get("ordered_nodes", [])])
+        canonical_raw = f"{p['source']}|{p['destination']}|{rels_key}|{nodes_key}"
+        canonical_hash = hashlib.sha256(canonical_raw.encode("utf-8")).hexdigest()[:12]
+        canonical_id = f"ap-{canonical_hash}"
+        p["canonical_id"] = canonical_id
+        p["path_id"] = canonical_id
+        p["source_snapshot_id"] = snapshot_id
+        p["snapshot_id"] = snapshot_id
+        p["risk_model_version"] = RISK_MODEL_VERSION
+        p["is_truncated"] = is_truncated
+        p["truncation_reason"] = truncation_reason
 
     return final_paths

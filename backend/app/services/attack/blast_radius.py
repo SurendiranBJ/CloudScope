@@ -9,12 +9,14 @@ assets strongly contribute to blast radius severity.
 
 import logging
 import networkx as nx
-from typing import Dict, Any, List
-from app.services.risk.risk_constants import get_severity_label
+from typing import Dict, Any, List, Set, Optional
+from app.services.risk.risk_constants import get_severity_label, RISK_MODEL_VERSION
 
 logger = logging.getLogger("scanner")
 
-CLOUD_RESOURCE_TYPES = {"S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB"}
+DATA_RESOURCE_TYPES = {"S3", "Secrets", "Secret", "RDS", "DynamoDB"}
+OPERATIONAL_RESOURCE_TYPES = {"EC2", "Lambda"}
+CLOUD_RESOURCE_TYPES = DATA_RESOURCE_TYPES | OPERATIONAL_RESOURCE_TYPES
 PRIVILEGE_TYPES = {"Role", "Group", "Policy"}
 IDENTITY_TYPES = {"User"}
 
@@ -39,7 +41,8 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
             "critical_assets": [],
             "reachable_nodes": [],
             "resource_types": {},
-            "evidence": []
+            "evidence": [],
+            "risk_model_version": RISK_MODEL_VERSION
         }
 
     try:
@@ -65,6 +68,8 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
         # Collect unique real cloud resources and regions
         affected_resources: List[str] = []
         affected_regions: Set[str] = set()
+        data_resources: List[Dict[str, Any]] = []
+        operational_assets: List[Dict[str, Any]] = []
 
         for nid in descendants:
             node_data = G.nodes[nid]
@@ -73,10 +78,13 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
             nrisk = node_data.get('riskScore', 0)
             narn = node_data.get('arn', '')
             nregion = node_data.get('region')
+            naccount = node_data.get('accountId') or node_data.get('account_id') or ''
 
-            # Measure shortest path depth
+            # Measure shortest path
+            path_to_node = []
             try:
-                d = nx.shortest_path_length(G, node_id, nid)
+                path_to_node = nx.shortest_path(G, node_id, nid)
+                d = len(path_to_node) - 1
                 if d > max_depth:
                     max_depth = d
             except Exception:
@@ -95,6 +103,21 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
                 if nregion and nregion not in ['global', 'unknown']:
                     affected_regions.add(nregion)
 
+                res_info = {
+                    "id": nid,
+                    "name": nlabel,
+                    "type": ntype,
+                    "arn": narn,
+                    "region": nregion or "global",
+                    "account_id": naccount,
+                    "risk_score": nrisk,
+                    "path": path_to_node
+                }
+                if ntype in DATA_RESOURCE_TYPES:
+                    data_resources.append(res_info)
+                elif ntype in OPERATIONAL_RESOURCE_TYPES:
+                    operational_assets.append(res_info)
+
             # Critical asset identification (Secrets, RDS, S3, or role with riskScore >= 60)
             if ntype in ['Secrets', 'Secret', 'RDS', 'S3'] or (ntype == 'Role' and nrisk >= 60):
                 critical_assets.append({
@@ -106,6 +129,7 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
 
         # Calculate blast score: based on reachable actual cloud resources and critical assets
         res_count = len(affected_resources)
+        data_res_count = len(data_resources)
         crit_count = len(critical_assets)
         priv_count = len(privileges)
 
@@ -117,6 +141,8 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
 
         if crit_count > 0:
             evidence.append(f"{crit_count} critical cloud data store(s) / high-privilege role(s) directly reachable.")
+        if data_res_count > 0:
+            evidence.append(f"{data_res_count} unique data resources (S3/Secrets/RDS/DynamoDB) accessible.")
         if res_count > 0:
             evidence.append(f"{res_count} total cloud infrastructure resources accessible within {max_depth} hop(s).")
         if priv_count > 0:
@@ -129,6 +155,9 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
             "severity": severity,
             "affected_resource_count": res_count,
             "affected_resources": affected_resources,
+            "data_resource_count": data_res_count,
+            "data_resources": data_resources,
+            "operational_assets": operational_assets,
             "resource_types": resource_types,
             "regions": sorted_regions,
             "reachable_count": len(descendants),
@@ -141,6 +170,7 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
             "critical_assets": critical_assets,
             "reachable_nodes": descendants,
             "evidence": evidence,
+            "risk_model_version": RISK_MODEL_VERSION,
             "breakdown": {
                 **resource_types,
                 "User": len(identities),

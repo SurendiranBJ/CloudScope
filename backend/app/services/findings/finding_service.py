@@ -18,7 +18,8 @@ from app.services.risk.risk_constants import (
     SEVERITY_CRITICAL_THRESHOLD,
     SEVERITY_HIGH_THRESHOLD,
     SEVERITY_MEDIUM_THRESHOLD,
-    get_severity_label
+    get_severity_label,
+    RISK_MODEL_VERSION
 )
 from app.services.findings.remediation_engine import generate_remediation
 from app.cache import cache
@@ -67,7 +68,7 @@ def compute_deterministic_id(
     if event_id:
         return f"find-ct-{event_id}"
     if attack_path_id:
-        clean_path_id = attack_path_id.replace("path-", "")
+        clean_path_id = attack_path_id.replace("ap-", "").replace("path-", "")
         return f"find-path-{clean_path_id}"
 
     # For static findings, hash semantic identity attributes
@@ -105,6 +106,9 @@ class FindingService:
 
     def get_all_findings(self) -> List[SecurityFinding]:
         """Retrieve all canonical findings from cache, disk, or in-memory store."""
+        if self._memory_store:
+            return list(self._memory_store.values())
+
         try:
             cached = cache.get("v1:findings")
             if cached:
@@ -686,6 +690,7 @@ class FindingService:
         # -------------------------------------------------------------
         for p in (attack_paths or []):
             pid = p.get("id", "path-unknown")
+            canonical_path_id = p.get("canonical_id") or p.get("path_id") or pid
             pname = p.get("name") or pid
             pscore = p.get("riskScore") or p.get("risk_score") or 75
             psev = p.get("severity", "high")
@@ -698,15 +703,18 @@ class FindingService:
             ftype = "PASSROLE_ESCALATION" if is_passrole else "ATTACK_PATH_VULNERABILITY"
             fcat = "PRIVILEGE_ESCALATION" if is_passrole or "privilege" in pname.lower() else "LATERAL_MOVEMENT"
             
-            fid = compute_deterministic_id(ftype, attack_path_id=pid)
+            fid = compute_deterministic_id(ftype, attack_path_id=canonical_path_id)
             remediation = generate_remediation(ftype, p)
             evidence = {
                 "attack_path_id": pid,
+                "canonical_id": canonical_path_id,
                 "path_name": pname,
                 "source": source_principal,
                 "target": dest_resource,
                 "ordered_relationships": p.get("orderedRelationships") or p.get("ordered_relationships", []),
-                "blast_radius": p.get("blastRadius") or p.get("blast_radius", "")
+                "blast_radius": p.get("blastRadius") or p.get("blast_radius", ""),
+                "risk_model_version": p.get("risk_model_version") or RISK_MODEL_VERSION,
+                "source_snapshot_id": p.get("source_snapshot_id") or p.get("snapshot_id")
             }
 
             findings.append(SecurityFinding(
@@ -722,12 +730,17 @@ class FindingService:
                 principalType="Identity",
                 resource=dest_resource,
                 resourceType="TargetResource",
-                attackPathId=pid,
+                attackPathId=canonical_path_id,
                 evidence=evidence,
                 impact=f"Attacker compromising '{source_principal}' can laterally escalate privileges to reach '{dest_resource}'.",
                 remediation=remediation,
                 status="OPEN",
                 source="ATTACK_PATH",
+                source_types=["ATTACK_PATH"],
+                source_snapshot_id=p.get("source_snapshot_id") or p.get("snapshot_id"),
+                snapshot_id=p.get("source_snapshot_id") or p.get("snapshot_id"),
+                risk_model_version=p.get("risk_model_version") or RISK_MODEL_VERSION,
+                confidence=p.get("confidence") or 95,
                 tags=["attack-path", fcat.lower()],
                 identity=source_principal,
                 identityType="Role",
@@ -748,9 +761,23 @@ class FindingService:
             creason = cf.get("reason") or "Observed CloudTrail management activity."
             ev_time = cf.get("event_time") or cf.get("eventTime") or ""
             matched_rel = cf.get("matched_static_relationship") or "NONE"
+            src_types = cf.get("source_types") or (["ATTACK_PATH", "CLOUDTRAIL"] if matched_rel != "NONE" else ["CLOUDTRAIL"])
 
             fid = compute_deterministic_id("OBSERVED_SECURITY_ACTIVITY", event_id=eid or f"{actor}_{ev_name}")
             remediation = generate_remediation("OBSERVED_SECURITY_ACTIVITY", cf)
+
+            ev_dict = dict(cf.get("evidence") or {})
+            ev_dict.update({
+                "event_id": eid,
+                "event_name": ev_name,
+                "event_time": ev_time,
+                "actor": actor,
+                "target": target,
+                "matched_static_relationship": matched_rel,
+                "source_ip": cf.get("source_ip") or cf.get("sourceIp"),
+                "confidence_classification": cf.get("confidence_classification") or "HIGH",
+                "risk_model_version": cf.get("risk_model_version") or RISK_MODEL_VERSION
+            })
 
             findings.append(SecurityFinding(
                 id=fid,
@@ -768,19 +795,14 @@ class FindingService:
                 eventId=eid,
                 eventName=ev_name,
                 eventTime=ev_time,
-                evidence={
-                    "event_id": eid,
-                    "event_name": ev_name,
-                    "event_time": ev_time,
-                    "actor": actor,
-                    "target": target,
-                    "matched_static_relationship": matched_rel,
-                    "source_ip": cf.get("source_ip") or cf.get("sourceIp")
-                },
+                evidence=ev_dict,
                 impact=f"Sensitive runtime operation '{ev_name}' was recorded in CloudTrail against target '{target}'.",
                 remediation=remediation,
                 status="OPEN",
                 source="CORRELATION" if matched_rel != "NONE" else "CLOUDTRAIL",
+                source_types=src_types,
+                risk_model_version=cf.get("risk_model_version") or RISK_MODEL_VERSION,
+                confidence=cf.get("confidence") or cf.get("confidence_score") or 85,
                 tags=["cloudtrail", "runtime", "activity"],
                 identity=actor,
                 identityType="User",
@@ -842,6 +864,11 @@ class FindingService:
                     # Reopen if vulnerability reappeared
                     n_find.status = "OPEN"
                     n_find.resolvedAt = None
+                    if n_find.evidence is None:
+                        n_find.evidence = {}
+                    n_find.evidence["reopened_at"] = scan_ts
+                    n_find.evidence["reopened_from_finding_id"] = h_find.id
+                    n_find.evidence["previous_resolved_at"] = h_find.resolvedAt
                 else:
                     n_find.status = "OPEN"
             else:

@@ -44,6 +44,7 @@ CRITICAL RULES:
 9. When discussing attack paths, use the exact relationships provided by CloudScope:
    MEMBER_OF, HAS_POLICY, CAN_ASSUME, ATTACHED_TO, EXECUTES_WITH, ALLOWS, DB_CONNECT, BELONGS_TO.
    Do not invent arbitrary relationships such as CONNECTED_TO or CAN_ACCESS.
+10. When referencing findings, attack paths, CloudTrail events, or snapshots, cite their specific identifiers (e.g., Finding find-..., Attack Path path-..., CloudTrail Event ct-..., Snapshot snap-...). If an identifier is not present in the context, state that evidence is unavailable; never fabricate citation IDs.
 """
 
 

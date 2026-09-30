@@ -180,6 +180,50 @@ def get_finding_by_id(
     )
 
 
+@router.get("/{finding_id}/evidence", response_model=APIResponse[dict])
+def get_finding_evidence(
+    finding_id: str,
+    current_user: AuthenticatedUser = Depends(require_viewer)
+):
+    """Retrieve detailed provenance and structured evidence for a security finding."""
+    finding = finding_service.get_finding_by_id(finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+
+    evidence_payload = {
+        "finding_id": finding.id,
+        "type": finding.type,
+        "category": finding.category,
+        "severity": finding.severity,
+        "risk_score": finding.riskScore,
+        "risk_model_version": getattr(finding, "risk_model_version", None) or "phase3-v1",
+        "source": finding.source,
+        "source_types": getattr(finding, "source_types", None) or [finding.source],
+        "source_snapshot_id": getattr(finding, "source_snapshot_id", None) or get_current_snapshot_id(),
+        "principal": finding.principal,
+        "principal_type": finding.principalType,
+        "resource": finding.resource,
+        "resource_type": finding.resourceType,
+        "region": finding.region,
+        "evidence": finding.evidence,
+        "risk_factors": finding.riskFactors,
+        "impact": finding.impact,
+        "remediation": finding.remediation.model_dump() if finding.remediation else None,
+        "first_seen": finding.firstSeen,
+        "last_seen": finding.lastSeen,
+        "status": finding.status,
+    }
+
+    return APIResponse(
+        success=True,
+        message=f"Evidence for finding '{finding_id}' retrieved successfully",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=get_current_snapshot_id(),
+        snapshot_published_at=get_current_snapshot_published_at(),
+        data=evidence_payload
+    )
+
+
 @router.post("/{finding_id}/acknowledge", response_model=APIResponse[SecurityFinding], dependencies=[Depends(rate_limit("finding"))])
 def acknowledge_finding(
     finding_id: str,

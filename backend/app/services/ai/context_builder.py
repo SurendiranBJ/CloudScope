@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, List
 from app.config import settings
 from app.cache import cache
 from app.services.scanner.scan_manager import scan_manager
+from app.services.scanner.current_snapshot import get_current_snapshot_id, get_current_snapshot_published_at
+from app.services.risk.risk_constants import RISK_MODEL_VERSION
 from app.services.findings.finding_service import finding_service
 from app.services.ai.sanitizer import sanitize_data
 
@@ -119,6 +121,9 @@ class SecurityContextBuilder:
     def _get_scan_metadata(self) -> Dict[str, Any]:
         """Retrieve high-level scan status and account context."""
         return {
+            "snapshot_id": get_current_snapshot_id(),
+            "snapshot_published_at": get_current_snapshot_published_at(),
+            "risk_model_version": RISK_MODEL_VERSION,
             "last_successful_scan_at": getattr(scan_manager, "_last_successful_scan_at", None),
             "last_successful_scan_id": getattr(scan_manager, "_last_successful_scan_id", None),
             "is_running": getattr(scan_manager, "is_running", False),

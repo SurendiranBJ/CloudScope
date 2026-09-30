@@ -45,6 +45,31 @@ jobs:
       frontend_digest: ${{ steps.build-frontend.outputs.digest }}
       release_url: ${{ steps.create-release.outputs.release_url }}
     steps:
+      - name: Cancel Stale Queued Release Runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - << 'EOF'
+          import subprocess
+          import json
+          import os
+
+          try:
+              runs_raw = subprocess.check_output(
+                  ["gh", "run", "list", "--workflow", "cd.yml", "--status", "queued", "--json", "databaseId"],
+                  stderr=subprocess.DEVNULL
+              ).decode("utf-8")
+              runs = json.loads(runs_raw) if runs_raw.strip() else []
+              current_run_id = str(os.environ.get("GITHUB_RUN_ID", ""))
+              for r in runs:
+                  rid = str(r.get("databaseId", ""))
+                  if rid and rid != current_run_id:
+                      print(f"Cancelling stale queued CD run {rid}...")
+                      subprocess.run(["gh", "run", "cancel", rid], check=False)
+          except Exception as e:
+              print(f"Notice: Stale run check/cleanup skipped: {e}")
+          EOF
+
       - name: Resolve Commit and Verify CI Success Gate
         id: resolve-commit
         env:
@@ -165,6 +190,7 @@ jobs:
         id: determine-version
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
         run: |
           python3 - << 'EOF'
           import subprocess
@@ -174,79 +200,112 @@ jobs:
 
           # Query tags from remote origin repository URL (works before and after checkout)
           repo = os.environ.get("GITHUB_REPOSITORY", "SurendiranBJ/CloudScope")
+          commit_sha = os.environ.get("COMMIT_SHA", "").strip()
           remote_url = f"https://github.com/{repo}.git"
 
+          output = None
           try:
               output = subprocess.check_output(
                   ["git", "ls-remote", "--tags", remote_url],
-                  stderr=subprocess.DEVNULL
+                  stderr=subprocess.PIPE
               ).decode("utf-8")
           except Exception as e:
               print(f"Warning: git ls-remote on URL failed ({e}), falling back to origin...")
               try:
                   output = subprocess.check_output(
                       ["git", "ls-remote", "--tags", "origin"],
-                      stderr=subprocess.DEVNULL
+                      stderr=subprocess.PIPE
                   ).decode("utf-8")
               except Exception as e2:
-                  print(f"Warning: git ls-remote origin failed: {e2}")
-                  output = ""
+                  print(f"::error::Failed to query remote tags from GitHub: {e2}")
+                  sys.exit(1)
+
+          if output is None or not output.strip():
+              print("::error::Remote tag discovery returned empty output or failed. Aborting release.")
+              sys.exit(1)
 
           semver_pattern = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
           existing_tags = set()
           parsed_versions = []
+          tag_to_commit_sha = {}
 
           for line in output.strip().splitlines():
               if not line:
                   continue
               parts = line.split("\t")
               if len(parts) == 2:
+                  ref_sha = parts[0].strip()
                   ref = parts[1].strip()
                   if ref.startswith("refs/tags/"):
-                      tag_name = ref[len("refs/tags/"):].replace("^{}", "")
-                      existing_tags.add(tag_name)
-                      match = semver_pattern.match(tag_name)
-                      if match:
+                      is_peeled = ref.endswith("^{}")
+                      raw_tag_name = ref[len("refs/tags/"):].replace("^{}", "")
+                      existing_tags.add(raw_tag_name)
+                      # For annotated tags, peeled ref points directly to target commit SHA
+                      if is_peeled or raw_tag_name not in tag_to_commit_sha:
+                          tag_to_commit_sha[raw_tag_name] = ref_sha
+
+                      match = semver_pattern.match(raw_tag_name)
+                      if match and not is_peeled:
                           major, minor, patch = map(int, match.groups())
                           parsed_versions.append((major, minor, patch))
 
           print(f"Discovered {len(existing_tags)} total tags on origin ({len(parsed_versions)} valid semver tags).")
 
-          if not parsed_versions:
-              next_ver = (1, 0, 0)
-              print("No existing semver release tags found. Initializing release at v1.0.0.")
+          # Check if exact CI commit SHA has already been released (Same-SHA Idempotency)
+          already_released_tag = None
+          if commit_sha:
+              for tag_name, target_sha in tag_to_commit_sha.items():
+                  if target_sha == commit_sha and semver_pattern.match(tag_name):
+                      already_released_tag = tag_name if tag_name.startswith("v") else f"v{tag_name}"
+                      break
+
+          if already_released_tag:
+              next_version = already_released_tag.lstrip("v")
+              next_tag = already_released_tag
+              already_released = "true"
+              print("==================================================")
+              print(f"Exact CI Commit SHA {commit_sha} has ALREADY been released as {already_released_tag}!")
+              print(f"Release is idempotent. Skipping build, tag, and publish steps.")
+              print("==================================================")
           else:
-              parsed_versions.sort(key=lambda t: (t[0], t[1], t[2]))
-              latest_major, latest_minor, latest_patch = parsed_versions[-1]
-              print(f"Highest existing semver release: v{latest_major}.{latest_minor}.{latest_patch}")
-              next_ver = (latest_major, latest_minor, latest_patch + 1)
+              already_released = "false"
+              if not parsed_versions:
+                  next_ver = (1, 0, 0)
+                  print("No existing semver release tags found. Initializing release at v1.0.0.")
+              else:
+                  parsed_versions.sort(key=lambda t: (t[0], t[1], t[2]))
+                  latest_major, latest_minor, latest_patch = parsed_versions[-1]
+                  print(f"Highest existing semver release: v{latest_major}.{latest_minor}.{latest_patch}")
+                  next_ver = (latest_major, latest_minor, latest_patch + 1)
 
-          next_version = f"{next_ver[0]}.{next_ver[1]}.{next_ver[2]}"
-          next_tag = f"v{next_version}"
-
-          # Duplicate protection / conflict avoidance
-          while next_tag in existing_tags or next_version in existing_tags:
-              print(f"Release tag {next_tag} already exists on remote! Incrementing patch...")
-              next_ver = (next_ver[0], next_ver[1], next_ver[2] + 1)
               next_version = f"{next_ver[0]}.{next_ver[1]}.{next_ver[2]}"
               next_tag = f"v{next_version}"
 
-          print("==================================================")
-          print(f"Allocated Release Version: {next_version}")
-          print(f"Allocated Release Tag:     {next_tag}")
-          print("==================================================")
+              # Duplicate protection / conflict avoidance
+              while next_tag in existing_tags or next_version in existing_tags:
+                  print(f"Release tag {next_tag} already exists on remote! Incrementing patch...")
+                  next_ver = (next_ver[0], next_ver[1], next_ver[2] + 1)
+                  next_version = f"{next_ver[0]}.{next_ver[1]}.{next_ver[2]}"
+                  next_tag = f"v{next_version}"
+
+              print("==================================================")
+              print(f"Allocated Release Version: {next_version}")
+              print(f"Allocated Release Tag:     {next_tag}")
+              print("==================================================")
 
           github_output = os.environ.get("GITHUB_OUTPUT")
           if github_output:
               with open(github_output, "a") as f:
                   f.write(f"release_version={next_version}\n")
                   f.write(f"release_tag={next_tag}\n")
+                  f.write(f"already_released={already_released}\n")
 
           github_env = os.environ.get("GITHUB_ENV")
           if github_env:
               with open(github_env, "a") as f:
                   f.write(f"RELEASE_VERSION={next_version}\n")
                   f.write(f"RELEASE_TAG={next_tag}\n")
+                  f.write(f"ALREADY_RELEASED={already_released}\n")
           EOF
 
       - name: Record Release Plan in Workflow Summary
@@ -314,6 +373,7 @@ jobs:
 
       - name: Build and push Backend Image
         id: build-backend
+        if: steps.determine-version.outputs.already_released != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./backend
@@ -338,6 +398,7 @@ jobs:
 
       - name: Build and push Frontend Image
         id: build-frontend
+        if: steps.determine-version.outputs.already_released != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
@@ -359,6 +420,7 @@ jobs:
           sbom: true
 
       - name: Verify Docker Image Publication
+        if: steps.determine-version.outputs.already_released != 'true'
         run: |
           echo "=================================================="
           echo "Docker Image Publication Verified"
@@ -372,6 +434,7 @@ jobs:
 
       - name: Create and Push Git Release Tag
         id: create-tag
+        if: steps.determine-version.outputs.already_released != 'true'
         env:
           RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
           COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
@@ -394,6 +457,7 @@ jobs:
 
       - name: Create GitHub Release
         id: create-release
+        if: steps.determine-version.outputs.already_released != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
@@ -496,6 +560,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.determine-version.outputs.release_version }}
+          ALREADY_RELEASED: ${{ steps.determine-version.outputs.already_released }}
           COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
           SELECTED_REF: ${{ steps.resolve-commit.outputs.selected_ref }}
           CI_RUN_ID: ${{ steps.resolve-commit.outputs.ci_run_id }}
@@ -510,6 +575,7 @@ jobs:
 
           release_tag = os.environ.get("RELEASE_TAG", "")
           release_version = os.environ.get("RELEASE_VERSION", "")
+          already_released = os.environ.get("ALREADY_RELEASED", "false")
           commit_sha = os.environ.get("COMMIT_SHA", "")
           selected_ref = os.environ.get("SELECTED_REF", "")
           ci_run_id = os.environ.get("CI_RUN_ID", "")
@@ -519,38 +585,51 @@ jobs:
           frontend_digest = os.environ.get("FRONTEND_DIGEST", "")
           release_url = os.environ.get("RELEASE_URL", "")
 
+          is_idempotent = (already_released == "true")
+          status_header = "### 📦 CloudScope Release (Idempotent - Already Published)" if is_idempotent else "### 📦 CloudScope Release Published Successfully!"
+
           print("==================================================")
           print("CloudScope Open Source Release Summary")
           print("--------------------------------------------------")
+          print(f"Status:            {'Idempotent (Already Released)' if is_idempotent else 'Published'}")
           print(f"Release Tag:       {release_tag}")
           print(f"Release Version:   {release_version}")
           print(f"Release Commit:    {commit_sha}")
           print(f"Source Ref:        {selected_ref}")
           print(f"CI Quality Gate:   {ci_run_url}")
-          print(f"Backend Image:     ghcr.io/{owner_lc}/cloudscope-backend:{release_tag}")
-          print(f"Backend Digest:    {backend_digest}")
-          print(f"Frontend Image:    ghcr.io/{owner_lc}/cloudscope-frontend:{release_tag}")
-          print(f"Frontend Digest:   {frontend_digest}")
-          print(f"GitHub Release:    {release_url}")
+          if not is_idempotent:
+              print(f"Backend Image:     ghcr.io/{owner_lc}/cloudscope-backend:{release_tag}")
+              print(f"Backend Digest:    {backend_digest}")
+              print(f"Frontend Image:    ghcr.io/{owner_lc}/cloudscope-frontend:{release_tag}")
+              print(f"Frontend Digest:   {frontend_digest}")
+              print(f"GitHub Release:    {release_url}")
           print("==================================================")
 
           summary_lines = [
-              "### 📦 CloudScope Release Published Successfully!",
+              status_header,
               "| Property | Value |",
               "|---|---|",
               f"| **Release Tag** | `{release_tag}` |",
               f"| **Release Version** | `{release_version}` |",
               f"| **Commit SHA** | `{commit_sha}` |",
               f"| **CI Quality Gate** | [CI Run #{ci_run_id}]({ci_run_url}) (Passed) |",
-              f"| **Backend Image** | `ghcr.io/{owner_lc}/cloudscope-backend:{release_tag}` |",
-              f"| **Frontend Image** | `ghcr.io/{owner_lc}/cloudscope-frontend:{release_tag}` |",
-              f"| **GitHub Release** | [{release_tag} Release Details]({release_url}) |",
+          ]
+          if is_idempotent:
+              summary_lines.append(f"| **Note** | Exact commit `{commit_sha}` already released as `{release_tag}`. |")
+          else:
+              summary_lines.extend([
+                  f"| **Backend Image** | `ghcr.io/{owner_lc}/cloudscope-backend:{release_tag}` |",
+                  f"| **Frontend Image** | `ghcr.io/{owner_lc}/cloudscope-frontend:{release_tag}` |",
+                  f"| **GitHub Release** | [{release_tag} Release Details]({release_url}) |",
+              ])
+
+          summary_lines.extend([
               "",
               "#### Quick Run Command",
               "```bash",
               f"IMAGE_TAG={release_tag} docker compose -f compose.release.yaml up -d",
               "```",
-          ]
+          ])
           summary_md = "\n".join(summary_lines) + "\n"
 
           step_summary = os.environ.get("GITHUB_STEP_SUMMARY")

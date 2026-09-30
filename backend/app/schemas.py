@@ -103,6 +103,13 @@ class AttackPath(BaseModel):
     targetCategory: Optional[str] = None
     downstream_reachable_assets: Optional[List[Dict[str, Any]]] = None
     downstreamReachableAssets: Optional[List[Dict[str, Any]]] = None
+    source_snapshot_id: Optional[str] = None
+    snapshot_id: Optional[str] = None
+    canonical_id: Optional[str] = None
+    path_id: Optional[str] = None
+    risk_model_version: Optional[str] = None
+    is_truncated: Optional[bool] = False
+    truncation_reason: Optional[str] = None
 
 class FindingRemediation(BaseModel):
     title: str
@@ -148,6 +155,11 @@ class SecurityFinding(BaseModel):
     updatedAt: Optional[str] = None
     resolvedAt: Optional[str] = None
     source: str
+    source_types: Optional[List[str]] = None
+    source_snapshot_id: Optional[str] = None
+    snapshot_id: Optional[str] = None
+    risk_model_version: Optional[str] = None
+    confidence: Optional[int] = None
     tags: Optional[List[str]] = None
     # Backward compatibility with RiskFinding
     identity: Optional[str] = None

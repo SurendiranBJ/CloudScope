@@ -224,3 +224,111 @@ def test_scan_status_endpoint():
     res_json = response.json()
     assert res_json["success"] is True
     assert "is_scanning" in res_json["data"]
+
+
+def test_finding_evidence_endpoint():
+    from app.services.findings.finding_service import finding_service
+    from app.schemas import SecurityFinding
+
+    fid = "find-test-evidence-001"
+    finding_service._memory_store[fid] = SecurityFinding(
+        id=fid,
+        type="NO_MFA",
+        category="CREDENTIAL",
+        title="MFA Missing on Root",
+        description="Root lacks MFA",
+        severity="critical",
+        riskScore=90,
+        principal="root",
+        source="STATIC_IAM",
+        evidence={"mfa_enabled": False}
+    )
+
+    response = client.get(f"/api/v1/findings/{fid}/evidence")
+    assert response.status_code == 200
+    res_json = response.json()
+    assert res_json["success"] is True
+    assert res_json["data"]["finding_id"] == fid
+    assert res_json["data"]["risk_model_version"] == "phase3-v1"
+    assert res_json["data"]["evidence"]["mfa_enabled"] is False
+
+
+def test_attack_path_evidence_and_filtering_endpoints():
+    cache.set("v1:attack-paths", [
+        {
+            "id": "path-001",
+            "canonical_id": "ap-crit-001",
+            "name": "Path 1",
+            "source": "alice",
+            "target": "s3-vault",
+            "target_type": "S3",
+            "severity": "critical",
+            "riskScore": 95,
+            "blastRadius": "High",
+            "mitreTechniques": ["T1078"],
+            "recommendation": "Restrict policy",
+            "description": "Critical path to S3",
+            "ordered_relationships": ["HAS_POLICY", "ALLOWS"],
+            "nodes": [{"id": "alice", "name": "alice", "type": "User"}],
+            "evidence": [{"from_name": "alice", "to_name": "s3-vault", "why": "Policy allows GetObject"}]
+        },
+        {
+            "id": "path-002",
+            "canonical_id": "ap-med-002",
+            "name": "Path 2",
+            "source": "bob",
+            "target": "ec2-worker",
+            "target_type": "EC2",
+            "severity": "medium",
+            "riskScore": 50,
+            "blastRadius": "Low",
+            "mitreTechniques": ["T1078"],
+            "recommendation": "Review permissions",
+            "description": "Medium path",
+            "ordered_relationships": ["HAS_POLICY"],
+            "nodes": [{"id": "bob", "name": "bob", "type": "User"}],
+            "evidence": []
+        }
+    ])
+
+    # 1. Evidence endpoint
+    ev_resp = client.get("/api/v1/attack-paths/path-001/evidence")
+    assert ev_resp.status_code == 200
+    ev_json = ev_resp.json()
+    assert ev_json["success"] is True
+    assert ev_json["data"]["canonical_id"] == "ap-crit-001"
+    assert ev_json["data"]["risk_model_version"] == "phase3-v1"
+    assert len(ev_json["data"]["transition_evidence"]) == 1
+
+    # 2. Filtering by severity
+    filt_resp = client.get("/api/v1/attack-paths?severity=critical")
+    assert filt_resp.status_code == 200
+    assert len(filt_resp.json()["data"]) == 1
+    assert filt_resp.json()["data"][0]["id"] == "path-001"
+
+    # 3. Pagination
+    page_resp = client.get("/api/v1/attack-paths?limit=1&offset=1")
+    assert page_resp.status_code == 200
+    assert len(page_resp.json()["data"]) == 1
+    assert page_resp.json()["data"][0]["id"] == "path-002"
+
+
+def test_risk_explanation_endpoint():
+    cache.set("v1:users", [{
+        "name": "superadmin",
+        "arn": "arn:aws:iam::123:user/superadmin",
+        "riskScore": 85,
+        "riskAssessment": {
+            "score": 85,
+            "severity": "critical",
+            "factors": [{"code": "ADMIN_POLICY", "points": 50, "reason": "Full admin access"}]
+        }
+    }])
+
+    response = client.get("/api/v1/risk-explanation/superadmin")
+    assert response.status_code == 200
+    res_json = response.json()
+    assert res_json["success"] is True
+    assert res_json["data"]["risk_score"] == 85
+    assert res_json["data"]["risk_model_version"] == "phase3-v1"
+    assert len(res_json["data"]["factors"]) == 1
