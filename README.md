@@ -1,6 +1,8 @@
 # CloudScope — AWS Cloud Security Posture Management & Identity Attack Path Analysis
 
 [![CloudScope CI](https://github.com/SurendiranBJ/CloudScope/actions/workflows/ci.yml/badge.svg?branch=sura)](https://github.com/SurendiranBJ/CloudScope/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/SurendiranBJ/CloudScope?logo=github&label=Release)](https://github.com/SurendiranBJ/CloudScope/releases)
+[![GHCR Docker](https://img.shields.io/badge/GHCR-Docker%20Release-2496ED?logo=docker&logoColor=white)](https://github.com/SurendiranBJ/CloudScope/pkgs/container/cloudscope-backend)
 
 CloudScope is a Cloud Security Posture Management (CSPM) and Cloud Infrastructure Entitlement Management (CIEM) platform built for Amazon Web Services (AWS). It evaluates effective permissions using Abstract Syntax Tree (AST) IAM policy document analysis, models multi-hop identity and resource relationships in **Neo4j** and **NetworkX**, identifies lateral movement and privilege escalation attack vectors, and delivers evidence-based security posture scores via an interactive **React** interface.
 
