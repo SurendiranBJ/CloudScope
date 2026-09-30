@@ -163,6 +163,8 @@ jobs:
 
       - name: Determine Next Semantic Version & Tag
         id: determine-version
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python3 - << 'EOF'
           import subprocess
@@ -170,15 +172,25 @@ jobs:
           import sys
           import os
 
-          # Query tags from remote origin
+          # Query tags from remote origin repository URL (works before and after checkout)
+          repo = os.environ.get("GITHUB_REPOSITORY", "SurendiranBJ/CloudScope")
+          remote_url = f"https://github.com/{repo}.git"
+
           try:
               output = subprocess.check_output(
-                  ["git", "ls-remote", "--tags", "origin"],
+                  ["git", "ls-remote", "--tags", remote_url],
                   stderr=subprocess.DEVNULL
               ).decode("utf-8")
           except Exception as e:
-              print(f"Warning: git ls-remote failed: {e}")
-              output = ""
+              print(f"Warning: git ls-remote on URL failed ({e}), falling back to origin...")
+              try:
+                  output = subprocess.check_output(
+                      ["git", "ls-remote", "--tags", "origin"],
+                      stderr=subprocess.DEVNULL
+                  ).decode("utf-8")
+              except Exception as e2:
+                  print(f"Warning: git ls-remote origin failed: {e2}")
+                  output = ""
 
           semver_pattern = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
           existing_tags = set()
@@ -363,12 +375,15 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
           COMMIT_SHA: ${{ steps.resolve-commit.outputs.commit_sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "Creating annotated tag ${RELEASE_TAG} pointing to ${COMMIT_SHA}..."
           git tag -a "${RELEASE_TAG}" "${COMMIT_SHA}" -m "CloudScope release ${RELEASE_TAG}"
-          git push origin "${RELEASE_TAG}"
+          echo "Pushing tag ${RELEASE_TAG} to origin..."
+          git push origin "${RELEASE_TAG}" || git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${RELEASE_TAG}"
 
           RESOLVED_TAG_SHA=$(git rev-list -n 1 "${RELEASE_TAG}")
           echo "Verified tag ${RELEASE_TAG} -> ${RESOLVED_TAG_SHA}"
