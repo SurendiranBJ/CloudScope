@@ -247,15 +247,33 @@ jobs:
           RELEASE_TAG: ${{ steps.determine-version.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.determine-version.outputs.release_version }}
         run: |
-          cat << EOF >> $GITHUB_STEP_SUMMARY
-          ### 🚀 CloudScope Open Source Release Pipeline
-          | Property | Value |
-          |---|---|
-          | **Event Trigger** | \`${EVENT_NAME}\` |
-          | **Target Release Version** | \`${RELEASE_VERSION}\` (\`${RELEASE_TAG}\`) |
-          | **Selected Source Ref** | \`${SELECTED_REF}\` |
-          | **Exact Commit SHA** | \`${COMMIT_SHA}\` |
-          | **CI Verification Gate** | [Run #${CI_RUN_ID}](${CI_RUN_URL}) (Passed) |
+          python3 - << 'EOF'
+          import os
+
+          event_name = os.environ.get("EVENT_NAME", "")
+          release_version = os.environ.get("RELEASE_VERSION", "")
+          release_tag = os.environ.get("RELEASE_TAG", "")
+          selected_ref = os.environ.get("SELECTED_REF", "")
+          commit_sha = os.environ.get("COMMIT_SHA", "")
+          ci_run_id = os.environ.get("CI_RUN_ID", "")
+          ci_run_url = os.environ.get("CI_RUN_URL", "")
+
+          plan_lines = [
+              "### 🚀 CloudScope Open Source Release Pipeline",
+              "| Property | Value |",
+              "|---|---|",
+              f"| **Event Trigger** | `{event_name}` |",
+              f"| **Target Release Version** | `{release_version}` (`{release_tag}`) |",
+              f"| **Selected Source Ref** | `{selected_ref}` |",
+              f"| **Exact Commit SHA** | `{commit_sha}` |",
+              f"| **CI Verification Gate** | [Run #{ci_run_id}]({ci_run_url}) (Passed) |",
+          ]
+          summary = "\n".join(plan_lines) + "\n"
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as f:
+                  f.write(summary)
           EOF
 
       - name: Checkout repository at exact tested commit
@@ -370,58 +388,81 @@ jobs:
           BACKEND_DIGEST: ${{ steps.build-backend.outputs.digest }}
           FRONTEND_DIGEST: ${{ steps.build-frontend.outputs.digest }}
         run: |
-          cat << 'EOF' > release_body.md
-          ## CloudScope TAG_PLACEHOLDER
+          python3 - << 'EOF'
+          import os
+          import subprocess
 
-          Official open-source release of CloudScope, automated from verified CI test runs on branch `sura`.
+          release_tag = os.environ["RELEASE_TAG"]
+          release_version = os.environ["RELEASE_VERSION"]
+          commit_sha = os.environ["COMMIT_SHA"]
+          owner_lc = os.environ["OWNER_LC"]
+          backend_digest = os.environ.get("BACKEND_DIGEST", "")
+          frontend_digest = os.environ.get("FRONTEND_DIGEST", "")
 
-          ### 🐳 Prebuilt Docker Images (GitHub Container Registry)
-          Pull and deploy directly using Docker Compose without installing Python, Node.js, Redis, or Neo4j:
+          lines = [
+              f"## CloudScope {release_tag}",
+              "",
+              "Official open-source release of CloudScope, automated from verified CI test runs on branch `sura`.",
+              "",
+              "### 🐳 Prebuilt Docker Images (GitHub Container Registry)",
+              "Pull and deploy directly using Docker Compose without installing Python, Node.js, Redis, or Neo4j:",
+              "",
+              f"- **Backend:** `ghcr.io/{owner_lc}/cloudscope-backend:{release_tag}` *(Digest: `{backend_digest}`)*",
+              f"- **Frontend:** `ghcr.io/{owner_lc}/cloudscope-frontend:{release_tag}` *(Digest: `{frontend_digest}`)*",
+              "",
+              "Additional immutable tags pointing to the identical image digest:",
+              f"- `ghcr.io/{owner_lc}/cloudscope-backend:{commit_sha}`",
+              f"- `ghcr.io/{owner_lc}/cloudscope-backend:sura-latest`",
+              f"- `ghcr.io/{owner_lc}/cloudscope-frontend:{commit_sha}`",
+              f"- `ghcr.io/{owner_lc}/cloudscope-frontend:sura-latest`",
+              "",
+              "### 🚀 Quick Start (Docker-Only Installation)",
+              "```bash",
+              "# 1. Clone the repository",
+              "git clone https://github.com/SurendiranBJ/CloudScope.git",
+              "cd CloudScope",
+              "",
+              "# 2. Configure environment template",
+              "cp .env.example .env",
+              "",
+              "# 3. Pull and run this release",
+              f"IMAGE_TAG={release_tag} docker compose -f compose.release.yaml pull",
+              f"IMAGE_TAG={release_tag} docker compose -f compose.release.yaml up -d",
+              "```",
+              "",
+              "Access the web UI at: **http://localhost**",
+          ]
+          body = "\n".join(lines) + "\n"
 
-          - **Backend:** `ghcr.io/OWNER_PLACEHOLDER/cloudscope-backend:TAG_PLACEHOLDER`
-            *(Digest: `BACKEND_DIGEST_PLACEHOLDER`)*
-          - **Frontend:** `ghcr.io/OWNER_PLACEHOLDER/cloudscope-frontend:TAG_PLACEHOLDER`
-            *(Digest: `FRONTEND_DIGEST_PLACEHOLDER`)*
+          with open("release_body.md", "w", encoding="utf-8") as f:
+              f.write(body)
 
-          Additional immutable tags pointing to the identical image digest:
-          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-backend:SHA_PLACEHOLDER`
-          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-backend:sura-latest`
-          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-frontend:SHA_PLACEHOLDER`
-          - `ghcr.io/OWNER_PLACEHOLDER/cloudscope-frontend:sura-latest`
+          print(f"Creating GitHub Release for {release_tag}...")
+          cmd = [
+              "gh", "release", "create", release_tag,
+              "--target", commit_sha,
+              "--title", f"CloudScope {release_tag}",
+              "--notes-file", "release_body.md",
+              "--generate-notes"
+          ]
+          subprocess.check_call(cmd)
 
-          ### 🚀 Quick Start (Docker-Only Installation)
-          ```bash
-          # 1. Clone the repository
-          git clone https://github.com/SurendiranBJ/CloudScope.git
-          cd CloudScope
+          url = subprocess.check_output(
+              ["gh", "release", "view", release_tag, "--json", "url", "-q", ".url"]
+          ).decode("utf-8").strip()
 
-          # 2. Configure environment template
-          cp .env.example .env
+          print(f"GitHub Release created: {url}")
 
-          # 3. Pull and run this release
-          IMAGE_TAG=TAG_PLACEHOLDER docker compose -f compose.release.yaml pull
-          IMAGE_TAG=TAG_PLACEHOLDER docker compose -f compose.release.yaml up -d
-          ```
+          github_env = os.environ.get("GITHUB_ENV")
+          if github_env:
+              with open(github_env, "a", encoding="utf-8") as f:
+                  f.write(f"RELEASE_URL={url}\n")
 
-          Access the web UI at: **http://localhost**
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"release_url={url}\n")
           EOF
-
-          sed -i "s|OWNER_PLACEHOLDER|${OWNER_LC}|g" release_body.md
-          sed -i "s|TAG_PLACEHOLDER|${RELEASE_TAG}|g" release_body.md
-          sed -i "s|SHA_PLACEHOLDER|${COMMIT_SHA}|g" release_body.md
-          sed -i "s|BACKEND_DIGEST_PLACEHOLDER|${BACKEND_DIGEST}|g" release_body.md
-          sed -i "s|FRONTEND_DIGEST_PLACEHOLDER|${FRONTEND_DIGEST}|g" release_body.md
-
-          echo "Creating GitHub Release for ${RELEASE_TAG}..."
-          gh release create "${RELEASE_TAG}" \
-            --target "${COMMIT_SHA}" \
-            --title "CloudScope ${RELEASE_TAG}" \
-            --notes-file release_body.md \
-            --generate-notes
-
-          RELEASE_URL=$(gh release view "${RELEASE_TAG}" --json url -q .url)
-          echo "RELEASE_URL=${RELEASE_URL}" >> $GITHUB_ENV
-          echo "release_url=${RELEASE_URL}" >> $GITHUB_OUTPUT
 
       - name: Smoke Test Release Compose on Runner
         env:
@@ -449,35 +490,56 @@ jobs:
           FRONTEND_DIGEST: ${{ steps.build-frontend.outputs.digest }}
           RELEASE_URL: ${{ steps.create-release.outputs.release_url }}
         run: |
-          echo "=================================================="
-          echo "CloudScope Open Source Release Summary"
-          echo "--------------------------------------------------"
-          echo "Release Tag:       ${RELEASE_TAG}"
-          echo "Release Version:   ${RELEASE_VERSION}"
-          echo "Release Commit:    ${COMMIT_SHA}"
-          echo "Source Ref:        ${SELECTED_REF}"
-          echo "CI Quality Gate:   ${CI_RUN_URL}"
-          echo "Backend Image:     ghcr.io/${OWNER_LC}/cloudscope-backend:${RELEASE_TAG}"
-          echo "Backend Digest:    ${BACKEND_DIGEST}"
-          echo "Frontend Image:    ghcr.io/${OWNER_LC}/cloudscope-frontend:${RELEASE_TAG}"
-          echo "Frontend Digest:   ${FRONTEND_DIGEST}"
-          echo "GitHub Release:    ${RELEASE_URL}"
-          echo "=================================================="
+          python3 - << 'EOF'
+          import os
 
-          cat << EOF >> $GITHUB_STEP_SUMMARY
-          ### 📦 CloudScope Release Published Successfully!
-          | Property | Value |
-          |---|---|
-          | **Release Tag** | \`${RELEASE_TAG}\` |
-          | **Release Version** | \`${RELEASE_VERSION}\` |
-          | **Commit SHA** | \`${COMMIT_SHA}\` |
-          | **CI Quality Gate** | [CI Run #${CI_RUN_ID}](${CI_RUN_URL}) (Passed) |
-          | **Backend Image** | \`ghcr.io/${OWNER_LC}/cloudscope-backend:${RELEASE_TAG}\` |
-          | **Frontend Image** | \`ghcr.io/${OWNER_LC}/cloudscope-frontend:${RELEASE_TAG}\` |
-          | **GitHub Release** | [${RELEASE_TAG} Release Details](${RELEASE_URL}) |
+          release_tag = os.environ.get("RELEASE_TAG", "")
+          release_version = os.environ.get("RELEASE_VERSION", "")
+          commit_sha = os.environ.get("COMMIT_SHA", "")
+          selected_ref = os.environ.get("SELECTED_REF", "")
+          ci_run_id = os.environ.get("CI_RUN_ID", "")
+          ci_run_url = os.environ.get("CI_RUN_URL", "")
+          owner_lc = os.environ.get("OWNER_LC", "")
+          backend_digest = os.environ.get("BACKEND_DIGEST", "")
+          frontend_digest = os.environ.get("FRONTEND_DIGEST", "")
+          release_url = os.environ.get("RELEASE_URL", "")
 
-          #### Quick Run Command
-          \`\`\`bash
-          IMAGE_TAG=${RELEASE_TAG} docker compose -f compose.release.yaml up -d
-          \`\`\`
+          print("==================================================")
+          print("CloudScope Open Source Release Summary")
+          print("--------------------------------------------------")
+          print(f"Release Tag:       {release_tag}")
+          print(f"Release Version:   {release_version}")
+          print(f"Release Commit:    {commit_sha}")
+          print(f"Source Ref:        {selected_ref}")
+          print(f"CI Quality Gate:   {ci_run_url}")
+          print(f"Backend Image:     ghcr.io/{owner_lc}/cloudscope-backend:{release_tag}")
+          print(f"Backend Digest:    {backend_digest}")
+          print(f"Frontend Image:    ghcr.io/{owner_lc}/cloudscope-frontend:{release_tag}")
+          print(f"Frontend Digest:   {frontend_digest}")
+          print(f"GitHub Release:    {release_url}")
+          print("==================================================")
+
+          summary_lines = [
+              "### 📦 CloudScope Release Published Successfully!",
+              "| Property | Value |",
+              "|---|---|",
+              f"| **Release Tag** | `{release_tag}` |",
+              f"| **Release Version** | `{release_version}` |",
+              f"| **Commit SHA** | `{commit_sha}` |",
+              f"| **CI Quality Gate** | [CI Run #{ci_run_id}]({ci_run_url}) (Passed) |",
+              f"| **Backend Image** | `ghcr.io/{owner_lc}/cloudscope-backend:{release_tag}` |",
+              f"| **Frontend Image** | `ghcr.io/{owner_lc}/cloudscope-frontend:{release_tag}` |",
+              f"| **GitHub Release** | [{release_tag} Release Details]({release_url}) |",
+              "",
+              "#### Quick Run Command",
+              "```bash",
+              f"IMAGE_TAG={release_tag} docker compose -f compose.release.yaml up -d",
+              "```",
+          ]
+          summary_md = "\n".join(summary_lines) + "\n"
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as f:
+                  f.write(summary_md)
           EOF
