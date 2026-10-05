@@ -11,7 +11,7 @@ pipeline{
             steps{
                 echo 'checking the result dir is available'
                 echo 'Checking version'
-                bat 'py --version'
+                bat 'python --version'
                 bat 'node --version'
                 bat 'npm --version'
             }
