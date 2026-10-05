@@ -10,14 +10,6 @@ pipeline{
         stage('Setup Node'){
             steps{
                 echo 'checking the result dir is available'
-                def obj=bat(script:'if not exist test-results',returnStatus:True)
-                if (obj==1){
-                    bat 'if not exist test-results mkdir test-results'
-                    echo 'test-result folder was created'
-                }
-                else{
-                    echo 'test-result foolder is already exists'
-                }
                 echo 'Checking version'
                 bat 'python --version'
                 bat 'node --version'
@@ -33,6 +25,7 @@ pipeline{
         stage('Run Core & Api tests'){
             steps{
                 echo 'running all the cases like region phasees tests'
+                script{
                 def key = bat(script:
                     '''python -m pytest ^
                 tests/test_api_endpoints.py ^
@@ -47,6 +40,7 @@ pipeline{
                 -v --tb=short ^
                 --junitxml=test-results/backend-core.xml
                 ''',returnStatus: true)
+                
                 if (key==0){
                     echo 'all cases passes'
                 }
@@ -54,12 +48,13 @@ pipeline{
                     echo 'some cases failed in the RUN Core & api tests'
                     error ('some cases failed in the RUN Core & api tests')
                 }
+                }
             }
         }
         stage('run security engine tests'){
             steps{
                 echo 'running the run security engine tests'
-                
+                script{
                 def found = bat(script:
                     '''python -m pytest ^
                     tests/test_policy_evaluator.py ^
@@ -78,11 +73,13 @@ pipeline{
                     echo 'some cases failed in the run security engine tests'
                     error ('some cases failed in the run security engine tests')
                 }
+                }
             }
         }
         stage('run graph & attack path tests'){
             steps{
                 echo 'the graph testing is running'
+                script{
                 def op = bat(script:
                     '''python -m pytest ^
             tests/test_graph_construction.py ^
@@ -104,6 +101,7 @@ pipeline{
                 else{
                     echo 'some cases failed in the run graph & attack path tests'
                     error ('some cases failed in the run graph & attack path tests')
+                }
                 }
             }
         }
