@@ -19,7 +19,7 @@ pipeline{
         stage('Requirement Install'){
             steps{
                 echo 'pip the installs'
-                bat 'pip install  -r backend/requirements.txt -r backend/requirements-dev.txt'
+                bat '"C:\\Users\\surab\\AppData\\Local\\Python\\bin\\python.exe" -m pip install -r backend\\requirements.txt -r backend\\requirements-dev.txt'
             }
         }
         stage('Run Core & Api tests'){
