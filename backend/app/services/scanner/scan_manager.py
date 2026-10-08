@@ -262,6 +262,8 @@ class ScanManager:
         self._service_status: Dict[str, str] = {}
         self._failed_regions: List[str] = []
         self._successful_regions: List[str] = []
+        self._regional_status: Dict[str, Any] = {}
+        self._publication_state: str = "NOT_PUBLISHED"
         self._scan_mode: str = "global"
         self._resolved_regions: List[str] = []
         self._phase_durations: Dict[str, Any] = {
@@ -405,11 +407,7 @@ class ScanManager:
         except Exception:
             pass
 
-        current_snapshot = (
-            self._last_published_scan_id
-            or self._last_successful_scan_id
-            or self._last_completed_scan_id
-        )
+        current_snapshot = self._last_published_scan_id
 
         active_phase = self._active_phase
         if not self._is_running and not active_phase:
@@ -449,6 +447,8 @@ class ScanManager:
             "last_published_at": self._last_published_at,
             "failed_regions": list(self._failed_regions),
             "successful_regions": list(self._successful_regions),
+            "regional_status": dict(self._regional_status),
+            "publication_state": self._publication_state,
             "last_error": self._last_error,
             "last_progress_at": self._last_progress_at,
             "scan_mode": self._scan_mode,
@@ -461,6 +461,15 @@ class ScanManager:
 
     def trigger_async_scan(self) -> dict:
         """Start a scan in a background thread with atomic slot claim. Returns immediately."""
+        # Production/API callers must use the distributed coordinator. Keep the
+        # local path for isolated ScanManager instances used by unit tests.
+        if self is scan_manager or os.getenv("ENVIRONMENT", "development").lower() == "production":
+            from app.services.scanner.scan_coordinator import scan_coordinator
+            result = scan_coordinator.request_scan(trigger_type="AUTOMATIC", actor_id="system")
+            if result.get("status") == "STARTED":
+                result = {**result, "status": "started"}
+            return result
+
         with self._lock:
             if self._is_running:
                 return {
@@ -501,6 +510,9 @@ class ScanManager:
 
     def run_scan(self) -> dict:
         """Execute a scan synchronously with atomic slot claim."""
+        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            from app.services.scanner.scan_coordinator import scan_coordinator
+            return scan_coordinator.request_scan(trigger_type="MANUAL", actor_id="system")
         with self._lock:
             if self._is_running:
                 logger.warning("Scan lock held. Skipping duplicate scheduled scan.")
@@ -540,6 +552,7 @@ class ScanManager:
         phase_t0 = start_perf
         self._scan_started_perf = start_perf
         self._service_status = {}
+        self._publication_state = "NOT_PUBLISHED"
 
         self._phase_durations = {
             "discovery": {"duration_seconds": 0.0, "status": "SKIPPED"},
@@ -554,6 +567,10 @@ class ScanManager:
         logger.info(f"[INFO] SCAN START: Initializing AWS security scan (scan_id={scan_id})")
 
         try:
+            if os.getenv("ENVIRONMENT", "development").lower() == "production":
+                lease_valid = getattr(self, "_scan_lease_valid", None)
+                if lease_valid is None or not lease_valid():
+                    raise RuntimeError("Production scan execution requires a valid Redis lock lease")
             self._initialization_stage = "AUTHENTICATING_AWS"
             self._last_progress_at = datetime.utcnow().isoformat() + "Z"
             # 0. AWS STS Authentication Check
@@ -732,6 +749,10 @@ class ScanManager:
             self._failed_regions = sorted(list(scan_failed_regions))
             reconcilable_regions = sorted(list(successful_regions_set - scan_failed_regions))
             self._successful_regions = reconcilable_regions
+            self._regional_status = dict(self._service_status)
+            effective_regions = list(scanned_regions)
+            scan_successful_regions = list(reconcilable_regions)
+            regional_collector_status = dict(self._service_status)
 
             # 1b. CRITICAL FAILURE GATE: Collector failure must NEVER look like empty AWS state
             failed_critical = [c for c in CRITICAL_COLLECTORS if c in collector_failures]
@@ -1274,15 +1295,34 @@ class ScanManager:
             critical_paths_list = [p for p in attack_paths if p.get('severity') in ['critical', 'high']][:5]
 
             final_scan_status = "PARTIAL" if scan_failed_regions else "SUCCESS"
+            if not scanned_regions:
+                final_scan_status = "FAILED"
+                self._scan_status = "FAILED"
+                self._last_error = "No AWS regions were resolved; scan cannot publish an empty inventory."
+                self._publication_state = "NOT_PUBLISHED"
+                duration = max(0.0, round(time.perf_counter() - start_perf, 3))
+                self._scan_elapsed_seconds = duration
+                self._last_result = {
+                    "status": "failed",
+                    "scan_id": scan_id,
+                    "scan_status": "FAILED",
+                    "error": self._last_error,
+                    "failed_regions": [],
+                    "successful_regions": [],
+                    "last_published_scan_id": self._last_published_scan_id,
+                    "last_published_at": self._last_published_at,
+                }
+                return self._last_result
 
-            # Update scan completion / success metadata:
-            # - SUCCESS: updates both last_completed and last_successful
-            # - PARTIAL: updates last_completed, preserves existing last_successful
-            self._last_completed_scan_at = scan_timestamp
-            self._last_completed_scan_id = scan_id
-            if final_scan_status == "SUCCESS":
-                self._last_successful_scan_at = scan_timestamp
-                self._last_successful_scan_id = scan_id
+            # Candidate completion metadata is committed only after snapshot publication.
+            candidate_last_completed_at = scan_timestamp
+            candidate_last_completed_id = scan_id
+            candidate_last_successful_at = (
+                scan_timestamp if final_scan_status == "SUCCESS" else self._last_successful_scan_at
+            )
+            candidate_last_successful_id = (
+                scan_id if final_scan_status == "SUCCESS" else self._last_successful_scan_id
+            )
 
             open_canonical = [f for f in canonical_findings if f.status == "OPEN"]
             crit_canonical = [f for f in open_canonical if f.severity == "critical"]
@@ -1306,6 +1346,7 @@ class ScanManager:
                     "correlatedFindings": len(correlated_findings),
                     "observedAttackActivity": activity_metrics.get("observed_attack_activity_count", 0)
                 },
+                "globalPosture": global_posture,
                 "riskDistribution": [
                     {"name": "Critical", "value": len(crit_canonical), "color": "#EF4444"},
                     {"name": "High", "value": len(high_canonical), "color": "#F59E0B"},
@@ -1344,10 +1385,10 @@ class ScanManager:
                 "scannedRegions": scanned_regions,
                 "resolvedRegions": scanned_regions,
                 "successfulRegions": reconcilable_regions,
-                "lastCompletedScanAt": self._last_completed_scan_at,
-                "lastCompletedScanId": self._last_completed_scan_id,
-                "lastSuccessfulScanAt": self._last_successful_scan_at,
-                "lastSuccessfulScanId": self._last_successful_scan_id,
+                "lastCompletedScanAt": candidate_last_completed_at,
+                "lastCompletedScanId": candidate_last_completed_id,
+                "lastSuccessfulScanAt": candidate_last_successful_at,
+                "lastSuccessfulScanId": candidate_last_successful_id,
                 "lastPublishedScanId": scan_id,
                 "lastPublishedAt": scan_timestamp,
                 "snapshot_id": scan_id,
@@ -1381,6 +1422,7 @@ class ScanManager:
                 "risksFound": total_findings_count,
                 "phaseDurations": phase_durations
             }
+            scan_metadata["correlated_risks"] = correlated_findings
 
             try:
                 from app.services.simulation.effective_access import compute_effective_access
@@ -1419,7 +1461,11 @@ class ScanManager:
             }
 
             # Atomic publication: update SnapshotStore and persistent versioned keys without TTL
+            self._publication_state = "PUBLISHING"
             try:
+                lease_valid = getattr(self, "_scan_lease_valid", None)
+                if lease_valid is not None and not lease_valid():
+                    raise RuntimeError("Distributed scan lock lease was lost before snapshot publication")
                 from app.services.scanner.snapshot_store import snapshot_store
                 snapshot_store.publish(
                     snapshot_id=scan_id,
@@ -1439,6 +1485,7 @@ class ScanManager:
                         "failed_count": len(scan_failed_regions),
                         "success_count": len(scan_successful_regions),
                     },
+                    correlated_risks=correlated_findings,
                     users=working_inventory.users,
                     roles=working_inventory.roles,
                     groups=working_inventory.groups,
@@ -1454,10 +1501,27 @@ class ScanManager:
                     scan_metadata=scan_metadata,
                 )
             except Exception as store_err:
-                logger.warning(f"Failed to publish to SnapshotStore: {store_err}")
+                logger.error(f"Failed to publish authoritative snapshot: {store_err}")
+                self._scan_status = "FAILED"
+                self._last_error = f"Snapshot publication failed: {store_err}"
+                self._publication_state = "FAILED"
+                duration = max(0.0, round(time.perf_counter() - start_perf, 3))
+                self._scan_elapsed_seconds = duration
+                self._phase_durations["PUBLISHING"] = {"duration_seconds": 0.0, "status": "FAILED"}
+                self._phase_durations["publishing"] = self._phase_durations["PUBLISHING"]
+                self._last_result = {
+                    "status": "failed",
+                    "scan_id": scan_id,
+                    "scan_status": "FAILED",
+                    "error": self._last_error,
+                    "last_published_scan_id": self._last_published_scan_id,
+                    "last_published_at": self._last_published_at,
+                }
+                return self._last_result
 
             cache.set_many(new_snapshot, ttl_seconds=None)
             self._published_snapshot = dict(new_snapshot)
+            self._publication_state = "PUBLISHED"
             logger.info(f"[INFO] Authoritative scan snapshot published atomically (scan_id={scan_id}, status={final_scan_status})")
 
             publishing_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
@@ -1468,6 +1532,10 @@ class ScanManager:
             self.inventory = working_inventory
             self._last_published_scan_id = scan_id
             self._last_published_at = scan_timestamp
+            self._last_completed_scan_at = candidate_last_completed_at
+            self._last_completed_scan_id = candidate_last_completed_id
+            self._last_successful_scan_at = candidate_last_successful_at
+            self._last_successful_scan_id = candidate_last_successful_id
 
             # Persist authoritative scan metadata to durable disk storage
             try:

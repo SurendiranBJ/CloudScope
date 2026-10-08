@@ -51,6 +51,8 @@ def validate_configuration() -> Tuple[bool, List[str]]:
 
     jwt_secret = os.getenv("JWT_SECRET", "").strip()
     jwks_url = os.getenv("OIDC_JWKS_URL", "").strip()
+    issuer_url = os.getenv("OIDC_ISSUER_URL", "").strip()
+    audience = os.getenv("OIDC_AUDIENCE", "").strip()
     neo4j_pwd = os.getenv("NEO4J_PASSWORD", "").strip()
 
     if prod:
@@ -72,6 +74,13 @@ def validate_configuration() -> Tuple[bool, List[str]]:
                 issues.append("JWT_SECRET must be at least 32 characters in production")
             elif jwt_secret.lower() in KNOWN_INSECURE_SECRETS:
                 issues.append("Insecure placeholder JWT_SECRET detected in production")
+
+        if not issuer_url:
+            issues.append("OIDC_ISSUER_URL is required in production for issuer validation")
+        if not audience:
+            issues.append("OIDC_AUDIENCE is required in production for audience validation")
+        if jwks_url and not jwks_url.lower().startswith("https://"):
+            issues.append("OIDC_JWKS_URL must use HTTPS in production")
 
         # Production invariant 4: No default database passwords
         if neo4j_pwd.lower() in KNOWN_INSECURE_SECRETS:

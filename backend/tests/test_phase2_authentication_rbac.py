@@ -187,6 +187,25 @@ class TestProductionConfigurationInvariants:
             validate_startup_configuration()
         assert "AUTH_REQUIRED" in str(exc_info.value)
 
+    def test_production_requires_issuer_and_audience_validation(self, monkeypatch):
+        from app.security.config_validator import validate_configuration
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("AUTH_ENABLED", "true")
+        monkeypatch.setenv("AUTH_REQUIRED", "true")
+        monkeypatch.setenv("DEV_AUTH_MODE", "false")
+        monkeypatch.setenv("JWT_SECRET", "phase2-test-secret-key-32-chars-long!")
+        monkeypatch.setenv("OIDC_ISSUER_URL", "")
+        monkeypatch.setenv("OIDC_AUDIENCE", "")
+        valid, issues = validate_configuration()
+        assert not valid
+        assert any("OIDC_ISSUER_URL" in issue for issue in issues)
+        assert any("OIDC_AUDIENCE" in issue for issue in issues)
+
+    def test_role_claim_does_not_grant_admin_by_substring(self):
+        from app.security.auth import _normalize_roles
+        from app.security.models import Role
+        assert _normalize_roles(["non-admin-team"] ) == [Role.VIEWER]
+
     def test_production_unauthenticated_request_fails_closed_with_401(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "production")
         resp = client.get("/api/v1/policies")

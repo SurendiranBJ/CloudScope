@@ -32,6 +32,7 @@ class PublishedSnapshot:
     status: str
     region_metadata: Dict[str, Any] = field(default_factory=dict)
     collection_completeness: Dict[str, Any] = field(default_factory=dict)
+    correlated_risks: tuple = field(default_factory=tuple)
     users: tuple = field(default_factory=tuple)
     roles: tuple = field(default_factory=tuple)
     groups: tuple = field(default_factory=tuple)
@@ -53,6 +54,7 @@ class PublishedSnapshot:
             "status": self.status,
             "region_metadata": copy.deepcopy(self.region_metadata),
             "collection_completeness": copy.deepcopy(self.collection_completeness),
+            "correlated_risks": copy.deepcopy(self.correlated_risks),
             "users": list(self.users),
             "roles": list(self.roles),
             "groups": list(self.groups),
@@ -84,6 +86,7 @@ class SnapshotStore:
         published_at: Optional[str] = None,
         region_metadata: Optional[Dict[str, Any]] = None,
         collection_completeness: Optional[Dict[str, Any]] = None,
+        correlated_risks: Optional[List[dict]] = None,
         users: Optional[List[dict]] = None,
         roles: Optional[List[dict]] = None,
         groups: Optional[List[dict]] = None,
@@ -118,6 +121,7 @@ class SnapshotStore:
             status=status,
             region_metadata=reg_meta,
             collection_completeness=comp,
+            correlated_risks=tuple(copy.deepcopy(correlated_risks or [])),
             users=tuple(copy.deepcopy(users or [])),
             roles=tuple(copy.deepcopy(roles or [])),
             groups=tuple(copy.deepcopy(groups or [])),
@@ -133,11 +137,9 @@ class SnapshotStore:
             scan_metadata=meta,
         )
 
-        with self._lock:
-            self._current_snapshot = snap
-            self._history[snapshot_id] = snap
-
-        # 1. Authoritative durable SQL persistence FIRST
+        # Persist before making the snapshot visible to readers. If durable
+        # publication fails, the previous in-memory snapshot and pointer remain
+        # current and callers can fail the scan without exposing partial state.
         try:
             from app.persistence.repository import save_authoritative_snapshot
             saved = save_authoritative_snapshot(
@@ -154,6 +156,7 @@ class SnapshotStore:
                 policies=list(snap.policies),
                 resources=list(snap.resources),
                 alerts=list(snap.alerts),
+                correlated_risks=list(snap.correlated_risks),
                 findings=list(snap.findings),
                 risks=list(snap.risks),
                 attack_paths=list(snap.attack_paths),
@@ -163,11 +166,17 @@ class SnapshotStore:
                 scan_metadata=meta,
             )
             if not saved:
-                logger.warning(f"[SNAPSHOT_STORE] SQL persistence returned False for snapshot {snapshot_id}")
+                raise RuntimeError(f"SQL persistence returned False for snapshot {snapshot_id}")
         except Exception as e:
             logger.error(f"[SNAPSHOT_STORE] SQL persistence exception for snapshot {snapshot_id}: {e}")
+            raise RuntimeError(f"Could not durably publish snapshot {snapshot_id}") from e
 
-        # 2. Synchronize to Redis cache (hot cache)
+        with self._lock:
+            self._current_snapshot = snap
+            self._history[snapshot_id] = snap
+
+        # Redis is a hot cache; SQL and the in-process immutable object remain
+        # authoritative if the cache is unavailable.
         self._sync_to_cache(snap)
 
         logger.info(
@@ -197,6 +206,7 @@ class SnapshotStore:
                 "v1:attack-paths": list(snap.attack_paths),
                 "v1:graph": list(snap.graph),
                 "v1:effective_access": list(snap.effective_access),
+                "v1:correlated_risks": list(snap.correlated_risks),
                 "v1:dashboard": snap.dashboard,
                 "v1:scan_metadata": snap.scan_metadata,
             }
@@ -230,6 +240,36 @@ class SnapshotStore:
 
     def get_current(self) -> Optional[PublishedSnapshot]:
         """Return the current immutable published snapshot."""
+        # SQL owns the pointer. Redis can be flushed, stale, or unavailable, so
+        # it is only a hint; consult SQL before accepting the local hot object.
+        try:
+            from app.persistence.repository import get_authoritative_current_snapshot_pointer
+            sql_pointer = get_authoritative_current_snapshot_pointer()
+            if sql_pointer and sql_pointer.get("snapshot_id"):
+                sql_id = sql_pointer["snapshot_id"]
+                with self._lock:
+                    if self._current_snapshot and self._current_snapshot.snapshot_id == sql_id:
+                        return self._current_snapshot
+                from app.persistence.repository import load_authoritative_snapshot
+                sql_data = load_authoritative_snapshot(snapshot_id=sql_id)
+                if sql_data:
+                    snapshot = self._dict_to_snapshot(sql_data)
+                    with self._lock:
+                        self._current_snapshot = snapshot
+                        self._history[snapshot.snapshot_id] = snapshot
+                    return snapshot
+                return None
+            if __import__("os").getenv("ENVIRONMENT", "development").lower() == "production":
+                # A valid SQL database with no pointer means there is no
+                # published snapshot; never resurrect one from a stale cache.
+                return None
+        except Exception as e:
+            logger.error(f"[SNAPSHOT_STORE] SQL pointer lookup failed: {e}")
+            # Do not accept a Redis/local pointer when the authoritative SQL
+            # pointer cannot be read in production.
+            if __import__("os").getenv("ENVIRONMENT", "development").lower() == "production":
+                return None
+
         curr_id = cache.get("v1:current_snapshot_id") or cache.get("v1:last_published_scan_id")
 
         # Fallback / Override: If explicit raw cache keys exist without an active snapshot pointer
@@ -331,6 +371,7 @@ class SnapshotStore:
             status=d.get("status", "SUCCESS"),
             region_metadata=d.get("region_metadata", {}),
             collection_completeness=d.get("collection_completeness", {}),
+            correlated_risks=tuple(d.get("correlated_risks", (d.get("scan_metadata") or {}).get("correlated_risks", []))),
             users=tuple(d.get("users", [])),
             roles=tuple(d.get("roles", [])),
             groups=tuple(d.get("groups", [])),

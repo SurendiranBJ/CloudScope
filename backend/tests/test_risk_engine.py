@@ -202,3 +202,35 @@ class TestGlobalSecurityScore:
         assert "attack_path_risk" in res["categories"]
         assert "identity_hygiene" in res["categories"]
         assert "monitoring_coverage" in res["categories"]
+
+    def test_empty_inventory_is_not_reported_as_secure(self):
+        class EmptyInventory:
+            users = []
+            roles = []
+            s3 = []
+            ec2 = []
+            secrets = []
+            rds = []
+            dynamodb = []
+
+        result = compute_global_security_score(EmptyInventory(), [], [])
+        assert result["overall_score"] == 0
+        assert result["coverage"]["iam_security"] is False
+        assert result["coverage"]["resource_security"] is False
+        assert result["coverage"]["attack_path_risk"] is False
+        assert result["coverage"]["monitoring_coverage"] is False
+        assert "monitoring_coverage" in result["unverified_categories"]
+
+    def test_no_cloudtrail_alerts_are_not_mistaken_for_monitoring_coverage(self):
+        class Inventory:
+            users = [_make_user()]
+            roles = [_make_role()]
+            s3 = []
+            ec2 = []
+            secrets = []
+            rds = []
+            dynamodb = []
+
+        result = compute_global_security_score(Inventory(), [], [])
+        assert result["categories"]["monitoring_coverage"]["score"] == 0
+        assert result["coverage"]["monitoring_coverage"] is False

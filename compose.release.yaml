@@ -74,6 +74,10 @@ services:
       REDIS_PORT: 6379
       DATABASE_URL: ${DATABASE_URL:-sqlite:////app/storage/cloudscope.db}
       JWT_SECRET: "${JWT_SECRET:?Error: JWT_SECRET must be set in .env}"
+      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL:?Error: OIDC_ISSUER_URL must be set in .env}"
+      OIDC_AUDIENCE: "${OIDC_AUDIENCE:?Error: OIDC_AUDIENCE must be set in .env}"
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
       DEV_AUTH_MODE: ${DEV_AUTH_MODE:-false}
       ENVIRONMENT: ${ENVIRONMENT:-production}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

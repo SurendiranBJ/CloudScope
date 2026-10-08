@@ -9,6 +9,8 @@ from app.services.scanner.scan_manager import ScanManager, scan_manager
 from app.services.scanner.snapshot_store import snapshot_store
 from app.services.scanner.inventory import AWSInventory
 from app.services.scanner.current_snapshot import (
+    pin_request_snapshot,
+    reset_request_snapshot,
     get_current_snapshot_id,
     get_current_snapshot_published_at,
     get_current_policies,
@@ -519,4 +521,86 @@ def test_partial_scan_publishes_reconciled_snapshot():
     assert res_res.status_code == 200
     assert res_res.json()["snapshot_id"] == "scan-snap-partial"
     assert len(res_res.json()["data"]) == 1
+
+
+def test_request_reads_remain_pinned_when_publication_changes_mid_request():
+    seed_published_snapshot("snapshot-request-a", "2026-10-01T00:00:00Z")
+    from app.services.scanner.current_snapshot import get_current_resources
+    import app.services.scanner.current_snapshot as current_snapshot
+    original_pin = current_snapshot.pin_request_snapshot
+    published = False
+
+    def pin_a_then_publish_b():
+        nonlocal published
+        token = original_pin()
+        if not published:
+            published = True
+            snapshot_store.publish(
+                snapshot_id="snapshot-request-b",
+                published_at="2026-10-02T00:00:00Z",
+                status="SUCCESS",
+                policies=[{"name": "PolicyB", "arn": "arn:aws:iam::123456789012:policy/PolicyB"}],
+                resources=[{"id": "resource-b", "name": "resource-b", "type": "S3", "region": "us-east-1"}],
+            )
+        return token
+
+    with patch.object(current_snapshot, "pin_request_snapshot", side_effect=pin_a_then_publish_b):
+        response = client.get("/api/v1/policies")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["snapshot_id"] == "snapshot-request-a"
+    assert response.json()["data"]["items"][0]["name"] == "SecurityAuditPolicy"
+    assert get_current_resources()[0]["name"] == "resource-b"
+
+
+def test_snapshot_persistence_failure_does_not_publish_or_replace_current():
+    seed_published_snapshot("snapshot-durable-a", "2026-10-01T00:00:00Z")
+    with patch("app.persistence.repository.save_authoritative_snapshot", return_value=False):
+        with pytest.raises(RuntimeError, match="Could not durably publish"):
+            snapshot_store.publish(
+                snapshot_id="snapshot-durable-b",
+                published_at="2026-10-02T00:00:00Z",
+                status="SUCCESS",
+                resources=[{"id": "partial-b"}],
+            )
+
+    assert snapshot_store.get_current().snapshot_id == "snapshot-durable-a"
+    assert cache.get("v1:current_snapshot_id") == "snapshot-durable-a"
+    assert cache.get("v1:snapshot:snapshot-durable-b") is None
+
+
+def test_request_snapshot_pin_keeps_all_collection_reads_on_same_version():
+    seed_published_snapshot("snapshot-pin-a", "2026-10-01T00:00:00Z")
+    token = pin_request_snapshot()
+    try:
+        snapshot_store.publish(
+            snapshot_id="snapshot-pin-b",
+            published_at="2026-10-02T00:00:00Z",
+            status="SUCCESS",
+            users=[{"name": "new-user"}],
+            resources=[{"id": "new-resource"}],
+        )
+        from app.services.scanner.current_snapshot import get_current_users
+        assert get_current_snapshot_id() == "snapshot-pin-a"
+        assert get_current_users()[0]["name"] == "audit-user"
+        assert get_current_resources()[0]["name"] == "audit-bucket-100"
+    finally:
+        reset_request_snapshot(token)
+
+
+def test_scan_status_exposes_publication_and_regional_progress_fields():
+    target = scan_manager
+    target._is_running = True
+    target._scan_id = "progress-scan-1"
+    target._active_phase = "DISCOVERY"
+    target._publication_state = "NOT_PUBLISHED"
+    target._regional_status = {"EC2:us-east-1": "SUCCESS_EMPTY", "Lambda:eu-west-1": "FAILED: timeout"}
+
+    status = target.get_status()
+    assert status["scan_id"] == "progress-scan-1"
+    assert status["active_phase"] == "DISCOVERY"
+    assert status["elapsed_seconds"] >= 0
+    assert status["collector_status"]
+    assert status["regional_status"]["EC2:us-east-1"] == "SUCCESS_EMPTY"
+    assert status["publication_state"] == "NOT_PUBLISHED"
 

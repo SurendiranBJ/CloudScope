@@ -88,6 +88,8 @@ export interface ScanStatus {
   completed_collectors?: number;
   total_collectors?: number;
   collector_status?: Record<string, string>;
+  regional_status?: Record<string, string>;
+  publication_state?: 'NOT_PUBLISHED' | 'PUBLISHING' | 'PUBLISHED' | 'FAILED' | string;
 
   resources_discovered?: number;
   users_discovered?: number;

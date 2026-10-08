@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Shield, Bell, Key, RefreshCw, CheckCircle, AlertCircle, Clock } from 'lucide-react';
+import { Settings, RefreshCw, CheckCircle, AlertCircle, Clock } from 'lucide-react';
 import { postScanInterval } from '../api/settings';
 import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 
@@ -40,41 +40,12 @@ export const SettingsPage: React.FC = () => {
           <span>Platform Settings</span>
         </h1>
         <p className="text-xs text-enterprise-subtext mt-1">
-          Configure scanning intervals and administrative accounts.
+          Configure the automatic security scan schedule.
         </p>
       </div>
 
-      <form onSubmit={handleSaveScanInterval} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - General Settings */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* AWS Account Sync */}
-          <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4">
-            <h2 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-enterprise-border pb-3">
-              <Shield className="w-4 h-4 text-enterprise-accent" />
-              <span>AWS Account Sync Configuration</span>
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              <div className="space-y-1">
-                <span className="text-enterprise-subtext">AWS Account ID:</span>
-                <input
-                  type="text"
-                  value="123456789012"
-                  disabled
-                  className="w-full bg-enterprise-bg/60 border border-enterprise-border rounded-lg px-3 py-2 text-xs text-enterprise-subtext cursor-not-allowed focus:outline-none"
-                />
-              </div>
-              <div className="space-y-1">
-                <span className="text-enterprise-subtext">Sync Authorization Role ARN:</span>
-                <input
-                  type="text"
-                  value="arn:aws:iam::123456789012:role/IdentityScopeReaderRole"
-                  disabled
-                  className="w-full bg-enterprise-bg/60 border border-enterprise-border rounded-lg px-3 py-2 text-xs text-enterprise-subtext cursor-not-allowed focus:outline-none"
-                />
-              </div>
-            </div>
-          </div>
-
+      <form onSubmit={handleSaveScanInterval} className="max-w-4xl">
+        <div className="space-y-6">
           {/* Scanning Frequencies */}
           <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4">
             <h2 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-enterprise-border pb-3">
@@ -135,51 +106,6 @@ export const SettingsPage: React.FC = () => {
                     <span className="text-xs block">{opt.label}</span>
                   </label>
                 ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Notification Integrations — Coming Soon */}
-          <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4 opacity-60">
-            <h2 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-enterprise-border pb-3">
-              <Bell className="w-4 h-4 text-enterprise-accent" />
-              <span>Security Event Notifications</span>
-              <span className="ml-auto text-[9px] font-bold px-2 py-0.5 rounded bg-gray-700 text-gray-400 uppercase tracking-wider">
-                Coming Soon
-              </span>
-            </h2>
-            <p className="text-xs text-enterprise-subtext leading-relaxed">
-              Slack webhook alerts and email notification digests are planned for a future release.
-              Notification integrations will be configurable here once the backend integration is complete.
-            </p>
-          </div>
-        </div>
-
-        {/* Right Column - User Profile & Action */}
-        <div className="space-y-6">
-          {/* User Profile */}
-          <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4">
-            <h2 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-enterprise-border pb-3">
-              <Key className="w-4 h-4 text-enterprise-accent" />
-              <span>User Profile &amp; Sandbox Role</span>
-            </h2>
-            <div className="space-y-3 text-xs">
-              <div className="space-y-1">
-                <span className="text-enterprise-subtext">Account Identity:</span>
-                <p className="font-bold text-white">Cloud Admin (admin@identityscope.io)</p>
-              </div>
-              <div className="space-y-1">
-                <span className="text-enterprise-subtext">Assigned Role Scope:</span>
-                <p className="font-bold text-enterprise-success">PlatformAdministrator</p>
-              </div>
-              <div className="space-y-1">
-                <span className="text-enterprise-subtext">Authorized capabilities:</span>
-                <ul className="list-disc list-inside text-[10px] text-enterprise-subtext space-y-1 mt-1 pl-1">
-                  <li>Configure sync scopes</li>
-                  <li>Modify alert notifications</li>
-                  <li>Trigger simulation tests</li>
-                  <li>Read all policy documents</li>
-                </ul>
               </div>
             </div>
           </div>

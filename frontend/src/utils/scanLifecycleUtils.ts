@@ -73,6 +73,12 @@ export const formatDuration = (seconds?: number): string => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
+export const didPublishedSnapshotChange = (
+  hasSeenInitialStatus: boolean,
+  previousSnapshotId: string | null,
+  currentSnapshotId: string | null,
+): boolean => hasSeenInitialStatus && !!currentSnapshotId && currentSnapshotId !== previousSnapshotId;
+
 export const refreshScanDependentQueries = async (queryClient: QueryClient | { invalidateQueries: Function; refetchQueries?: Function }) => {
   for (const queryKey of SCAN_DEPENDENT_QUERY_KEYS) {
     try {

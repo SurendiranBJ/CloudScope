@@ -20,6 +20,7 @@ from app.cache import cache
 from app.services.attack.policy_evaluator import evaluate_policy_document_risk
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
+    get_published_snapshot,
     get_current_policies,
     get_current_users,
     get_current_roles,
@@ -48,9 +49,10 @@ def get_policy_catalog(
     The search and type filters operate across the COMPLETE cached catalog.
     Documents are never loaded or fetched during catalog listing to ensure high performance.
     """
-    # Retrieve policies strictly from current published snapshot
-    scan_policies = get_current_policies()
-    catalog_cached = cache.get("v1:policy_catalog")
+    # Use only data attached to the request's pinned published snapshot.
+    snapshot = get_published_snapshot()
+    scan_policies = list(snapshot.policies) if snapshot else get_current_policies()
+    catalog_cached = None if snapshot else cache.get("v1:policy_catalog")
 
     # Only trigger an initial scan if genuinely NO snapshot ever existed
     if not scan_policies and catalog_cached is None and not has_published_snapshot():
@@ -277,9 +279,10 @@ def get_policy_detail(policy_id: str):
 
     If the document is not cached, attempts to fetch from AWS.
     """
-    # Search catalog cache first, then current published snapshot
-    catalog = cache.get("v1:policy_catalog") or []
-    scan_policies = get_current_policies()
+    # Keep policy and attachment details on the same published snapshot.
+    snapshot = get_published_snapshot()
+    catalog = [] if snapshot else (cache.get("v1:policy_catalog") or [])
+    scan_policies = list(snapshot.policies) if snapshot else get_current_policies()
     all_policies = catalog + scan_policies
 
     entry = _find_policy(all_policies, policy_id)

@@ -16,7 +16,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
   const isDashboard = location.pathname === '/' || location.pathname === '/dashboard';
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const { currentUser, activeDevRole, setDevRole, isDevMode } = useAuth();
+  const { currentUser, activeDevRole, setDevRole, isDevMode, isAuthenticated } = useAuth();
+  const roleLabel = isDevMode ? activeDevRole : isAuthenticated ? 'API-authorized session' : 'Not authenticated';
 
   const { data } = useQuery({
     queryKey: ['dashboardSummary'],
@@ -115,7 +116,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
             </div>
             <div className="text-left hidden md:block">
               <p className="text-xs font-semibold text-white">{currentUser.id}</p>
-              <p className="text-[10px] text-enterprise-accent font-semibold">{activeDevRole}</p>
+              <p className="text-[10px] text-enterprise-accent font-semibold">{roleLabel}</p>
             </div>
             <ChevronDown className="w-4 h-4 text-enterprise-subtext" />
           </button>
@@ -126,7 +127,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
                 <p className="text-xs font-bold text-white truncate">{currentUser.id}</p>
                 <div className="flex items-center gap-1.5 mt-1">
                   <Shield className="w-3 h-3 text-enterprise-accent" />
-                  <span className="text-[10px] text-enterprise-subtext uppercase font-semibold">{activeDevRole}</span>
+                  <span className="text-[10px] text-enterprise-subtext uppercase font-semibold">{roleLabel}</span>
                 </div>
               </div>
 

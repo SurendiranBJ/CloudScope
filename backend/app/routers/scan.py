@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from app.schemas import APIResponse
 from app.security.dependencies import require_admin, require_viewer
 from app.security.models import AuthenticatedUser
@@ -23,6 +23,8 @@ def trigger_manual_scan(
         trigger_type="MANUAL",
         created_by=current_user.subject
     )
+    if result.get("status") == "UNAVAILABLE":
+        raise HTTPException(status_code=503, detail=result["message"])
     is_started = result.get("status") == "STARTED"
     return APIResponse(
         success=is_started,

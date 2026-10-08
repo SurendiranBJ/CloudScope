@@ -9,15 +9,16 @@ import logging
 import threading
 import time
 import uuid
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from app.services.scanner.distributed_lock import distributed_scan_lock
 from app.services.scanner.scan_manager import scan_manager
+from app.cache import cache
 from app.persistence.repository import (
     record_scan_run_start,
     record_scan_run_finish,
-    record_snapshot_metadata,
     record_audit_event,
 )
 
@@ -56,6 +57,15 @@ class ScanCoordinator:
             # 2. Distributed cross-worker lock check
             owner_token = distributed_scan_lock.acquire(lease_seconds=180)
             if not owner_token:
+                if (
+                    os.getenv("ENVIRONMENT", "development").lower() == "production"
+                    and not cache.check_redis()
+                ):
+                    return {
+                        "status": "UNAVAILABLE",
+                        "scan_id": None,
+                        "message": "Redis is unavailable; production scan locking fails closed",
+                    }
                 curr_status = scan_manager.get_status()
                 active_id = curr_status.get("scan_id") or "remote-worker-scan"
                 logger.info(f"[COORDINATOR] Scan request declined: lock held by another worker instance")
@@ -129,12 +139,15 @@ class ScanCoordinator:
     ) -> None:
         """Worker thread executing scan pipeline while continuously maintaining heartbeat."""
         stop_heartbeat = threading.Event()
+        lease_lost = threading.Event()
 
         def heartbeat_loop():
             while not stop_heartbeat.wait(timeout=30.0):
                 renewed = distributed_scan_lock.renew(owner_token, lease_seconds=180)
                 if not renewed:
                     logger.warning(f"[COORDINATOR] Warning: Heartbeat lease renewal failed for {scan_id}")
+                    lease_lost.set()
+                    return
 
         heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True, name=f"Heartbeat-{scan_id[:8]}")
         heartbeat_thread.start()
@@ -145,6 +158,10 @@ class ScanCoordinator:
 
         try:
             logger.info(f"[COORDINATOR] Worker starting scan pipeline execution (scan_id={scan_id})")
+            scan_manager._scan_lease_valid = lambda: (
+                not lease_lost.is_set()
+                and distributed_scan_lock.renew(owner_token, lease_seconds=180)
+            )
             # Set scan manager attributes for the scan run
             scan_manager._scan_id = scan_id
             scan_manager._scan_started_at = datetime.now(timezone.utc).isoformat() + "Z"
@@ -184,19 +201,9 @@ class ScanCoordinator:
                 error_summary=err_summary,
             )
 
-            # 4. If snapshot published, record in snapshot store
-            if result_status in ("SUCCESS", "PARTIAL"):
-                record_snapshot_metadata(
-                    snapshot_id=scan_id,
-                    scan_id=scan_id,
-                    published_at=completed_iso,
-                    status=result_status,
-                    duration_seconds=duration,
-                    regions={"successful": getattr(scan_manager, "_successful_regions", []), "failed": getattr(scan_manager, "_failed_regions", [])},
-                    resource_counts={"total": getattr(scan_manager, "_resources_discovered", 0)},
-                    finding_counts={},
-                    metadata={"actor_id": actor_id},
-                )
+            # SnapshotStore already atomically persisted the complete snapshot and
+            # current pointer. Do not perform a second metadata-only pointer write.
+            scan_manager._scan_lease_valid = None
 
             # 5. Record completion audit event
             record_audit_event(

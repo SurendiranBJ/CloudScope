@@ -20,6 +20,8 @@ export const GlobalScanStatus: React.FC = () => {
     completedCollectors,
     totalCollectors,
     collectorStatus,
+    regionalStatus,
+    publicationState,
     progressSecondsAgo,
     hasProgressWarning,
     progressWarningText,
@@ -129,6 +131,16 @@ export const GlobalScanStatus: React.FC = () => {
               </span>
             )}
           </div>
+
+          <div className="flex items-center justify-between text-[10px] text-gray-400">
+            <span>Publication:</span>
+            <span className="font-mono text-blue-200">{publicationState}</span>
+          </div>
+          {Object.keys(regionalStatus).length > 0 && (
+            <div className="text-[10px] text-gray-400 truncate" title={JSON.stringify(regionalStatus)}>
+              Regional status: <span className="font-mono text-gray-300">{Object.entries(regionalStatus).map(([region, state]) => `${region}=${state}`).join(', ')}</span>
+            </div>
+          )}
 
           {/* Heartbeat / Progress check (Requirement 15) */}
           <div className="text-[10px] pt-0.5">

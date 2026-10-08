@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { lazy } from 'react';
 import { useAuth, type Role } from '../context/AuthContext';
-import { Forbidden } from '../pages/Forbidden';
+
+const Forbidden = lazy(async () => ({ default: (await import('../pages/Forbidden')).Forbidden }));
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -15,7 +16,11 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   requiredRole,
   requiredPermission,
 }) => {
-  const { hasMinRole, hasRole, hasPermission } = useAuth();
+  const { hasMinRole, hasRole, hasPermission, isDevMode } = useAuth();
+
+  // Role checks here are only a development convenience. The API owns the
+  // authorization decision for deployed sessions.
+  if (!isDevMode) return <>{children}</>;
 
   if (requiredRole && !hasRole(requiredRole)) {
     return <Forbidden requiredRole={requiredRole} />;

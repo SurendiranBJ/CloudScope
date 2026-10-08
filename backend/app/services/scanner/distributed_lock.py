@@ -133,6 +133,10 @@ class DistributedScanLock:
                 logger.warning(f"[DISTRIBUTED_LOCK] Refused to release lock: token {owner_token[:8]}... does not match owner")
                 return False
         except Exception as e:
+            prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+            if prod:
+                logger.error(f"[DISTRIBUTED_LOCK] Redis release failed in production: {e}")
+                return False
             logger.warning(f"[DISTRIBUTED_LOCK] Fallback release: {e}")
             if cache.get(self.lock_key) == owner_token:
                 cache.delete(self.lock_key)

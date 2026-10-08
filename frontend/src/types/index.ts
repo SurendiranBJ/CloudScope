@@ -11,9 +11,12 @@ export interface IAMUser {
 }
 
 export interface IAMRole {
+  id?: string;
   name: string;
   arn: string;
   trustPolicy: string;
+  policies?: string[];
+  attachedPolicies?: string[];
   description: string;
   activeSessions: number;
   riskScore: number;
@@ -252,6 +255,20 @@ export interface RiskFinding {
 
 export interface DashboardData {
   securityScore: string;
+  globalPosture?: {
+    overall_score: number;
+    grade: string;
+    summary: string;
+    risk_model_version: string;
+    coverage: Record<string, boolean>;
+    unverified_categories: string[];
+    categories: Record<string, {
+      name: string;
+      score: number;
+      weight: number;
+      weighted_score: number;
+    }>;
+  } | null;
   stats: {
     users: number;
     roles: number;

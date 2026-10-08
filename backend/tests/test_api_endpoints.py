@@ -243,13 +243,21 @@ def test_finding_evidence_endpoint():
         source="STATIC_IAM",
         evidence={"mfa_enabled": False}
     )
+    # Findings APIs intentionally read only published snapshot data; seed that
+    # authoritative view instead of relying on the lifecycle service's staging store.
+    from app.services.scanner.snapshot_store import snapshot_store
+    snapshot_store.publish(
+        snapshot_id="api-test-finding-snapshot",
+        status="SUCCESS",
+        findings=[finding_service._memory_store[fid].model_dump(mode="json")],
+    )
 
     response = client.get(f"/api/v1/findings/{fid}/evidence")
     assert response.status_code == 200
     res_json = response.json()
     assert res_json["success"] is True
     assert res_json["data"]["finding_id"] == fid
-    assert res_json["data"]["risk_model_version"] == "phase3-v1"
+    assert res_json["data"]["risk_model_version"] == "phase4-v2"
     assert res_json["data"]["evidence"]["mfa_enabled"] is False
 
 
@@ -297,7 +305,7 @@ def test_attack_path_evidence_and_filtering_endpoints():
     ev_json = ev_resp.json()
     assert ev_json["success"] is True
     assert ev_json["data"]["canonical_id"] == "ap-crit-001"
-    assert ev_json["data"]["risk_model_version"] == "phase3-v1"
+    assert ev_json["data"]["risk_model_version"] == "phase4-v2"
     assert len(ev_json["data"]["transition_evidence"]) == 1
 
     # 2. Filtering by severity
@@ -330,5 +338,5 @@ def test_risk_explanation_endpoint():
     res_json = response.json()
     assert res_json["success"] is True
     assert res_json["data"]["risk_score"] == 85
-    assert res_json["data"]["risk_model_version"] == "phase3-v1"
+    assert res_json["data"]["risk_model_version"] == "phase4-v2"
     assert len(res_json["data"]["factors"]) == 1

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SCAN_DEPENDENT_QUERY_KEYS, refreshScanDependentQueries } from '../src/utils/scanLifecycleUtils.ts';
+import { SCAN_DEPENDENT_QUERY_KEYS, refreshScanDependentQueries, didPublishedSnapshotChange } from '../src/utils/scanLifecycleUtils.ts';
 
 // Helper to simulate hierarchical React Query matching
 function matchesQueryKey(invalidatedKey, queryKey) {
@@ -148,4 +148,16 @@ test('TEST 12: Filter/search changes preserve cached data via placeholderData / 
   const renderedData = placeholderFn(previousData);
 
   assert.deepEqual(renderedData, previousData, 'Previous data is preserved during filter transition without blanking UI');
+});
+
+test('TEST 13: First published snapshot after an empty initial scan status refreshes active pages', () => {
+  assert.equal(didPublishedSnapshotChange(false, null, null), false);
+  assert.equal(didPublishedSnapshotChange(true, null, 'snapshot-first'), true);
+  assert.equal(didPublishedSnapshotChange(true, 'snapshot-first', 'snapshot-first'), false);
+  assert.equal(didPublishedSnapshotChange(true, 'snapshot-first', null), false);
+});
+
+test('TEST 14: A failed scan without a published ID change does not refresh snapshot data', () => {
+  assert.equal(didPublishedSnapshotChange(true, 'snapshot-current', 'snapshot-current'), false);
+  assert.equal(didPublishedSnapshotChange(true, 'snapshot-current', null), false);
 });

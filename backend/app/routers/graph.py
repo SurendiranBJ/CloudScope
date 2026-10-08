@@ -10,7 +10,8 @@ from app.services.scanner.current_snapshot import (
     get_current_snapshot_published_at,
     has_published_snapshot,
 )
-from app.security.dependencies import require_viewer
+from app.security.dependencies import require_viewer, require_admin
+from app.security.rate_limiter import rate_limit
 
 router = APIRouter(tags=["Graph"], dependencies=[Depends(require_viewer)])
 
@@ -29,10 +30,13 @@ def get_graph_elements():
         data=data
     )
 
-@router.post("/graph/rebuild", response_model=APIResponse[dict])
-def rebuild_graph():
+@router.post("/graph/rebuild", response_model=APIResponse[dict], dependencies=[Depends(rate_limit("scan"))])
+def rebuild_graph(current_user=Depends(require_admin)):
     """Trigger scan asynchronously — returns immediately so the frontend doesn't time out."""
     result = scan_manager.trigger_async_scan()
+    if result.get("status") == "UNAVAILABLE":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail=result["message"])
     return APIResponse(
         success=True,
         message=result.get("message", "Scan started"),

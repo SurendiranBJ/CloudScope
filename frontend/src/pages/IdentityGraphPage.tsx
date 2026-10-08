@@ -23,7 +23,7 @@ export const IdentityGraphPage: FC = () => {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
   const highlightParam = searchParams.get('highlight');
-  const highlightedNodeIds = useMemo(() => highlightParam ? highlightParam.split(',') : [], [highlightParam]);
+  const highlightedNodeIds = useMemo(() => highlightParam ? highlightParam.split(',').map(id => id.trim()).filter(Boolean) : [], [highlightParam]);
 
   // Selections
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
@@ -54,7 +54,7 @@ export const IdentityGraphPage: FC = () => {
   // Data queries
   const { data: elements } = useQuery({ queryKey: ['graphElements'], queryFn: getGraphElements });
   const { data: risks } = useQuery({ queryKey: ['risk-assessment'], queryFn: getRiskAssessmentFindings });
-  const { data: attackPaths } = useQuery<AttackPath[]>({ queryKey: ['attackPaths'], queryFn: getAttackPaths });
+  const { data: attackPaths, isLoading: attackPathsLoading, isError: attackPathsError } = useQuery<AttackPath[]>({ queryKey: ['attackPaths'], queryFn: getAttackPaths });
   const { data: simDiff } = useQuery({
     queryKey: ['simulation-diff'],
     queryFn: getSimulationDiff,
@@ -62,6 +62,7 @@ export const IdentityGraphPage: FC = () => {
   });
 
   const isSimActive = Boolean(simDiff?.simulation_active && (simDiff?.pending_changes ?? 0) > 0);
+  const safeAttackPathIndex = attackPaths?.length ? Math.min(activeAttackPathIndex, attackPaths.length - 1) : 0;
 
   // Extract IAM identities for Quick-Focus picker
   const identityOptions = useMemo(() => {
@@ -204,9 +205,25 @@ export const IdentityGraphPage: FC = () => {
   const activeAttackPathNodes = useMemo(() => {
     if (highlightedNodeIds.length > 0) return highlightedNodeIds;
     if (!attackPaths || attackPaths.length === 0) return [];
-    const p = attackPaths[activeAttackPathIndex] || attackPaths[0];
+    const p = attackPaths[safeAttackPathIndex] || attackPaths[0];
     return p?.nodes?.map(n => n.id) || [];
-  }, [highlightedNodeIds, attackPaths, activeAttackPathIndex]);
+  }, [highlightedNodeIds, attackPaths, safeAttackPathIndex]);
+
+  const selectedAttackPath = useMemo(() => {
+    if (!attackPaths?.length) return null;
+    if (highlightedNodeIds.length > 0) {
+      return attackPaths.find(path => path.nodes?.length === highlightedNodeIds.length && path.nodes.every((node, index) => node.id === highlightedNodeIds[index])) || null;
+    }
+    return attackPaths[safeAttackPathIndex] || null;
+  }, [attackPaths, highlightedNodeIds, safeAttackPathIndex]);
+  const pathGraphIncomplete = useMemo(() => {
+    if (!activeAttackPathNodes.length || !elements) return false;
+    const graphNodes = new Set(elements.filter((element: any) => !element.data.source).map((element: any) => element.data.id));
+    const graphEdges = elements.filter((element: any) => element.data.source);
+    return activeAttackPathNodes.some(id => !graphNodes.has(id)) || activeAttackPathNodes.some((id, index) =>
+      index < activeAttackPathNodes.length - 1 && !graphEdges.some((edge: any) => edge.data.source === id && edge.data.target === activeAttackPathNodes[index + 1])
+    );
+  }, [activeAttackPathNodes, elements]);
 
   // Compute node stats
   const nodes = (activeElements || elements)?.filter((e: any) => !e.data.source) || [];
@@ -386,19 +403,21 @@ export const IdentityGraphPage: FC = () => {
               </div>
             )}
 
-            {analystMode === 'attack_path' && attackPaths && attackPaths.length > 0 && (
+            {analystMode === 'attack_path' && (
               <div className="flex items-center gap-1.5 bg-gray-900 border border-red-500/50 px-2 py-1 rounded-lg">
                 <span className="text-[10px] uppercase font-bold text-red-400">Path:</span>
                 <select
-                  value={activeAttackPathIndex}
+                  value={safeAttackPathIndex}
                   onChange={(e) => setActiveAttackPathIndex(Number(e.target.value))}
-                  className="bg-transparent text-xs text-white focus:outline-none max-w-[200px]"
+                  disabled={!attackPaths?.length || attackPathsLoading || attackPathsError}
+                  className="bg-transparent text-xs text-white focus:outline-none max-w-[200px] disabled:opacity-50"
                 >
-                  {attackPaths.map((p, idx) => (
+                  {attackPaths?.map((p, idx) => (
                     <option key={idx} value={idx} className="bg-gray-900 text-white">
                       Path {idx + 1}: {p.nodes?.[0]?.name || p.nodes?.[0]?.id || 'Source'} → {p.nodes?.[p.nodes.length - 1]?.name || p.nodes?.[p.nodes.length - 1]?.id || 'Target'}
                     </option>
                   ))}
+                  {!attackPaths?.length && <option value={0}>{attackPathsLoading ? 'Loading verified paths…' : attackPathsError ? 'Path data unavailable' : 'No verified paths'}</option>}
                 </select>
               </div>
             )}
@@ -468,6 +487,7 @@ export const IdentityGraphPage: FC = () => {
                   <button onClick={() => setSecurityFilter('high')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'high' ? 'text-amber-400 font-semibold' : 'text-gray-300'}`}>High (≥60)</button>
                   <button onClick={() => setSecurityFilter('medium')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'medium' ? 'text-yellow-400 font-semibold' : 'text-gray-300'}`}>Medium (40-59)</button>
                   <button onClick={() => setSecurityFilter('low')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'low' ? 'text-green-400 font-semibold' : 'text-gray-300'}`}>Low (&lt;40)</button>
+                  <button onClick={() => setSecurityFilter('attack_paths_only')} className={`w-full text-left px-3 py-2 text-xs rounded-md hover:bg-gray-800 ${securityFilter === 'attack_paths_only' ? 'text-red-400 font-semibold' : 'text-gray-300'}`}>Selected attack path only</button>
                 </div>
               </div>
             </div>
@@ -493,14 +513,22 @@ export const IdentityGraphPage: FC = () => {
           <div className="flex items-center gap-3">
             <Target className="w-4 h-4 text-red-400 shrink-0" />
             <div className="flex items-center gap-2 text-xs">
-              <span className="font-bold text-red-200 tracking-wide uppercase text-[10px]">Identified Lateral Attack Path:</span>
-              <span className="font-mono text-white font-bold">{activeAttackPathNodes[0]}</span>
+              <span className="font-bold text-red-200 tracking-wide uppercase text-[10px]">Verified Attack Path:</span>
+              <span className="font-mono text-white font-bold">{selectedAttackPath?.nodes?.[0]?.name || activeAttackPathNodes[0]}</span>
               <span className="text-red-400 font-bold">→</span>
-              <span className="font-mono text-red-200 font-bold">{activeAttackPathNodes[activeAttackPathNodes.length - 1]}</span>
-              <span className="text-gray-400 text-[11px]">({activeAttackPathNodes.length} hops)</span>
+              <span className="font-mono text-red-200 font-bold">{selectedAttackPath?.nodes?.[activeAttackPathNodes.length - 1]?.name || activeAttackPathNodes[activeAttackPathNodes.length - 1]}</span>
+              <span className="text-gray-400 text-[11px]">({Math.max(0, activeAttackPathNodes.length - 1)} transitions)</span>
+              {pathGraphIncomplete && <span className="text-amber-300 text-[10px]">Some path transitions are not visible in this graph view.</span>}
             </div>
           </div>
-          <span className="px-2.5 py-0.5 rounded text-[10px] font-black bg-red-600 text-white uppercase tracking-wider shadow">HIGH RISK</span>
+          <span className={`px-2.5 py-0.5 rounded text-[10px] font-black uppercase tracking-wider shadow ${selectedAttackPath?.severity === 'critical' ? 'bg-red-600 text-white' : selectedAttackPath?.severity === 'high' ? 'bg-orange-600 text-white' : selectedAttackPath?.severity === 'medium' ? 'bg-amber-500 text-black' : selectedAttackPath?.severity === 'low' ? 'bg-emerald-700 text-white' : 'bg-gray-700 text-gray-200'}`}>
+            {selectedAttackPath?.severity || 'HIGHLIGHTED'}
+          </span>
+        </div>
+      )}
+      {analystMode === 'attack_path' && activeAttackPathNodes.length === 0 && (
+        <div className={`border-b px-6 py-2 text-xs ${attackPathsError ? 'border-amber-800 bg-amber-950/40 text-amber-200' : 'border-gray-800 bg-gray-900/50 text-gray-300'}`} role={attackPathsError ? 'alert' : 'status'}>
+          {attackPathsLoading ? 'Loading verified attack paths…' : attackPathsError ? 'Attack path data could not be loaded. Retry the page to refresh the published graph data.' : 'No verified attack paths are available in the current published snapshot.'}
         </div>
       )}
 
@@ -533,11 +561,19 @@ export const IdentityGraphPage: FC = () => {
           <IdentityGraph 
             onNodeSelect={(node) => {
               setSelectedNode(node);
-              if (node) setSelectedEdge(null);
+              if (node) {
+                setSelectedEdge(null);
+                setSelectedIdentityId(null);
+                setSelectedResourceId(null);
+              }
             }}
             onEdgeSelect={(edge) => {
               setSelectedEdge(edge);
-              if (edge) setSelectedNode(null);
+              if (edge) {
+                setSelectedNode(null);
+                setSelectedIdentityId(null);
+                setSelectedResourceId(null);
+              }
             }}
             selectedIdentityId={selectedIdentityId}
             selectedResourceId={selectedResourceId}
@@ -551,7 +587,6 @@ export const IdentityGraphPage: FC = () => {
             analystMode={analystMode}
             focusDepth={focusDepth}
             customElements={isSimActive ? activeElements : undefined}
-            graphMode={isSimActive ? graphMode : 'current'}
             activeAttackPath={activeAttackPathNodes}
             onClearFocus={handleClearFocus}
           />

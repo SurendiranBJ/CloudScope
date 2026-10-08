@@ -67,7 +67,7 @@ def get_readiness():
     except Exception:
         neo4j_ready = False
 
-    redis_ready = cache.is_redis
+    redis_ready = cache.check_redis()
     db_ready = check_db_connectivity()
 
     # Backend is considered ready if core services respond
@@ -77,7 +77,7 @@ def get_readiness():
         "ready": is_ready,
         "backend": "ok",
         "neo4j": "connected" if neo4j_ready else "disconnected",
-        "redis": "connected" if redis_ready else "in-memory fallback",
+        "redis": "connected" if redis_ready else "disconnected",
         "database": "connected" if db_ready else "error",
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
@@ -136,8 +136,8 @@ def get_dependencies_health():
         timestamp=datetime.now(timezone.utc).isoformat(),
         data={
             "redis": {
-                "connected": cache.is_redis,
-                "type": "redis" if cache.is_redis else "memory"
+                "connected": cache.check_redis(),
+                "type": "redis" if cache.check_redis() else "unavailable"
             },
             "neo4j": {
                 "connected": neo4j_connected

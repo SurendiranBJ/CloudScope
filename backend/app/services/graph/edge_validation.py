@@ -63,6 +63,9 @@ VALID_SEMANTIC_EDGES: Set[Tuple[str, str, str]] = {
 # Add Policy -> ALLOWS -> Resource for each cloud resource type (canonical authorization path)
 for _res in ALLOWED_POLICY_RESOURCE_TYPES:
     VALID_SEMANTIC_EDGES.add(("Policy", "ALLOWS", _res))
+    # Preserve explicit deny evidence in the graph. DENIES is never a traversable
+    # authorization transition; it exists so consumers can explain why access is blocked.
+    VALID_SEMANTIC_EDGES.add(("Policy", "DENIES", _res))
 
 
 def validate_edge(source_type: str, rel_type: str, target_type: str) -> Tuple[bool, Optional[str]]:

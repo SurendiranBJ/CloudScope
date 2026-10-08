@@ -34,7 +34,6 @@ export interface IdentityGraphProps {
   analystMode?: AnalystMode;
   focusDepth?: FocusDepth;
   customElements?: any[];
-  graphMode?: 'current' | 'desired' | 'diff';
   activeAttackPath?: string[];
   onClearFocus?: () => void;
 }
@@ -125,22 +124,16 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
   analystMode = 'identity_overview',
   focusDepth = 'all',
   customElements,
-  graphMode = 'current',
   activeAttackPath = [],
   onClearFocus
 }) => {
-  void graphMode;
-  void highlightRisky;
-  void securityFilter;
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
 
   const [activeSelectedNodeId, setActiveSelectedNodeId] = useState<string | null>(null);
-  const [activeSelectedEdgeId, setActiveSelectedEdgeId] = useState<string | null>(null);
-  void activeSelectedEdgeId;
 
   // Fetch raw elements
-  const { data: rawElementsData } = useQuery<CytoscapeElement[]>({
+  const { data: rawElementsData, isLoading: graphLoading, isError: graphError, refetch: refetchGraph } = useQuery<CytoscapeElement[]>({
     queryKey: ['graphElements'],
     queryFn: getGraphElements,
     refetchInterval: 12000,
@@ -152,7 +145,8 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
     queryKey: ['effectiveAccess'],
     queryFn: getEffectiveAccess,
     refetchInterval: 15000,
-    staleTime: 10000
+    staleTime: 10000,
+    enabled: !customElements
   });
 
   const rawElements = useMemo(() => {
@@ -489,6 +483,20 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
     return counts;
   }, [transformedGraph]);
 
+  const visibleNodeCount = useMemo(() => transformedGraph.nodes.filter(node => {
+    const type = node.data.type || 'Resource';
+    const score = Number(node.data.riskScore);
+    const hasScore = node.data.riskScore !== undefined && Number.isFinite(score);
+    const onPath = activeAttackPath.includes(node.data.id) || highlightedNodeIds.includes(node.data.id);
+    if (activeFilters[type] === false) return false;
+    if (securityFilter === 'attack_paths_only') return onPath;
+    if (securityFilter === 'critical') return hasScore && score >= 80;
+    if (securityFilter === 'high') return hasScore && score >= 60 && score < 80;
+    if (securityFilter === 'medium') return hasScore && score >= 40 && score < 60;
+    if (securityFilter === 'low') return hasScore && score < 40;
+    return true;
+  }).length, [transformedGraph, activeFilters, securityFilter, activeAttackPath, highlightedNodeIds]);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // 2. SUBGRAPH FOCUS CALCULATION (Connected Security Subgraph)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -526,7 +534,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       inEdgesMap.get(t)!.push({ edgeId: eid, source: s });
     });
 
-    const maxHops = focusDepth === '1-hop' ? 1 : focusDepth === '2-hop' ? 2 : 99;
+    const maxHops = focusDepth === '1-hop' ? 1 : focusDepth === '2-hop' ? 2 : Number.POSITIVE_INFINITY;
 
     if (isIdentity) {
       // Forward downstream traversal from identity to reachable resources
@@ -871,6 +879,14 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
           }
         },
         {
+          selector: 'node.risky',
+          style: {
+            'border-width': '4px',
+            'border-color': '#F97316',
+            'z-index': 997
+          }
+        },
+        {
           selector: 'node.selected',
           style: {
             'border-width': '5px',
@@ -932,7 +948,6 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       const node = evt.target;
       const nId = node.id();
       setActiveSelectedNodeId(nId);
-      setActiveSelectedEdgeId(null);
 
       if (onEdgeSelect) onEdgeSelect(null);
       if (onNodeSelect) {
@@ -955,7 +970,6 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
     cy.on('tap', 'edge', (evt) => {
       const edge = evt.target;
       const d = edge.data();
-      setActiveSelectedEdgeId(edge.id());
 
       if (onNodeSelect) onNodeSelect(null);
       if (onEdgeSelect) {
@@ -1018,7 +1032,6 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
     cy.on('tap', (evt) => {
       if (evt.target === cy) {
         setActiveSelectedNodeId(null);
-        setActiveSelectedEdgeId(null);
         if (onNodeSelect) onNodeSelect(null);
         if (onEdgeSelect) onEdgeSelect(null);
         if (onClearFocus) onClearFocus();
@@ -1031,7 +1044,6 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
 
     const handleReset = () => {
       setActiveSelectedNodeId(null);
-      setActiveSelectedEdgeId(null);
       if (onNodeSelect) onNodeSelect(null);
       if (onEdgeSelect) onEdgeSelect(null);
       if (onClearFocus) onClearFocus();
@@ -1111,9 +1123,8 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         for (let i = 0; i < pathNodes.length - 1; i++) {
           const u = pathNodes[i];
           const v = pathNodes[i + 1];
-          cy.edges(`[source = "${u}"][target = "${v}"], [source = "${v}"][target = "${u}"]`)
-            .removeClass('dimmed')
-            .addClass('highlighted');
+          cy.edges().filter(edge => edge.data('source') === u && edge.data('target') === v)
+            .removeClass('dimmed').addClass('highlighted');
         }
       } else {
         // Normal Cloud View: All nodes and edges at normal opacity
@@ -1121,14 +1132,35 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       }
 
       // Filter Visibility Pills (Hide nodes if unselected in pill toolbar)
-      Object.entries(activeFilters).forEach(([type, isVisible]) => {
-        if (!isVisible) {
-          cy.nodes(`[type = "${type}"]`).style('display', 'none');
-          cy.nodes(`[type = "${type}"]`).connectedEdges().style('display', 'none');
-        } else {
-          cy.nodes(`[type = "${type}"]`).style('display', 'element');
-          cy.nodes(`[type = "${type}"]`).connectedEdges().style('display', 'element');
-        }
+      const visibleNodeIds = new Set<string>();
+      cy.nodes().forEach(node => {
+        const type = node.data('type') || 'Resource';
+        const nodeRisk = Number(node.data('riskScore'));
+        const hasRisk = node.data('riskScore') !== undefined && Number.isFinite(nodeRisk);
+        const inSelectedPath = activeAttackPath.includes(node.id()) || highlightedNodeIds.includes(node.id());
+        let riskMatches = true;
+        if (securityFilter === 'attack_paths_only') riskMatches = inSelectedPath;
+        else if (securityFilter === 'critical') riskMatches = hasRisk && nodeRisk >= 80;
+        else if (securityFilter === 'high') riskMatches = hasRisk && nodeRisk >= 60 && nodeRisk < 80;
+        else if (securityFilter === 'medium') riskMatches = hasRisk && nodeRisk >= 40 && nodeRisk < 60;
+        else if (securityFilter === 'low') riskMatches = hasRisk && nodeRisk < 40;
+
+        const shouldShow = activeFilters[type] !== false && riskMatches;
+        node.style('display', shouldShow ? 'element' : 'none');
+        node.removeClass('risky');
+        if (highlightRisky && hasRisk && nodeRisk >= 60) node.addClass('risky');
+        if (shouldShow) visibleNodeIds.add(node.id());
+      });
+
+      cy.edges().forEach(edge => {
+        const isPathTransition = activeAttackPath.some((nodeId, index) =>
+          index < activeAttackPath.length - 1 && edge.data('source') === nodeId && edge.data('target') === activeAttackPath[index + 1]
+        ) || highlightedNodeIds.some((nodeId, index) =>
+          index < highlightedNodeIds.length - 1 && edge.data('source') === nodeId && edge.data('target') === highlightedNodeIds[index + 1]
+        );
+        const pathMatches = securityFilter !== 'attack_paths_only' || isPathTransition;
+        const endpointsVisible = visibleNodeIds.has(edge.data('source')) && visibleNodeIds.has(edge.data('target'));
+        edge.style('display', pathMatches && endpointsVisible ? 'element' : 'none');
       });
 
       // Search Query Spotlight
@@ -1144,7 +1176,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         });
       }
     });
-  }, [relevantSubgraph, analystMode, activeAttackPath, highlightedNodeIds, activeFilters, searchQuery]);
+  }, [relevantSubgraph, analystMode, activeAttackPath, highlightedNodeIds, activeFilters, securityFilter, highlightRisky, searchQuery]);
 
   // Zoom / Pan helpers
   const handleZoomIn = useCallback(() => {
@@ -1167,7 +1199,6 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
 
   const handleResetLayout = useCallback(() => {
     setActiveSelectedNodeId(null);
-    setActiveSelectedEdgeId(null);
     if (onNodeSelect) onNodeSelect(null);
     if (onEdgeSelect) onEdgeSelect(null);
     if (onClearFocus) onClearFocus();
@@ -1301,11 +1332,32 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         )}
 
         {/* Empty State Banner */}
-        {transformedGraph.nodes.length === 0 && (
+        {transformedGraph.nodes.length === 0 && graphError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-300">
+            <Layers className="w-12 h-12 mb-3 text-amber-500" />
+            <p className="text-sm font-medium">Could not load the identity graph</p>
+            <button onClick={() => refetchGraph()} className="mt-3 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500">Retry graph data</button>
+          </div>
+        )}
+        {transformedGraph.nodes.length === 0 && !graphError && graphLoading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-gray-500">
             <Layers className="w-12 h-12 mb-3 text-gray-600 animate-pulse" />
             <p className="text-sm font-medium">Synchronizing Cloud Topology...</p>
             <p className="text-xs text-gray-600 mt-1">Collecting IAM identities and cloud resources</p>
+          </div>
+        )}
+        {transformedGraph.nodes.length === 0 && !graphLoading && !graphError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-gray-400">
+            <Layers className="w-12 h-12 mb-3 text-gray-600" />
+            <p className="text-sm font-medium">No graph nodes in the selected view</p>
+            <p className="text-xs text-gray-500 mt-1">Run a scan or switch from the simulation view to the current snapshot.</p>
+          </div>
+        )}
+        {transformedGraph.nodes.length > 0 && visibleNodeCount === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-gray-300">
+            <Filter className="w-10 h-10 mb-3 text-gray-500" />
+            <p className="text-sm font-medium">No graph nodes match these filters</p>
+            <p className="text-xs text-gray-500 mt-1">Clear the severity or category filters to show the graph.</p>
           </div>
         )}
       </div>

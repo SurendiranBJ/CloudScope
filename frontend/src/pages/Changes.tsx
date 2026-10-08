@@ -13,12 +13,12 @@ import type { SimulationChange } from '../types';
 
 function DeltaBadge({ delta }: { delta: number }) {
   if (delta > 0) return (
-    <span className="inline-flex items-center gap-1 text-red-400 font-bold">
+    <span className="inline-flex items-center gap-1 text-green-400 font-bold">
       <TrendingUp className="w-4 h-4" /> +{delta}
     </span>
   );
   if (delta < 0) return (
-    <span className="inline-flex items-center gap-1 text-green-400 font-bold">
+    <span className="inline-flex items-center gap-1 text-red-400 font-bold">
       <TrendingDown className="w-4 h-4" /> {delta}
     </span>
   );
@@ -164,10 +164,10 @@ export const Changes: React.FC = () => {
             >
               {/* Current */}
               <div className="bg-enterprise-card border border-enterprise-border rounded-xl p-4 text-center">
-                <p className="text-[10px] uppercase tracking-wider text-enterprise-subtext mb-2">Current Risk</p>
+                <p className="text-[10px] uppercase tracking-wider text-enterprise-subtext mb-2">Current Security Posture</p>
                 <p className="text-3xl font-bold text-white">{riskData.current_score}<span className="text-sm text-enterprise-subtext">/100</span></p>
                 <p className={`text-xs font-semibold mt-1 uppercase ${SeverityColor[riskData.current_severity] ?? 'text-gray-400'}`}>
-                  {riskData.current_severity}
+                  {riskData.current_severity} residual risk
                 </p>
                 <p className="text-[10px] text-enterprise-subtext mt-1">CURRENT AWS STATE</p>
               </div>
@@ -178,7 +178,7 @@ export const Changes: React.FC = () => {
                 <div className="text-2xl font-bold">
                   <DeltaBadge delta={riskData.delta} />
                 </div>
-                <p className="text-[10px] text-enterprise-subtext mt-2">from simulation changes</p>
+                <p className="text-[10px] text-enterprise-subtext mt-2">Positive means posture improved</p>
                 {riskData.top_reasons && riskData.top_reasons.length > 0 && (
                   <div className="mt-3 text-left w-full space-y-1">
                     {riskData.top_reasons.slice(0, 3).map((r, i) => (
@@ -192,16 +192,16 @@ export const Changes: React.FC = () => {
 
               {/* Desired */}
               <div className={`bg-enterprise-card border rounded-xl p-4 text-center ${
-                riskData.delta > 0 ? 'border-red-500/30' : riskData.delta < 0 ? 'border-green-500/30' : 'border-enterprise-border'
+                riskData.delta < 0 ? 'border-red-500/30' : riskData.delta > 0 ? 'border-green-500/30' : 'border-enterprise-border'
               }`}>
-                <p className="text-[10px] uppercase tracking-wider text-enterprise-subtext mb-2">Projected Risk</p>
+                <p className="text-[10px] uppercase tracking-wider text-enterprise-subtext mb-2">Projected Security Posture</p>
                 <p className={`text-3xl font-bold ${
-                  riskData.delta > 10 ? 'text-red-400' : riskData.delta < -5 ? 'text-green-400' : 'text-white'
+                  riskData.delta < -10 ? 'text-red-400' : riskData.delta > 5 ? 'text-green-400' : 'text-white'
                 }`}>{riskData.desired_score}<span className="text-sm text-enterprise-subtext">/100</span></p>
                 <p className={`text-xs font-semibold mt-1 uppercase ${SeverityColor[riskData.desired_severity] ?? 'text-gray-400'}`}>
-                  {riskData.desired_severity}
+                  {riskData.desired_severity} residual risk
                 </p>
-                <p className="text-[10px] text-enterprise-subtext mt-1">DESIRED STATE</p>
+                <p className="text-[10px] text-enterprise-subtext mt-1">PROJECTED POSTURE</p>
               </div>
             </motion.div>
           )}

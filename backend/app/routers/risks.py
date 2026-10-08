@@ -5,6 +5,9 @@ from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
     get_current_risks,
     get_current_findings,
+    get_current_users,
+    get_current_roles,
+    get_current_resources,
     get_current_snapshot_id,
     get_current_snapshot_published_at,
     has_published_snapshot,
@@ -64,27 +67,25 @@ def get_risk_assessment_findings():
 def get_risk_explanation(entity_id: str):
     """Retrieve detailed, deterministic risk score explanation and factor breakdown for an entity."""
     from app.services.risk.risk_constants import RISK_MODEL_VERSION, get_severity_label
-    from app.cache import cache
-
-    # Check users, roles, resources in cache
+    # Read all inputs from the request-pinned published snapshot.
     target_obj = None
     entity_type = "Resource"
 
-    for u in (cache.get("v1:users") or []):
+    for u in get_current_users():
         if isinstance(u, dict) and (u.get("name") == entity_id or u.get("arn") == entity_id):
             target_obj = u
             entity_type = "User"
             break
 
     if not target_obj:
-        for r in (cache.get("v1:roles") or []):
+        for r in get_current_roles():
             if isinstance(r, dict) and (r.get("name") == entity_id or r.get("arn") == entity_id):
                 target_obj = r
                 entity_type = "Role"
                 break
 
     if not target_obj:
-        for res in (cache.get("v1:resources") or []):
+        for res in get_current_resources():
             if isinstance(res, dict) and (res.get("name") == entity_id or res.get("arn") == entity_id or res.get("id") == entity_id):
                 target_obj = res
                 entity_type = res.get("type", "Resource")

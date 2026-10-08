@@ -323,6 +323,52 @@ def test_status_endpoint_is_cheap_and_reports_progress():
     scan_manager._active_phase = None
 
 
+def test_successful_scan_publishes_exactly_one_snapshot():
+    from app.services.scanner.snapshot_store import snapshot_store
+
+    snapshot_store.clear()
+    cache.clear()
+    mgr = ScanManager()
+    real_publish = snapshot_store.publish
+    publish_calls = []
+
+    def count_publish(**kwargs):
+        publish_calls.append(kwargs["snapshot_id"])
+        return real_publish(**kwargs)
+
+    with mock_scan_environment(users=[{"name": "alice", "id": "U1", "arn": "arn:aws:iam::123:user/alice", "policies": []}]), \
+         patch("app.services.scanner.snapshot_store.snapshot_store.publish", side_effect=count_publish), \
+         patch("app.persistence.repository.save_authoritative_snapshot", return_value=True):
+        result = mgr.run_scan()
+
+    assert result["scan_status"] == "SUCCESS"
+    assert len(publish_calls) == 1
+    assert snapshot_store.get_current().snapshot_id == result["scan_id"]
+    assert mgr.inventory.users[0]["name"] == "alice"
+
+
+def test_snapshot_write_failure_fails_scan_without_replacing_published_snapshot():
+    from app.services.scanner.snapshot_store import snapshot_store
+
+    snapshot_store.clear()
+    cache.clear()
+    with patch("app.persistence.repository.save_authoritative_snapshot", return_value=True):
+        snapshot_store.publish(
+            snapshot_id="previous-good-snapshot",
+            status="SUCCESS",
+            published_at="2026-10-01T00:00:00Z",
+            users=[{"name": "previous-user"}],
+        )
+
+    mgr = ScanManager()
+    with mock_scan_environment(users=[{"name": "candidate-user", "id": "U2", "arn": "arn:aws:iam::123:user/candidate-user", "policies": []}]), \
+         patch("app.persistence.repository.save_authoritative_snapshot", return_value=False):
+        result = mgr.run_scan()
+
+    assert result["scan_status"] == "FAILED"
+    assert mgr.get_status()["publication_state"] == "FAILED"
+    assert snapshot_store.get_current().snapshot_id == "previous-good-snapshot"
+    assert snapshot_store.get_current().users[0]["name"] == "previous-user"
 def test_initialization_stage_observable_and_advances():
     """Verify initialization stages (AUTHENTICATING_AWS, RESOLVING_REGIONS, STARTING_COLLECTORS) are tracked."""
     mgr = ScanManager()

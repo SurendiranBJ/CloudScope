@@ -8,7 +8,7 @@ Verifies:
 - Blast radius unique data resources, operational assets separation
 - CloudTrail canonical normalization, missing fields, confidence classification, temporal reasoning
 - Deterministic finding IDs, lifecycle transitions, reopen lineage
-- Deterministic risk scoring and model versioning (phase3-v1)
+- Deterministic risk scoring and model versioning (phase4-v2)
 - AI Copilot grounding, citation rules, prompt injection resistance, failure tolerance
 - Invariant properties (explicit deny, determinism, AI independence)
 - End-to-end identifier linkage (snapshot -> path -> event -> correlation -> finding -> risk -> AI)
@@ -66,7 +66,7 @@ def test_attack_path_determinism():
     G.add_node("s3:data-bucket", type="S3", label="data-bucket", is_canonical=True, arn="arn:aws:s3:::data-bucket")
 
     G.add_edge("user:alice", "policy:s3_rw", relationship="HAS_POLICY", label="HAS_POLICY")
-    G.add_edge("policy:s3_rw", "s3:data-bucket", relationship="ALLOWS", label="ALLOWS", action="s3:GetObject")
+    G.add_edge("policy:s3_rw", "s3:data-bucket", relationship="ALLOWS", label="ALLOWS", action="s3:GetObject", decision="ALLOWED", effect="Allow", statement_sid="AllowRead", condition_status="NONE", evidence={"statement_sid": "AllowRead", "effect": "Allow", "action": "s3:GetObject"})
 
     paths_1 = find_attack_paths(G, snapshot_id="snap-test-001")
     paths_2 = find_attack_paths(G, snapshot_id="snap-test-001")
@@ -76,7 +76,7 @@ def test_attack_path_determinism():
     assert paths_1[0]["canonical_id"] == paths_2[0]["canonical_id"]
     assert paths_1[0]["canonical_id"].startswith("ap-")
     assert paths_1[0]["source_snapshot_id"] == "snap-test-001"
-    assert paths_1[0]["risk_model_version"] == "phase3-v1"
+    assert paths_1[0]["risk_model_version"] == "phase4-v2"
 
 
 def test_attack_path_explicit_deny_invariance():
@@ -167,7 +167,7 @@ def test_blast_radius_data_vs_operational_separation():
     assert len(result["operational_assets"]) == 1  # EC2
     assert "user:charlie" not in result["affected_resources"]
     assert "policy:pol" not in result["affected_resources"]
-    assert result["risk_model_version"] == "phase3-v1"
+    assert result["risk_model_version"] == "phase4-v2"
 
 
 # =====================================================================
@@ -232,7 +232,7 @@ def test_cloudtrail_correlation_confidence_classification():
     assert len(findings) == 1
     assert findings[0]["confidence_classification"] == "EXACT"
     assert findings[0]["confidence"] == 100
-    assert findings[0]["risk_model_version"] == "phase3-v1"
+    assert findings[0]["risk_model_version"] == "phase4-v2"
 
 
 def test_cloudtrail_denied_event_is_low_confidence():
@@ -337,8 +337,8 @@ def test_risk_engine_determinism_and_versioning():
 
     assert res1["score"] == res2["score"]
     assert res1["severity"] == res2["severity"]
-    assert res1["risk_model_version"] == "phase3-v1"
-    assert res2["risk_model_version"] == "phase3-v1"
+    assert res1["risk_model_version"] == "phase4-v2"
+    assert res2["risk_model_version"] == "phase4-v2"
 
 
 # =====================================================================
@@ -397,7 +397,7 @@ def test_phase3_full_linkage_e2e():
     G.add_node(s3_node, type="S3", label="corporate-vault", arn=s3_node, region="us-east-1", is_canonical=True)
 
     G.add_edge(user_node, pol_node, relationship="HAS_POLICY", label="HAS_POLICY")
-    G.add_edge(pol_node, s3_node, relationship="ALLOWS", label="ALLOWS", action="s3:GetObject")
+    G.add_edge(pol_node, s3_node, relationship="ALLOWS", label="ALLOWS", action="s3:GetObject", decision="ALLOWED", effect="Allow", statement_sid="AllowRead", condition_status="NONE", evidence={"statement_sid": "AllowRead", "effect": "Allow", "action": "s3:GetObject"})
 
     # Step 2: Discover attack paths
     paths = find_attack_paths(G, snapshot_id=snapshot_id)

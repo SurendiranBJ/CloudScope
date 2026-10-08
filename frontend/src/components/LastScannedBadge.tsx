@@ -42,16 +42,15 @@ export const LastScannedBadge: React.FC<LastScannedBadgeProps> = ({
 }) => {
   const {
     lastPublishedAt,
-    lastCompletedAt,
-    lastSuccessfulScanAt,
     currentSnapshotId,
     isPartial,
     failedRegions,
     isScanning,
   } = useScanLifecycle();
 
-  // Authoritative timestamp priority: last_published_at || last_completed_at || last_successful_scan_at
-  const authoritativeTime = lastPublishedAt || lastCompletedAt || lastSuccessfulScanAt || null;
+  // Only the published snapshot timestamp is authoritative. A failed or
+  // still-running scan must not advance this badge.
+  const authoritativeTime = lastPublishedAt || null;
 
   // Lightweight 30s interval for relative time rendering
   const [nowMs, setNowMs] = useState(Date.now());

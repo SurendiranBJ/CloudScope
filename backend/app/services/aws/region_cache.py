@@ -50,13 +50,30 @@ def set_scan_mode(mode: str, region: str | None = None) -> None:
 
 
 def get_scan_mode_state() -> dict:
-    """Return the current runtime scan mode state for health / status endpoints."""
-    # Ensure regions are resolved
-    regions = get_all_regions()
+    """Return cached/configured scan mode without contacting AWS.
+
+    Health and operations endpoints must not perform region discovery: callers
+    use this function on request paths and a slow/unavailable AWS control plane
+    must not stall liveness or status reporting. Actual discovery remains in
+    ``get_all_regions`` and occurs when a scan needs the region list.
+    """
+    regions = list(_cached_regions or [])
+    mode = _cached_mode
+    if mode is None:
+        if _scan_mode == "single" and _selected_region:
+            mode = "single"
+            regions = [_selected_region]
+        elif _scan_mode == "global":
+            mode = "global"
+        elif settings.SCAN_REGIONS:
+            mode = "configured"
+            regions = sorted({r.strip() for r in settings.SCAN_REGIONS.split(",") if r.strip()})
+        else:
+            mode = "auto"
     return {
-        "mode": _cached_mode or "global",
+        "mode": mode,
         "selected_region": _selected_region,
-        "resolved_regions": list(regions),
+        "resolved_regions": regions,
     }
 
 

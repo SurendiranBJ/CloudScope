@@ -167,6 +167,26 @@ def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
         if not allowed_rels or rel_label not in allowed_rels:
             return False
 
+        # ALLOWS is an authorization assertion, so it must retain positive,
+        # condition-satisfied evaluator evidence. Graph adjacency alone is not proof.
+        if rel_label == "ALLOWS":
+            decision = str(edge_data.get("decision", "")).upper()
+            effect = str(edge_data.get("effect", "")).upper()
+            condition = str(edge_data.get("condition_status", "NONE")).upper()
+            prov = edge_data.get("provenance") or {}
+            decision = decision or str(prov.get("decision", "")).upper()
+            effect = effect or str(prov.get("effect", "")).upper()
+            condition = condition or str(prov.get("condition_status", "NONE")).upper()
+            # Older evaluator-produced graph payloads carry an explicit positive
+            # decision/action in provenance without duplicating Effect. That is
+            # sufficient provenance; absence of both remains non-authorizing.
+            if not effect and decision in {"ALLOW", "ALLOWED"} and (edge_data.get("action") or prov.get("action")):
+                effect = "ALLOW"
+            if decision not in {"ALLOW", "ALLOWED"} or effect != "ALLOW":
+                return False
+            if condition in {"UNRESOLVED", "VIOLATED", "UNSATISFIED", "UNKNOWN"}:
+                return False
+
         # Workload transitions (EC2/Lambda -> Role via ATTACHED_TO / EXECUTES_WITH)
         # are valid ONLY when the workload entity (EC2/Lambda) is the starting point of the path.
         # Once an identity path reaches a resource via ALLOWS, that resource is a terminal target,
@@ -973,6 +993,7 @@ def find_attack_paths(
                 "to_name": v_lbl,
                 "to_type": v_t,
                 "relationship": rel_label,
+                "required_permission": edge_data.get("action") or prov.get("action", ""),
                 "why": why,
                 "policy_name": edge_data.get('policy_name') or prov.get('policy_name', ''),
                 "statement_sid": edge_data.get('statement_sid') or prov.get('statement_sid', ''),
@@ -1055,7 +1076,7 @@ def find_attack_paths(
         })
 
     # Deterministic sort: descending by riskScore, ascending by hopCount, then by source and destination
-    evaluated_paths.sort(key=lambda p: (-p["riskScore"], p["hopCount"], p["source"], p["destination"]))
+    evaluated_paths.sort(key=lambda p: (-p["riskScore"], p["hopCount"], p["source"], p["destination"], tuple(p.get("ordered_relationships", [])), tuple(n.get("id", "") for n in p.get("ordered_nodes", []))))
 
     # Cap at MAX_ATTACK_PATHS
     final_paths = evaluated_paths[:MAX_ATTACK_PATHS]
@@ -1075,6 +1096,14 @@ def find_attack_paths(
         canonical_id = f"ap-{canonical_hash}"
         p["canonical_id"] = canonical_id
         p["path_id"] = canonical_id
+        p["id"] = canonical_id
+        p["steps"] = p.get("evidence", [])
+        p["relationship"] = p.get("ordered_relationships", [])
+        p["required_permissions"] = [s["required_permission"] for s in p.get("steps", []) if s.get("required_permission")]
+        p["policy"] = next((s.get("policy_name") for s in p.get("steps", []) if s.get("policy_name")), "")
+        p["statement_sid"] = next((s.get("statement_sid") for s in p.get("steps", []) if s.get("statement_sid")), "")
+        p["risk_contribution"] = p.get("risk_factors", {})
+        p["blast_radius"] = p.get("blastRadius", "")
         p["source_snapshot_id"] = snapshot_id
         p["snapshot_id"] = snapshot_id
         p["risk_model_version"] = RISK_MODEL_VERSION

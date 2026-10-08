@@ -65,35 +65,38 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('cloudscope_token'));
   const [activeDevRole, setActiveDevRoleState] = useState<Role>(() => {
-    return (localStorage.getItem('cloudscope_dev_role') as Role) || 'ADMINISTRATOR';
+    return (localStorage.getItem('cloudscope_dev_role') as Role) || 'VIEWER';
   });
   const [activeNotice, setActiveNotice] = useState<SecurityNotice | null>(null);
   const [isLoading] = useState<boolean>(false);
 
-  const isDevMode = !token;
+  const isDevMode = import.meta.env.DEV && !token;
 
   // Compute effective roles and permissions
   const roles: Role[] = useMemo(() => {
-    return [activeDevRole];
-  }, [activeDevRole]);
+    return isDevMode ? [activeDevRole] : [];
+  }, [activeDevRole, isDevMode]);
 
   const highestRoleLevel = Math.max(...roles.map((r) => ROLE_HIERARCHY[r] || 1));
   const permissions: string[] = useMemo(() => {
-    return ROLE_PERMISSIONS[activeDevRole] || ROLE_PERMISSIONS.VIEWER;
-  }, [activeDevRole]);
+    return isDevMode ? ROLE_PERMISSIONS[activeDevRole] || ROLE_PERMISSIONS.VIEWER : [];
+  }, [activeDevRole, isDevMode]);
 
   const currentUser: UserProfile = useMemo(() => ({
-    id: localStorage.getItem('cloudscope_dev_user') || 'admin-user',
-    email: 'admin@cloudscope.internal',
+    id: isDevMode
+      ? localStorage.getItem('cloudscope_dev_user') || 'dev-user'
+      : token ? 'Authenticated user' : 'Not authenticated',
+    email: undefined,
     roles,
     permissions,
-  }), [roles, permissions]);
+  }), [isDevMode, token, roles, permissions]);
 
   const setDevRole = useCallback((role: Role) => {
+    if (!import.meta.env.DEV || token) return;
     localStorage.setItem('cloudscope_dev_role', role);
     setActiveDevRoleState(role);
     // Reload or notify consumers if needed
-  }, []);
+  }, [token]);
 
   const login = useCallback((jwtToken: string) => {
     localStorage.setItem('cloudscope_token', jwtToken);
@@ -193,7 +196,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         currentUser,
         roles,
         permissions,
-        isAuthenticated: true,
+        isAuthenticated: Boolean(token) || isDevMode,
         isLoading,
         isDevMode,
         activeDevRole,

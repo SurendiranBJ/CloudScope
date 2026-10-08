@@ -29,6 +29,7 @@ class IAMRole(BaseModel):
     arn: str
     trustPolicy: str
     policies: List[str] = []
+    attachedPolicies: List[str] = []
     riskScore: int
 
 class IAMPolicy(BaseModel):
@@ -251,6 +252,7 @@ class CorrelatedRiskFinding(BaseModel):
 # Dashboard Compilation
 class DashboardData(BaseModel):
     securityScore: str
+    globalPosture: Optional[dict] = None
     stats: dict
     activityMetrics: Optional[dict] = None
     riskDistribution: List[dict]

@@ -236,19 +236,10 @@ def compute_global_security_score(
     4. Identity Hygiene (10%): MFA enforcement, stale credential pruning, least privilege.
     5. Monitoring & Audit Coverage (10%): CloudTrail active monitoring and alerting coverage.
 
-    Returns:
-        {
-            "overall_score": 82,
-            "grade": "B+",
-            "categories": {
-                "iam_security": {"score": 75, "weight": 0.30, "weighted_score": 22.5},
-                "resource_security": {"score": 85, "weight": 0.25, "weighted_score": 21.25},
-                "attack_path_risk": {"score": 70, "weight": 0.25, "weighted_score": 17.5},
-                "identity_hygiene": {"score": 90, "weight": 0.10, "weighted_score": 9.0},
-                "monitoring_coverage": {"score": 95, "weight": 0.10, "weighted_score": 9.5}
-            },
-            "summary": "..."
-        }
+    Returns the numeric score, category scores, evidence coverage, and the list
+    of categories that remain unverified. Missing inventory is never reported
+    as a perfect score. CloudTrail alert presence alone is not trail-coverage
+    evidence, so monitoring remains unverified until the scanner reports it.
     """
     # 1. Identity Hygiene (0 - 100)
     users = getattr(inventory, "users", [])
@@ -258,7 +249,7 @@ def compute_global_security_score(
         active_ratio = sum(1 for u in users if u.get("lastActive") != "Never") / len(users)
         identity_hygiene_score = int((mfa_ratio * 70) + (active_ratio * 30))
     else:
-        identity_hygiene_score = 100
+        identity_hygiene_score = 0
 
     # 2. IAM Security (0 - 100)
     roles = getattr(inventory, "roles", [])
@@ -267,7 +258,7 @@ def compute_global_security_score(
         avg_iam_risk = sum(item.get("riskScore", 0) for item in all_iam) / len(all_iam)
         iam_security_score = max(0, min(100, int(100 - avg_iam_risk)))
     else:
-        iam_security_score = 100
+        iam_security_score = 0
 
     # 3. Resource Security (0 - 100)
     all_resources = (
@@ -281,7 +272,7 @@ def compute_global_security_score(
         avg_res_risk = sum(res.get("riskScore", 0) for res in all_resources) / len(all_resources)
         resource_security_score = max(0, min(100, int(100 - avg_res_risk)))
     else:
-        resource_security_score = 100
+        resource_security_score = 0
 
     # 4. Attack Path Risk (0 - 100)
     if attack_paths:
@@ -289,15 +280,16 @@ def compute_global_security_score(
         high_paths = sum(1 for p in attack_paths if p.get("severity") == "high")
         path_penalty = (critical_paths * 15) + (high_paths * 8) + (len(attack_paths) * 2)
         attack_path_score = max(0, min(100, int(100 - path_penalty)))
-    else:
+    elif all_iam or all_resources:
+        # An assessed graph with no verified path is a positive result.
         attack_path_score = 100
-
-    # 5. Monitoring & Audit Coverage (0 - 100)
-    # Based on CloudTrail event recording and alerts presence
-    if cloudtrail_alerts:
-        monitoring_score = 90
     else:
-        monitoring_score = 80
+        attack_path_score = 0
+
+    # Alert presence is not evidence that CloudTrail is configured or complete.
+    # Until the scanner supplies trail/coverage evidence, report this domain as
+    # unverified and score it conservatively instead of inventing an 80/90.
+    monitoring_score = 0
 
     # Weighted Overall Score
     w = GLOBAL_SCORE_WEIGHTS
@@ -346,12 +338,20 @@ def compute_global_security_score(
                 "weighted_score": round(identity_hygiene_score * w["identity_hygiene"], 2)
             },
             "monitoring_coverage": {
-                "name": "Near-Real-Time CloudTrail Security Audit",
+                "name": "CloudTrail Monitoring Coverage (unverified)",
                 "score": monitoring_score,
                 "weight": w["monitoring_coverage"],
                 "weighted_score": round(monitoring_score * w["monitoring_coverage"], 2)
             }
         },
-        "summary": f"Calculated global security score of {overall_score}/100 across 5 verified security domains.",
+        "summary": f"Calculated global security score of {overall_score}/100. Monitoring coverage is unverified because trail coverage evidence is not available.",
+        "coverage": {
+            "iam_security": bool(all_iam),
+            "resource_security": bool(all_resources),
+            "attack_path_risk": bool(all_iam or all_resources or attack_paths),
+            "identity_hygiene": bool(users),
+            "monitoring_coverage": False,
+        },
+        "unverified_categories": ["monitoring_coverage"] + (["iam_security", "identity_hygiene"] if not all_iam else []) + (["resource_security"] if not all_resources else []),
         "risk_model_version": RISK_MODEL_VERSION
     }

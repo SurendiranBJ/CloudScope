@@ -3,6 +3,7 @@ import logging
 import json
 import threading
 import redis
+import time
 from app.config import settings
 
 logger = logging.getLogger("backend")
@@ -11,6 +12,7 @@ class CacheManager:
     def __init__(self):
         self.redis_client = None
         self.local_cache = {}
+        self._local_expiry = {}
         self._lock = threading.Lock()
         try:
             # Fast socket pre-check to avoid multi-second DNS/IPv6 connection timeout on Windows
@@ -32,7 +34,17 @@ class CacheManager:
 
     @property
     def is_redis(self) -> bool:
-        return self.redis_client is not None
+        return self.check_redis()
+
+    def check_redis(self) -> bool:
+        """Check live Redis availability instead of only checking client setup."""
+        if self.redis_client is None:
+            return False
+        try:
+            return bool(self.redis_client.ping())
+        except Exception as e:
+            logger.error(f"Redis health check failed: {e}")
+            return False
 
     def get(self, key: str) -> dict | list | None:
         if self.redis_client:
@@ -45,6 +57,10 @@ class CacheManager:
         
         # Local fallback
         with self._lock:
+            expires_at = self._local_expiry.get(key)
+            if expires_at is not None and expires_at <= time.monotonic():
+                self.local_cache.pop(key, None)
+                self._local_expiry.pop(key, None)
             val = self.local_cache.get(key)
             # Return a shallow copy if dict/list so callers don't mutate cached references
             if isinstance(val, list):
@@ -66,6 +82,10 @@ class CacheManager:
         # Local fallback
         with self._lock:
             self.local_cache[key] = value
+            if ttl_seconds and ttl_seconds > 0:
+                self._local_expiry[key] = time.monotonic() + ttl_seconds
+            else:
+                self._local_expiry.pop(key, None)
 
     def set_many(self, mapping: dict, ttl_seconds: int | None = None):
         """Atomically set multiple cache keys simultaneously.
@@ -87,6 +107,12 @@ class CacheManager:
 
         with self._lock:
             self.local_cache.update(mapping)
+            expiry = time.monotonic() + ttl_seconds if ttl_seconds and ttl_seconds > 0 else None
+            for key in mapping:
+                if expiry is None:
+                    self._local_expiry.pop(key, None)
+                else:
+                    self._local_expiry[key] = expiry
 
     def invalidate(self, key: str):
         if self.redis_client:
@@ -97,8 +123,12 @@ class CacheManager:
         
         # Local fallback
         with self._lock:
-            if key in self.local_cache:
-                del self.local_cache[key]
+            self.local_cache.pop(key, None)
+            self._local_expiry.pop(key, None)
+
+    def delete(self, key: str):
+        """Delete a cache entry; alias kept for Redis-compatible callers."""
+        self.invalidate(key)
 
     def clear(self):
         if self.redis_client:
@@ -110,6 +140,7 @@ class CacheManager:
         # Local fallback
         with self._lock:
             self.local_cache.clear()
+            self._local_expiry.clear()
 
 cache = CacheManager()
 

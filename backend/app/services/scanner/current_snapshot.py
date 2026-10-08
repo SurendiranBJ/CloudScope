@@ -11,14 +11,39 @@ Resolution strategy:
 """
 
 from typing import List, Dict, Any, Optional
+from contextvars import ContextVar, Token
 from app.cache import cache
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.snapshot_store import snapshot_store
 
+_UNPINNED = object()
+_request_snapshot: ContextVar[Any] = ContextVar("cloudscope_request_snapshot", default=_UNPINNED)
+
+
+def pin_request_snapshot() -> Token:
+    """Pin one immutable snapshot for all reads made during an API request."""
+    return _request_snapshot.set(snapshot_store.get_current())
+
+
+def reset_request_snapshot(token: Token) -> None:
+    _request_snapshot.reset(token)
+
+
+def _get_snapshot():
+    pinned = _request_snapshot.get()
+    if pinned is not _UNPINNED:
+        return pinned
+    return snapshot_store.get_current()
+
+
+def get_published_snapshot():
+    """Return one immutable published snapshot for a coherent multi-field read."""
+    return _get_snapshot()
+
 
 def get_current_snapshot_id() -> Optional[str]:
     """Retrieve authoritative current published snapshot identifier."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap and snap.snapshot_id:
         return snap.snapshot_id
 
@@ -45,12 +70,12 @@ def get_current_snapshot_id() -> Optional[str]:
         if meta_id:
             return meta_id
 
-    return scan_manager.current_snapshot_id
+    return None
 
 
 def get_current_snapshot_published_at() -> Optional[str]:
     """Retrieve authoritative current published snapshot timestamp."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap and snap.published_at:
         return snap.published_at
 
@@ -73,8 +98,7 @@ def get_current_snapshot_published_at() -> Optional[str]:
         if meta_at:
             return meta_at
 
-    status = scan_manager.get_status()
-    return status.get("snapshot_published_at") or status.get("last_published_at") or status.get("last_successful_scan_at")
+    return None
 
 
 def has_published_snapshot() -> bool:
@@ -91,7 +115,7 @@ def has_published_snapshot() -> bool:
 
 def get_current_snapshot_metadata() -> Dict[str, Any]:
     """Return complete metadata dictionary for the currently published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap and snap.scan_metadata:
         meta = dict(snap.scan_metadata)
     else:
@@ -120,7 +144,7 @@ def get_current_snapshot_metadata() -> Dict[str, Any]:
 
 def get_current_users() -> List[dict]:
     """Retrieve IAM users from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.users)
 
@@ -140,7 +164,7 @@ def get_current_users() -> List[dict]:
 
 def get_current_roles() -> List[dict]:
     """Retrieve IAM roles from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.roles)
 
@@ -160,7 +184,7 @@ def get_current_roles() -> List[dict]:
 
 def get_current_groups() -> List[dict]:
     """Retrieve IAM groups from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.groups)
 
@@ -180,7 +204,7 @@ def get_current_groups() -> List[dict]:
 
 def get_current_policies() -> List[dict]:
     """Retrieve IAM policies from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.policies)
 
@@ -200,7 +224,7 @@ def get_current_policies() -> List[dict]:
 
 def get_current_resources() -> List[dict]:
     """Retrieve cloud resources from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.resources)
 
@@ -220,7 +244,7 @@ def get_current_resources() -> List[dict]:
 
 def get_current_alerts() -> List[dict]:
     """Retrieve security alerts from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.alerts)
 
@@ -240,7 +264,7 @@ def get_current_alerts() -> List[dict]:
 
 def get_current_findings() -> List[dict]:
     """Retrieve security findings from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.findings)
 
@@ -260,7 +284,7 @@ def get_current_findings() -> List[dict]:
 
 def get_current_risks() -> List[dict]:
     """Retrieve risk findings from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.risks)
 
@@ -300,9 +324,18 @@ def get_current_risks() -> List[dict]:
     return []
 
 
+def get_current_correlated_risks() -> List[dict]:
+    """Read correlated activity from the current immutable snapshot."""
+    snap = _get_snapshot()
+    if snap is not None:
+        return list(snap.correlated_risks)
+    cached = cache.get("v1:correlated_risks")
+    return list(cached) if isinstance(cached, list) else []
+
+
 def get_current_attack_paths() -> List[dict]:
     """Retrieve attack paths from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.attack_paths)
 
@@ -319,7 +352,7 @@ def get_current_attack_paths() -> List[dict]:
 
 def get_current_graph() -> List[dict]:
     """Retrieve cytoscape graph elements from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.graph)
 
@@ -336,7 +369,7 @@ def get_current_graph() -> List[dict]:
 
 def get_current_effective_access() -> List[dict]:
     """Retrieve effective access records from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None:
         return list(snap.effective_access)
 
@@ -353,7 +386,7 @@ def get_current_effective_access() -> List[dict]:
 
 def get_current_dashboard() -> Dict[str, Any]:
     """Retrieve dashboard summary from the authoritative published snapshot."""
-    snap = snapshot_store.get_current()
+    snap = _get_snapshot()
     if snap is not None and snap.dashboard:
         return dict(snap.dashboard)
 
@@ -370,16 +403,24 @@ def get_current_dashboard() -> Dict[str, Any]:
 
 def get_current_relationship_inputs() -> Dict[str, Any]:
     """Retrieve all entity collections from the single authoritative current published snapshot."""
-    snap_id = get_current_snapshot_id()
-    pub_at = get_current_snapshot_published_at()
+    snap = get_published_snapshot()
+    if snap is None:
+        return {
+            "users": get_current_users(),
+            "roles": get_current_roles(),
+            "groups": get_current_groups(),
+            "policies": get_current_policies(),
+            "resources": get_current_resources(),
+            "snapshot_id": get_current_snapshot_id(),
+            "snapshot_published_at": get_current_snapshot_published_at(),
+        }
 
     return {
-        "users": get_current_users(),
-        "roles": get_current_roles(),
-        "groups": get_current_groups(),
-        "policies": get_current_policies(),
-        "resources": get_current_resources(),
-        "snapshot_id": snap_id,
-        "snapshot_published_at": pub_at,
+        "users": list(snap.users),
+        "roles": list(snap.roles),
+        "groups": list(snap.groups),
+        "policies": list(snap.policies),
+        "resources": list(snap.resources),
+        "snapshot_id": snap.snapshot_id,
+        "snapshot_published_at": snap.published_at,
     }
-

@@ -147,3 +147,25 @@ class TestDistributedScanLock:
         assert token_a is None
         assert token_b is None
 
+    def test_production_release_does_not_fall_back_to_process_memory(self, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setattr("app.cache.cache.redis_client", None)
+        lock = DistributedScanLock(lock_key="test:production:lock")
+        monkeypatch.setattr("app.cache.cache.get", lambda key: "owner-token")
+        deleted = []
+        monkeypatch.setattr("app.cache.cache.delete", lambda key: deleted.append(key))
+
+        assert lock.release("owner-token") is False
+        assert deleted == []
+
+    def test_coordinator_reports_unavailable_when_production_redis_is_down(self, monkeypatch):
+        from app.services.scanner.scan_coordinator import ScanCoordinator
+        from app.services.scanner.scan_manager import scan_manager
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setattr("app.services.scanner.scan_coordinator.distributed_scan_lock.acquire", lambda **kwargs: None)
+        monkeypatch.setattr("app.services.scanner.scan_coordinator.cache.check_redis", lambda: False)
+        monkeypatch.setattr(scan_manager, "_is_running", False)
+
+        result = ScanCoordinator().request_scan()
+        assert result["status"] == "UNAVAILABLE"
+

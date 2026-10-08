@@ -10,6 +10,8 @@ Comprehensive Automated Unit Tests for Phase 1:
 """
 
 import json
+import ast
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -30,6 +32,24 @@ from app.services.scanner.scan_manager import ScanManager
 from app.services.graph.graph_builder import build_graph_in_neo4j, get_node_id
 from app.services.graph.graph_loader import build_local_graph
 from app.cache import cache
+
+
+def test_scanner_aws_collectors_do_not_call_mutating_aws_apis():
+    """Collectors may read AWS state but must never invoke AWS mutations."""
+    forbidden_prefixes = (
+        "put_", "delete_", "create_", "update_", "modify_", "attach_",
+        "detach_", "start_", "stop_", "terminate_", "reboot_", "restore_",
+        "enable_", "disable_", "tag_", "untag_", "authorize_", "revoke_",
+    )
+    aws_dir = Path(__file__).parents[1] / "app" / "services" / "aws"
+    mutations = []
+    for source_path in aws_dir.glob("*_service.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr.lower().startswith(forbidden_prefixes):
+                    mutations.append(f"{source_path.name}:{node.lineno}:{node.func.attr}")
+    assert mutations == []
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +83,13 @@ def test_1_empty_scan_regions_triggers_dynamic_discovery(monkeypatch):
     assert mode == "global"
     assert set(regions) == set(mock_regions)
     assert mock_ec2.describe_regions.called
+
+
+def test_health_scan_mode_reporting_does_not_trigger_aws_discovery(monkeypatch):
+    monkeypatch.setattr(settings, "SCAN_REGIONS", "")
+    with patch("app.services.aws.region_cache.get_all_regions", side_effect=AssertionError("unexpected AWS discovery")):
+        state = get_scan_mode_state()
+    assert state == {"mode": "auto", "selected_region": None, "resolved_regions": []}
 
 
 # 2. explicit SCAN_REGIONS overrides DescribeRegions discovery

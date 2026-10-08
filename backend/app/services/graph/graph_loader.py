@@ -60,7 +60,7 @@ def load_graph_from_neo4j() -> nx.DiGraph:
 
         # 2. Fetch edges
         edges = execute_read(
-            "MATCH (s)-[r]->(t) RETURN s.id as source, t.id as target, type(r) as label"
+            "MATCH (s)-[r]->(t) RETURN s.id as source, t.id as target, type(r) as label, properties(r) as attrs"
         )
         for e in edges:
             source = e['source']
@@ -68,7 +68,10 @@ def load_graph_from_neo4j() -> nx.DiGraph:
             if source and target:
                 lbl = e.get('label') or ''
                 if lbl:
-                    G.add_edge(source, target, label=lbl)
+                    attrs = dict(e.get('attrs') or {})
+                    attrs.setdefault('label', lbl)
+                    attrs.setdefault('relationship', lbl)
+                    G.add_edge(source, target, **attrs)
 
         logger.info(f"Loaded NetworkX Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     except Exception as e:
@@ -154,7 +157,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                     existing_pol_names.add(ap["PolicyName"])
 
         s3_items = [
-            {"name": b.get("name") or b.get("Name"), "arn": b.get("arn") or b.get("Arn") or f"arn:aws:s3:::{b.get('name') or b.get('Name')}", "region": b.get("region", "us-east-1")}
+            {"type": "S3", "name": b.get("name") or b.get("Name"), "arn": b.get("arn") or b.get("Arn") or f"arn:aws:s3:::{b.get('name') or b.get('Name')}", "region": b.get("region", "us-east-1")}
             for b in (inventory.get("s3_buckets") or inventory.get("s3", []))
         ]
         inv.s3 = s3_items
@@ -175,6 +178,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             state_val = e.get("State") or e.get("state")
             state_name = state_val.get("Name") if isinstance(state_val, dict) else (state_val or "running")
             ec2_items.append({
+                "type": "EC2",
                 "id": eid,
                 "name": ename,
                 "arn": earn,
@@ -187,10 +191,10 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         inv.ec2_instances = ec2_items
 
         lambda_items = inventory.get("lambda_functions") or inventory.get("lambdas", [])
-        inv.lambdas = lambda_items
+        inv.lambdas = [dict(item, type="Lambda") for item in lambda_items]
         inv.lambda_functions = lambda_items
 
-        inv.secrets = inventory.get("secrets", [])
+        inv.secrets = [dict(item, type="Secrets") for item in inventory.get("secrets", [])]
 
         rds_raw = inventory.get("rds_instances") or inventory.get("rds", [])
         rds_items = []
@@ -198,6 +202,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             rname = r.get("name") or r.get("DBInstanceIdentifier") or r.get("DBClusterIdentifier") or r.get("id")
             rarn = r.get("arn") or r.get("Arn") or f"arn:aws:rds:{r.get('region', 'us-east-1')}:db:{rname}"
             rds_items.append({
+                "type": "RDS",
                 "name": rname,
                 "arn": rarn,
                 "region": r.get("region", "us-east-1"),
@@ -208,7 +213,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         inv.rds_instances = rds_items
 
         ddb_items = inventory.get("dynamodb_tables") or inventory.get("dynamodb", [])
-        inv.dynamodb = ddb_items
+        inv.dynamodb = [dict(item, type="DynamoDB") for item in ddb_items]
         inv.dynamodb_tables = ddb_items
         inventory = inv
 
@@ -366,13 +371,17 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             prov.update(attrs["provenance"])
         prov.setdefault("relationship", label)
         prov.setdefault("edge_type", label)
-        prov.setdefault("decision", attrs.get("decision", "ALLOW"))
+        # Configuration facts (membership, attachment, execution) are not
+        # authorization decisions. Only evaluator-produced edges carry one.
+        if label in {"ALLOWS", "DENIES", "CAN_ASSUME", "ASSUMED_ROLE", "DB_CONNECT"}:
+            prov.setdefault("decision", attrs.get("decision", "ALLOWED" if label != "DENIES" else "DENIED"))
         prov.setdefault("why", attrs.get("why", ""))
 
         edge_kwargs = dict(attrs)
         edge_kwargs.setdefault("label", label)
         edge_kwargs.setdefault("relationship", label)
         edge_kwargs["provenance"] = prov
+        edge_kwargs.setdefault("edge_id", __import__("hashlib").sha256(f"{u}|{label}|{v}".encode()).hexdigest())
 
         u_targets = aliases.get(u, {u})
         v_targets = aliases.get(v, {v})
@@ -395,7 +404,6 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 source='IAM',
                 principal=u['name'],
                 principal_type='User',
-                decision='ALLOWED',
                 why=f"IAM Group Membership: IAM user '{u['name']}' is a member of group '{g_name}'"
             )
 
@@ -416,7 +424,6 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 principal_type='User',
                 policy_name=clean_name,
                 policy_arn=p_id,
-                decision='ALLOWED',
                 why=f"IAM user '{u['name']}' has policy '{clean_name}' attached"
             )
 
@@ -436,7 +443,6 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 principal_type='Group',
                 policy_name=clean_name,
                 policy_arn=p_id,
-                decision='ALLOWED',
                 why=f"IAM group '{g['name']}' has policy '{clean_name}' attached"
             )
 
@@ -456,7 +462,6 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 principal_type='Role',
                 policy_name=clean_name,
                 policy_arn=p_id,
-                decision='ALLOWED',
                 why=f"IAM role '{r['name']}' has policy '{clean_name}' attached"
             )
 
@@ -468,14 +473,11 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             r_id = get_node_id("Role", role_name)
             safe_add_edge(
                 e_id, r_id, 'ATTACHED_TO',
-                relationship='EXECUTES_WITH',
-                edge_type='EXECUTES_WITH',
                 source='ROLE_ATTACHMENT',
                 principal=e['id'],
                 principal_type='EC2',
                 resource=e['id'],
                 region=e.get('region', 'unknown'),
-                decision='ALLOWED',
                 why=f"Running EC2 instance '{e['id']}' operates under IAM instance profile role '{role_name}' with ec2.amazonaws.com"
             )
 
@@ -585,7 +587,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         p_id = get_node_id("Policy", p['name'])
         doc = p.get('document', '{}')
         p_arn = p.get('arn', '')
-        allowed_res, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
+        allowed_res, prov_map, deny_map = evaluate_policy_allows_resources_with_provenance(
             p['name'], p_arn, doc, all_resources, account_id=account_id
         )
         for res in allowed_res:
@@ -610,6 +612,26 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 region=edge_prov.get('region', 'global'),
                 why=edge_prov.get('why', f"Policy '{p['name']}' allows access to {res_type} '{item_ident}'"),
                 evidence=edge_prov.get('evidence', {})
+            )
+
+        # Keep explicit deny evidence as a first-class, non-traversable edge.
+        # It must not disappear simply because the evaluator correctly suppresses ALLOWS.
+        for res_key, deny_ev in deny_map.items():
+            res = next((item for item in all_resources if str(item.get('id') if item.get('type') == 'EC2' else (item.get('name') or item.get('id'))) == str(res_key)), None)
+            if not res:
+                continue
+            res_type = res.get('type')
+            item_ident = res.get('id') if res_type == 'EC2' else (res.get('name') or res.get('id'))
+            res_id = get_node_id(res_type, item_ident)
+            safe_add_edge(
+                p_id, res_id, 'DENIES', edge_type='DENIES', source='IAM',
+                policy_name=p['name'], policy_arn=p_arn,
+                statement_sid=deny_ev.get('statement_sid', ''),
+                effect='Deny', action=deny_ev.get('action', ''),
+                resource=str(item_ident), resource_arn=deny_ev.get('resource_arn', ''),
+                decision='DENIED', condition_status=deny_ev.get('condition_status', 'NONE'),
+                region=res.get('region', 'global'), why=deny_ev.get('why', 'Explicit IAM deny'),
+                evidence=deny_ev
             )
 
         # 9. IAM Database Authentication: Policy -> DB_CONNECT -> AuroraDBUser -> BELONGS_TO -> RDS

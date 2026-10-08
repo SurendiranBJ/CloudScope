@@ -6,7 +6,7 @@ from app.services.attack.policy_evaluator import (
 )
 from app.services.graph.edge_validation import validate_edge, VALID_SEMANTIC_EDGES
 from app.services.graph.graph_loader import build_local_graph
-from app.services.attack.path_engine import check_passrole_escalation, PathEngine
+from app.services.attack.path_engine import check_passrole_escalation, PathEngine, _validate_path_security_semantics
 from app.services.attack.blast_radius import calculate_blast_radius
 
 
@@ -162,6 +162,46 @@ def test_safe_add_edge_semantic_validation_rejects_illegal_edges():
     assert is_valid_group
 
 
+def test_explicit_deny_is_preserved_as_non_authorizing_graph_edge():
+    inventory = {
+        "iam_policies": [{"PolicyName": "DenySecret", "PolicyArn": "arn:aws:iam::123456789012:policy/DenySecret",
+                          "PolicyDocument": {"Statement": [{"Sid": "Block", "Effect": "Deny",
+                          "Action": "secretsmanager:GetSecretValue", "Resource": "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod"}]}}],
+        "secrets": [{"name": "prod", "arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod", "region": "us-east-1"}],
+    }
+    graph = build_local_graph(inventory)
+    policy_id = "aws:policy:DenySecret"
+    secret_id = "aws:secret:prod"
+    assert graph.has_edge(policy_id, secret_id)
+    edge = graph[policy_id][secret_id]
+    assert edge["relationship"] == "DENIES"
+    assert edge["decision"] == "DENIED"
+    assert not _validate_path_security_semantics([policy_id, secret_id], graph)
+
+
+def test_allow_path_rejects_missing_or_negative_evaluator_evidence():
+    graph = nx.DiGraph()
+    graph.add_node("p", type="Policy", is_canonical=True)
+    graph.add_node("s", type="S3", is_canonical=True)
+    graph.add_edge("p", "s", relationship="ALLOWS", decision="DENIED", effect="Deny")
+    assert not _validate_path_security_semantics(["p", "s"], graph)
+    graph["p"]["s"].update(decision="ALLOWED", effect="Allow", condition_status="UNRESOLVED")
+    assert not _validate_path_security_semantics(["p", "s"], graph)
+    graph["p"]["s"].update(condition_status="SATISFIED")
+    assert _validate_path_security_semantics(["p", "s"], graph)
+
+
+def test_configuration_edges_do_not_claim_authorization_decisions():
+    graph = build_local_graph({
+        "iam_users": [{"UserName": "alice", "Arn": "arn:aws:iam::123456789012:user/alice", "Groups": ["engineering"]}],
+        "iam_groups": [{"GroupName": "engineering", "Arn": "arn:aws:iam::123456789012:group/engineering"}],
+    })
+    edge = graph["arn:aws:iam::123456789012:user/alice"]["arn:aws:iam::123456789012:group/engineering"]
+    assert edge["relationship"] == "MEMBER_OF"
+    assert "decision" not in edge
+    assert "decision" not in edge["provenance"]
+
+
 def test_member_of_edge_provenance():
     raw_data = {
         "iam_users": [
@@ -290,7 +330,7 @@ def test_executes_with_edge_provenance():
     role_id = "arn:aws:iam::123456789012:role/AppProfile"
     assert G.has_edge(inst_id, role_id)
     edge = G[inst_id][role_id]
-    assert edge["relationship"] == "EXECUTES_WITH"
+    assert edge["relationship"] == "ATTACHED_TO"
     assert "ec2.amazonaws.com" in edge["provenance"]["why"]
 
 

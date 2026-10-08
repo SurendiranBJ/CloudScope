@@ -27,11 +27,13 @@ import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import { LastScannedBadge } from '../components/LastScannedBadge';
 import { GlobalScanStatus } from '../components/GlobalScanStatus';
 import { apiClient } from '../api/client';
+import { useScanLifecycle } from '../hooks/useScanLifecycle';
 
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const { handleScanClick } = useScanTrigger();
+  const { isScanning, hasCompletedSnapshot } = useScanLifecycle();
 
   // Health data for the active region / scan mode (used to seed the RegionSelector)
   const [healthData, setHealthData] = useState<{
@@ -48,13 +50,25 @@ export const Dashboard: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['dashboardSummary'],
     queryFn: getDashboardSummary,
     refetchInterval: 5000
   });
 
   if (isLoading || !data) {
+    if (isError) {
+      return (
+        <div className="flex-1 flex items-center justify-center bg-enterprise-bg p-6">
+          <div className="max-w-md rounded-xl border border-enterprise-border bg-enterprise-card p-6 text-center">
+            <ShieldAlert className="mx-auto h-8 w-8 text-enterprise-warning" />
+            <h2 className="mt-3 text-sm font-bold text-white">Dashboard data is unavailable</h2>
+            <p className="mt-2 text-xs text-enterprise-subtext">The security summary could not be loaded. Your published snapshot has not been changed.</p>
+            <button onClick={() => refetch()} className="mt-4 rounded-lg bg-enterprise-accent px-4 py-2 text-xs font-semibold text-white hover:bg-blue-600">Retry</button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex-1 flex items-center justify-center bg-enterprise-bg">
         <div className="flex flex-col items-center gap-4">
@@ -71,9 +85,9 @@ export const Dashboard: React.FC = () => {
   const kpis = [
     {
       title: 'Security Score',
-      value: data?.securityScore || 'N/A',
-      status: 'Verified Posture',
-      color: 'border-l-4 border-enterprise-success',
+      value: data?.securityScore ?? 'N/A',
+      status: data.globalPosture?.unverified_categories?.length ? 'Coverage incomplete' : data.globalPosture ? 'Assessed posture' : 'Awaiting assessment',
+      color: data.globalPosture?.unverified_categories?.length ? 'border-l-4 border-enterprise-warning' : 'border-l-4 border-enterprise-success',
       icon: ShieldCheck,
       iconColor: 'text-enterprise-success'
     },
@@ -125,6 +139,7 @@ export const Dashboard: React.FC = () => {
     { name: 'Medium', value: 0, color: '#3B82F6' },
     { name: 'Low', value: 0, color: '#10B981' }
   ];
+  const totalRiskFindings = riskDistribution.reduce((total, item) => total + (Number.isFinite(item.value) ? Math.max(0, item.value) : 0), 0);
 
   const paths = data.criticalPaths || [];
   const topRisky = data.topRiskyIdentities || [];
@@ -164,7 +179,17 @@ export const Dashboard: React.FC = () => {
       </div>
 
       {/* Initial Empty State Banner */}
-      {!data?.lastSuccessfulScanAt && stats.resources === 0 && (
+      {!hasCompletedSnapshot && isScanning && stats.resources === 0 && (
+        <div className="p-6 bg-blue-950/30 border border-blue-500/30 rounded-2xl flex items-center gap-4 shadow-xl">
+          <Cloud className="w-6 h-6 text-blue-400 animate-pulse" />
+          <div>
+            <h2 className="text-lg font-bold text-white">Initial AWS scan is running</h2>
+            <p className="text-xs text-gray-300 mt-1">Security data will appear after the complete snapshot is published.</p>
+          </div>
+        </div>
+      )}
+
+      {!hasCompletedSnapshot && !isScanning && !data?.lastSuccessfulScanAt && stats.resources === 0 && (
         <div className="p-6 bg-gradient-to-r from-blue-950/40 via-purple-950/30 to-gray-900/50 border border-blue-500/30 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl">
           <div className="space-y-2 max-w-2xl">
             <div className="flex items-center gap-2 text-blue-400">
@@ -212,6 +237,48 @@ export const Dashboard: React.FC = () => {
           );
         })}
       </div>
+
+      {/* Score transparency: show which controls contributed and which remain unknown. */}
+      {data.globalPosture && (
+        <section aria-labelledby="posture-breakdown-title" className="rounded-xl border border-enterprise-border bg-enterprise-card p-5 shadow-lg">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 id="posture-breakdown-title" className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-white">
+                <ShieldCheck className="h-4 w-4 text-enterprise-accent" />
+                How the security score is assessed
+              </h2>
+              <p className="mt-1 max-w-3xl text-xs leading-relaxed text-enterprise-subtext">{data.globalPosture.summary}</p>
+            </div>
+            <span className="rounded border border-enterprise-border px-2 py-1 font-mono text-[10px] text-enterprise-subtext">Model {data.globalPosture.risk_model_version}</span>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {Object.entries(data.globalPosture.categories)
+              .sort(([, a], [, b]) => b.weight - a.weight)
+              .map(([key, category]) => {
+                const assessed = data.globalPosture?.coverage?.[key] === true;
+                return (
+                  <article key={key} className="rounded-lg border border-enterprise-border bg-enterprise-bg/60 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-xs font-semibold leading-snug text-gray-200">{category.name}</h3>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${assessed ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'}`}>
+                        {assessed ? `${category.score}/100` : 'Unverified'}
+                      </span>
+                    </div>
+                    <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-gray-800">
+                      <div className={`h-full rounded-full ${assessed ? 'bg-enterprise-accent' : 'bg-amber-500/70'}`} style={{ width: `${assessed ? Math.max(0, Math.min(100, category.score)) : 0}%` }} />
+                    </div>
+                    <p className="mt-2 text-[10px] text-enterprise-subtext">Weight {Math.round(category.weight * 100)}%</p>
+                  </article>
+                );
+              })}
+          </div>
+          {data.globalPosture.unverified_categories.length > 0 && (
+            <p className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-100">
+              Some score domains lack evidence. Review scan coverage before treating this score as a complete assessment.
+            </p>
+          )}
+        </section>
+      )}
 
       {/* 4 Security States Correlation Section */}
       <div className="bg-enterprise-card p-5 rounded-xl border border-enterprise-border shadow-lg space-y-4">
@@ -311,35 +378,48 @@ export const Dashboard: React.FC = () => {
             </span>
           </div>
 
-          <div className="h-56 w-full relative flex items-center justify-center">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={riskDistribution}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={55}
-                  outerRadius={75}
-                  paddingAngle={4}
-                  dataKey="value"
-                >
-                  {riskDistribution.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} stroke="#0F172A" strokeWidth={2} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1E293B', borderColor: '#334155', borderRadius: '8px', fontSize: '11px', color: '#F8FAFC' }}
-                  itemStyle={{ color: '#F8FAFC' }}
-                />
-                <Legend
-                  verticalAlign="bottom"
-                  height={36}
-                  iconType="circle"
-                  iconSize={8}
-                  formatter={(val: string) => <span className="text-xs text-gray-300 ml-1">{val}</span>}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+          <div className="h-56 w-full relative flex items-center justify-center" aria-label={`Open finding severity distribution, ${totalRiskFindings} total findings`}>
+            {totalRiskFindings === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+                <ShieldCheck className="h-8 w-8 text-enterprise-success" />
+                <p className="text-sm font-semibold text-gray-200">No open findings</p>
+                <p className="text-[11px] text-enterprise-subtext">The published snapshot has no findings by severity.</p>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={riskDistribution.filter((entry) => Number.isFinite(entry.value) && entry.value > 0)}
+                    cx="50%"
+                    cy="46%"
+                    innerRadius={52}
+                    outerRadius={76}
+                    paddingAngle={3}
+                    dataKey="value"
+                    nameKey="name"
+                  >
+                    {riskDistribution.filter((entry) => Number.isFinite(entry.value) && entry.value > 0).map((entry) => (
+                      <Cell key={`severity-${entry.name}`} fill={entry.color} stroke="#0F172A" strokeWidth={2} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value, name) => {
+                      const count = Number(value ?? 0);
+                      return [`${count} finding${count === 1 ? '' : 's'}`, String(name)];
+                    }}
+                    contentStyle={{ backgroundColor: '#1E293B', borderColor: '#334155', borderRadius: '8px', fontSize: '11px', color: '#F8FAFC' }}
+                    itemStyle={{ color: '#F8FAFC' }}
+                  />
+                  <Legend
+                    verticalAlign="bottom"
+                    height={36}
+                    iconType="circle"
+                    iconSize={8}
+                    formatter={(val: string) => <span className="text-xs text-gray-300 ml-1">{val}</span>}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 

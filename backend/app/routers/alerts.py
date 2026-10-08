@@ -5,6 +5,7 @@ from app.cache import cache
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
     get_current_alerts,
+    get_current_correlated_risks,
     get_current_snapshot_id,
     get_current_snapshot_published_at,
     has_published_snapshot,
@@ -105,11 +106,10 @@ def get_correlated_risks(
     if page_size is not None and (page_size < 1 or page_size > 200):
         raise HTTPException(status_code=400, detail="page_size must be between 1 and 200.")
 
-    data = cache.get("v1:correlated_risks")
-    if data is None:
+    data = get_current_correlated_risks()
+    if not data and not has_published_snapshot():
         if not has_published_snapshot() and not scan_manager.is_running:
             scan_manager.trigger_async_scan()
-        data = []
 
     filtered = data or []
     if principal:

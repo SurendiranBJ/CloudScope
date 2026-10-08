@@ -85,6 +85,7 @@ def get_dashboard_summary():
 
     empty_data = {
         "securityScore": "Scanning..." if effective_status == "SCANNING" else "N/A",
+        "globalPosture": None,
         "stats": {
             "users": 0,
             "roles": 0,

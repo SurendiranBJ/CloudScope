@@ -8,6 +8,7 @@ import {
   getPhaseDescription,
   formatDuration,
   refreshScanDependentQueries,
+  didPublishedSnapshotChange,
 } from '../utils/scanLifecycleUtils.ts';
 
 export {
@@ -16,6 +17,7 @@ export {
   getPhaseDescription,
   formatDuration,
   refreshScanDependentQueries,
+  didPublishedSnapshotChange,
 };
 
 export interface ScanLifecycleContextValue {
@@ -32,6 +34,8 @@ export interface ScanLifecycleContextValue {
   completedCollectors: number;
   totalCollectors: number;
   collectorStatus: Record<string, string>;
+  regionalStatus: Record<string, string>;
+  publicationState: string;
   lastProgressAt: string | null;
   progressSecondsAgo: number | null;
   hasProgressWarning: boolean;
@@ -75,6 +79,7 @@ export const ScanLifecycleProvider: React.FC<ScanLifecycleProviderProps> = ({ ch
 
   // Authoritative tracking of published snapshot ID to avoid duplicate refreshes
   const lastProcessedSnapshotIdRef = useRef<string | null>(null);
+  const hasSeenInitialStatusRef = useRef(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -94,8 +99,6 @@ export const ScanLifecycleProvider: React.FC<ScanLifecycleProviderProps> = ({ ch
     scanStatus?.snapshot_id ||
     scanStatus?.current_snapshot_id ||
     scanStatus?.last_published_scan_id ||
-    scanStatus?.last_successful_scan_id ||
-    scanStatus?.last_completed_scan_id ||
     null
   );
 
@@ -152,14 +155,17 @@ export const ScanLifecycleProvider: React.FC<ScanLifecycleProviderProps> = ({ ch
   useEffect(() => {
     if (!scanStatus) return;
 
-    if (lastProcessedSnapshotIdRef.current === null) {
-      if (currentSnapshotId) {
-        lastProcessedSnapshotIdRef.current = currentSnapshotId;
-      }
+    if (!hasSeenInitialStatusRef.current) {
+      hasSeenInitialStatusRef.current = true;
+      lastProcessedSnapshotIdRef.current = currentSnapshotId;
       return;
     }
 
-    if (currentSnapshotId && currentSnapshotId !== lastProcessedSnapshotIdRef.current) {
+    if (didPublishedSnapshotChange(
+      hasSeenInitialStatusRef.current,
+      lastProcessedSnapshotIdRef.current,
+      currentSnapshotId,
+    )) {
       lastProcessedSnapshotIdRef.current = currentSnapshotId;
       triggerCompletion(scanStatus);
     }
@@ -246,6 +252,8 @@ export const ScanLifecycleProvider: React.FC<ScanLifecycleProviderProps> = ({ ch
     completedCollectors: scanStatus?.completed_collectors ?? 0,
     totalCollectors: scanStatus?.total_collectors ?? 12,
     collectorStatus: scanStatus?.collector_status ?? {},
+    regionalStatus: scanStatus?.regional_status ?? {},
+    publicationState: scanStatus?.publication_state ?? 'NOT_PUBLISHED',
     lastProgressAt,
     progressSecondsAgo,
     hasProgressWarning,

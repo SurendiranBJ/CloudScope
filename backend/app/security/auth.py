@@ -63,12 +63,14 @@ def _normalize_roles(raw_roles: Any) -> List[Role]:
             try:
                 parsed.append(Role(clean))
             except ValueError:
-                # Support mapping common OIDC group strings
-                if "ADMIN" in clean:
+                # Accept only explicit role names (including namespaced role
+                # claims), never substring-match arbitrary group names.
+                normalized = clean.rsplit("/", 1)[-1].rsplit(":", 1)[-1].replace(" ", "_")
+                if normalized in {"ADMIN", "ADMINISTRATOR"}:
                     parsed.append(Role.ADMINISTRATOR)
-                elif "SEC" in clean or "OFFICER" in clean:
+                elif normalized in {"SECURITY_OFFICER", "SECURITYOFFICER"}:
                     parsed.append(Role.SECURITY_OFFICER)
-                elif "ANALYST" in clean:
+                elif normalized == "ANALYST":
                     parsed.append(Role.ANALYST)
                 else:
                     parsed.append(Role.VIEWER)

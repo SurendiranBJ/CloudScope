@@ -10,6 +10,7 @@ from app.services.scanner.current_snapshot import (
     has_published_snapshot,
 )
 from app.security.dependencies import require_viewer
+from app.services.risk.risk_constants import RISK_MODEL_VERSION
 
 router = APIRouter(tags=["Attack Paths"], dependencies=[Depends(require_viewer)])
 
@@ -143,7 +144,7 @@ def get_attack_path_evidence(id: str):
         "path_type": match_path.get("pathType") or match_path.get("attack_type"),
         "severity": match_path.get("severity"),
         "risk_score": match_path.get("riskScore") or match_path.get("risk_score"),
-        "risk_model_version": match_path.get("risk_model_version") or "phase3-v1",
+        "risk_model_version": match_path.get("risk_model_version") or RISK_MODEL_VERSION,
         "source_snapshot_id": match_path.get("source_snapshot_id") or get_current_snapshot_id(),
         "ordered_relationships": match_path.get("ordered_relationships") or match_path.get("orderedRelationships", []),
         "ordered_nodes": match_path.get("ordered_nodes") or match_path.get("nodes", []),

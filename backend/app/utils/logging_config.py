@@ -47,7 +47,7 @@ class StructuredJsonFormatter(logging.Formatter):
                 log_data[field] = sanitize_data(val)
 
         if record.exc_info:
-            log_data["exception"] = self.formatException(record.exc_info)
+            log_data["exception"] = sanitize_data(self.formatException(record.exc_info))
 
         return json.dumps(log_data)
 

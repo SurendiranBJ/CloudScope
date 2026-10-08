@@ -44,12 +44,14 @@ def init_db() -> None:
         if "scan_snapshots" in inspector.get_table_names():
             existing_cols = {c["name"] for c in inspector.get_columns("scan_snapshots")}
             new_cols = [
+                ("collection_completeness_json", "TEXT DEFAULT '{}'"),
                 ("users_json", "TEXT DEFAULT '[]'"),
                 ("groups_json", "TEXT DEFAULT '[]'"),
                 ("roles_json", "TEXT DEFAULT '[]'"),
                 ("policies_json", "TEXT DEFAULT '[]'"),
                 ("resources_json", "TEXT DEFAULT '[]'"),
                 ("alerts_json", "TEXT DEFAULT '[]'"),
+                ("correlated_risks_json", "TEXT DEFAULT '[]'"),
                 ("findings_json", "TEXT DEFAULT '[]'"),
                 ("risks_json", "TEXT DEFAULT '[]'"),
                 ("attack_paths_json", "TEXT DEFAULT '[]'"),

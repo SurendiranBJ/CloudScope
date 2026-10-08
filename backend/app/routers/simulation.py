@@ -34,7 +34,18 @@ from app.services.simulation.simulation_analyzer import (
     build_desired_analysis,
     build_policy_preview_analysis,
 )
-from app.services.scanner.scan_manager import scan_manager
+from app.services.scanner.inventory import AWSInventory
+from app.services.scanner.current_snapshot import (
+    get_current_attack_paths,
+    get_current_alerts,
+    get_current_dashboard,
+    get_current_groups,
+    get_current_policies,
+    get_current_resources,
+    get_current_roles,
+    get_current_users,
+    has_published_snapshot,
+)
 from app.security.dependencies import require_analyst
 from app.security.models import AuthenticatedUser
 from app.security.rate_limiter import rate_limit
@@ -45,16 +56,38 @@ router = APIRouter(tags=["Simulation"], dependencies=[Depends(require_analyst)])
 
 
 def _get_current_inventory():
-    """Return current inventory from scan_manager or raise if unavailable."""
-    inv = scan_manager.inventory
-    if not inv or (not inv.users and not inv.roles and not inv.policies):
+    """Rebuild the simulation input from the authoritative published snapshot."""
+    if not has_published_snapshot():
+        return None
+    inv = AWSInventory()
+    inv.users = get_current_users()
+    inv.roles = get_current_roles()
+    inv.groups = get_current_groups()
+    inv.policies = get_current_policies()
+    resources = get_current_resources()
+    resource_lists = {
+        "ec2": inv.ec2,
+        "s3": inv.s3,
+        "lambda": inv.lambdas,
+        "lambdafunction": inv.lambdas,
+        "secrets": inv.secrets,
+        "secret": inv.secrets,
+        "rds": inv.rds,
+        "dynamodb": inv.dynamodb,
+    }
+    for resource in resources:
+        resource_type = str(resource.get("type", "")).replace("_", "").replace(" ", "").lower()
+        target = resource_lists.get(resource_type)
+        if target is not None:
+            target.append(resource)
+    inv.alerts = get_current_alerts()
+    if not any((inv.users, inv.roles, inv.groups, inv.policies, resources)):
         return None
     return inv
 
 
-def _get_policy_doc_map() -> dict:
-    """Build policy document map from cached current-state policies."""
-    policies = cache.get("v1:policies") or []
+def _get_policy_doc_map(policies: list[dict]) -> dict:
+    """Build policy document map from the policies in the pinned published snapshot."""
     doc_map = {}
     for p in policies:
         doc = p.get("document")
@@ -69,9 +102,9 @@ def _build_analysis():
     if not inv:
         return None, "No scan data available. Run a scan first."
 
-    policy_doc_map = _get_policy_doc_map()
-    current_attack_paths = cache.get("v1:attack-paths") or []
-    current_global_posture = cache.get("v1:global_posture")
+    policy_doc_map = _get_policy_doc_map(inv.policies)
+    current_attack_paths = get_current_attack_paths()
+    current_global_posture = get_current_dashboard().get("globalPosture")
 
     # Build desired inventory
     desired_inv = simulation_state.get_desired_inventory(inv)
@@ -228,9 +261,9 @@ def preview_simulation_change(
     if not inv:
         raise HTTPException(status_code=503, detail="No scan data available. Run a scan first.")
 
-    policy_doc_map = _get_policy_doc_map()
-    current_attack_paths = cache.get("v1:attack-paths") or []
-    current_global_posture = cache.get("v1:global_posture")
+    policy_doc_map = _get_policy_doc_map(inv.policies)
+    current_attack_paths = get_current_attack_paths()
+    current_global_posture = get_current_dashboard().get("globalPosture")
 
     proposed_change = {
         "action": body.action.upper(),

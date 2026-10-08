@@ -71,8 +71,8 @@ export const SimulationPreviewModal: React.FC<SimulationPreviewModalProps> = ({
   const removedResources = analysis?.removed_reachable_resources || [];
 
   const riskDelta = risk ? risk.delta : 0;
-  const isHigherRisk = riskDelta > 0;
-  const isLowerRisk = riskDelta < 0;
+  const riskIncreases = riskDelta < 0;
+  const riskDecreases = riskDelta > 0;
 
   return (
     <AnimatePresence>
@@ -153,39 +153,39 @@ export const SimulationPreviewModal: React.FC<SimulationPreviewModalProps> = ({
                 {/* 1. RISK POSTURE COMPARISON CARDS */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="p-3.5 rounded-xl bg-slate-900 border border-gray-800">
-                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1">Current Risk</span>
+                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1">Current Security Posture</span>
                     <div className="flex items-baseline gap-2">
                       <span className="text-2xl font-bold font-mono text-white">{risk?.current_score ?? '—'}</span>
                       <span className="text-[11px] text-gray-400 font-mono">/ 100</span>
                     </div>
                     <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mt-1 block">
-                      {risk?.current_severity ?? 'Unknown'}
+                      {risk?.current_severity ? `${risk.current_severity} residual risk` : 'Unknown residual risk'}
                     </span>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-slate-900 border border-gray-800">
-                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1">Projected Risk</span>
+                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider block mb-1">Projected Security Posture</span>
                     <div className="flex items-baseline gap-2">
                       <span className="text-2xl font-bold font-mono text-white">{risk?.desired_score ?? '—'}</span>
                       <span className="text-[11px] text-gray-400 font-mono">/ 100</span>
                     </div>
                     <span className="text-[10px] font-semibold uppercase tracking-wider text-enterprise-accent mt-1 block">
-                      {risk?.desired_severity ?? 'Unknown'}
+                      {risk?.desired_severity ? `${risk.desired_severity} residual risk` : 'Unknown residual risk'}
                     </span>
                   </div>
 
                   <div className={`p-3.5 rounded-xl border ${
-                    isHigherRisk
+                    riskIncreases
                       ? 'bg-red-950/30 border-red-500/40 text-red-300'
-                      : isLowerRisk
+                      : riskDecreases
                       ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
                       : 'bg-slate-900 border-gray-800 text-gray-300'
                   }`}>
                     <span className="text-[10px] font-semibold uppercase tracking-wider block mb-1">Risk Delta</span>
                     <div className="flex items-center gap-2">
-                      {isHigherRisk ? (
+                      {riskIncreases ? (
                         <TrendingUp className="w-5 h-5 text-red-400" />
-                      ) : isLowerRisk ? (
+                      ) : riskDecreases ? (
                         <TrendingDown className="w-5 h-5 text-emerald-400" />
                       ) : (
                         <Check className="w-5 h-5 text-gray-400" />
@@ -195,7 +195,7 @@ export const SimulationPreviewModal: React.FC<SimulationPreviewModalProps> = ({
                       </span>
                     </div>
                     <span className="text-[10px] font-medium mt-1 block">
-                      {isHigherRisk ? 'Risk increases after change' : isLowerRisk ? 'Risk decreases after change' : 'No net score change'}
+                      {riskIncreases ? 'Risk increases after change' : riskDecreases ? 'Risk decreases after change' : 'No net score change'}
                     </span>
                   </div>
                 </div>

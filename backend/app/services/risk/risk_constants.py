@@ -7,7 +7,7 @@ Single source of truth for backend risk engine, API routers, and reports.
 # -------------------------------------------------------------------------
 # SCORING MODEL VERSION
 # -------------------------------------------------------------------------
-RISK_MODEL_VERSION = "phase3-v1"
+RISK_MODEL_VERSION = "phase4-v2"
 
 # -------------------------------------------------------------------------
 # SEVERITY THRESHOLDS (0 - 100 Scale)

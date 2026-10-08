@@ -8,6 +8,7 @@ WITHOUT performing destructive full-graph deletions.
 
 import json
 import logging
+import hashlib
 from typing import Dict, Any, List, Optional
 from app.database import execute_write
 from app.services.scanner.inventory import AWSInventory
@@ -287,9 +288,12 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 execute_write(
                     """
                     MATCH (u:User {id: $u_id}), (g:Group {id: $g_id})
-                    MERGE (u)-[:MEMBER_OF]->(g)
+                    MERGE (u)-[rel:MEMBER_OF]->(g)
+                    SET rel.edge_id=$edge_id, rel.source='IAM', rel.why=$why
                     """,
-                    {"u_id": u_id, "g_id": g_id}
+                    {"u_id": u_id, "g_id": g_id,
+                     "edge_id": hashlib.sha256(f"{u_id}|MEMBER_OF|{g_id}".encode()).hexdigest(),
+                     "why": f"IAM user '{u['name']}' is a member of group '{g_id.rsplit(':', 1)[-1]}'"}
                 )
 
         # 7. Relationship: Group -> Policy (HAS_POLICY) + Reconciliation
@@ -308,9 +312,10 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 execute_write(
                     """
                     MATCH (g:Group {id: $g_id}), (p:Policy {id: $p_id})
-                    MERGE (g)-[:HAS_POLICY]->(p)
+                    MERGE (g)-[rel:HAS_POLICY]->(p)
+                    SET rel.edge_id=$edge_id, rel.source='IAM', rel.why='Policy attachment'
                     """,
-                    {"g_id": g_id, "p_id": p_id}
+                    {"g_id": g_id, "p_id": p_id, "edge_id": hashlib.sha256(f"{g_id}|HAS_POLICY|{p_id}".encode()).hexdigest()}
                 )
 
         # 8. Relationship: User -> Policy (HAS_POLICY) + Reconciliation
@@ -329,9 +334,10 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 execute_write(
                     """
                     MATCH (u:User {id: $u_id}), (p:Policy {id: $p_id})
-                    MERGE (u)-[:HAS_POLICY]->(p)
+                    MERGE (u)-[rel:HAS_POLICY]->(p)
+                    SET rel.edge_id=$edge_id, rel.source='IAM', rel.why='Policy attachment'
                     """,
-                    {"u_id": u_id, "p_id": p_id}
+                    {"u_id": u_id, "p_id": p_id, "edge_id": hashlib.sha256(f"{u_id}|HAS_POLICY|{p_id}".encode()).hexdigest()}
                 )
 
         # 9. Relationship: Role -> Policy (HAS_POLICY) + Reconciliation
@@ -350,9 +356,10 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 execute_write(
                     """
                     MATCH (r:Role {id: $r_id}), (p:Policy {id: $p_id})
-                    MERGE (r)-[:HAS_POLICY]->(p)
+                    MERGE (r)-[rel:HAS_POLICY]->(p)
+                    SET rel.edge_id=$edge_id, rel.source='IAM', rel.why='Policy attachment'
                     """,
-                    {"r_id": r_id, "p_id": p_id}
+                    {"r_id": r_id, "p_id": p_id, "edge_id": hashlib.sha256(f"{r_id}|HAS_POLICY|{p_id}".encode()).hexdigest()}
                 )
 
         # 10. Relationship: User / Role -> Role (CAN_ASSUME) — definitive evidence-verified only + Reconciliation
@@ -467,7 +474,7 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
         )
         for p in inventory.policies:
             p_id = get_node_id("Policy", p['name'])
-            allowed_res, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
+            allowed_res, prov_map, deny_map = evaluate_policy_allows_resources_with_provenance(
                 p['name'], p.get('arn', ''), p.get('document', '{}'), all_resources, account_id=account_id
             )
             valid_res_node_ids = []
@@ -483,6 +490,25 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 DELETE rel
                 """,
                 {"p_id": p_id, "valid_res_node_ids": valid_res_node_ids}
+            )
+
+            deny_resource_ids = []
+            resource_by_key = {
+                str(r.get('id') if r.get('type') == 'EC2' else (r.get('name') or r.get('id'))): r
+                for r in all_resources
+            }
+            for denied_key in deny_map:
+                denied_res = resource_by_key.get(str(denied_key))
+                if denied_res:
+                    ident = denied_res.get('id') if denied_res.get('type') == 'EC2' else (denied_res.get('name') or denied_res.get('id'))
+                    deny_resource_ids.append(get_node_id(denied_res.get('type', 'Resource'), ident))
+            execute_write(
+                """
+                MATCH (p:Policy {id: $p_id})-[rel:DENIES]->(res)
+                WHERE NOT res.id IN $valid_res_node_ids
+                DELETE rel
+                """,
+                {"p_id": p_id, "valid_res_node_ids": deny_resource_ids}
             )
 
             for res in allowed_res:
@@ -525,6 +551,31 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                     }
                 )
 
+            # Persist denies separately so downstream consumers can explain them;
+            # DENIES is intentionally excluded from attack path transitions.
+            for res_key, deny in deny_map.items():
+                res = resource_by_key.get(str(res_key))
+                if not res:
+                    continue
+                rtype = res.get('type', 'Resource')
+                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                res_node_id = get_node_id(rtype, item_ident)
+                execute_write(
+                    """
+                    MATCH (p:Policy {id: $p_id}), (res {id: $res_id})
+                    MERGE (p)-[rel:DENIES]->(res)
+                    SET rel.edge_type='DENIES', rel.source='IAM', rel.policy_name=$policy_name,
+                        rel.policy_arn=$policy_arn, rel.statement_sid=$sid, rel.effect='Deny',
+                        rel.action=$action, rel.resource_arn=$resource_arn, rel.decision='DENIED',
+                        rel.why=$why, rel.evidence=$evidence, rel.edge_id=$edge_id
+                    """,
+                    {"p_id": p_id, "res_id": res_node_id, "policy_name": p['name'],
+                     "policy_arn": p.get('arn', ''), "sid": deny.get('statement_sid', ''),
+                     "action": deny.get('action', ''), "resource_arn": deny.get('resource_arn', ''),
+                     "why": deny.get('why', 'Explicit IAM deny'), "evidence": json.dumps(deny, sort_keys=True),
+                     "edge_id": __import__('hashlib').sha256(f"{p_id}|DENIES|{res_node_id}".encode()).hexdigest()}
+                )
+
         # 12. Relationship: EC2 -> Role (ATTACHED_TO) + Reconciliation
         for e in running_ec2:
             e_id = get_node_id("EC2", e['id'])
@@ -545,9 +596,14 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 execute_write(
                     """
                     MATCH (e:EC2 {id: $e_id}), (r:Role {id: $r_id})
-                    MERGE (e)-[:ATTACHED_TO]->(r)
+                    MERGE (e)-[rel:ATTACHED_TO]->(r)
+                    SET rel.edge_id=$edge_id, rel.source='ROLE_ATTACHMENT', rel.principal=$principal,
+                        rel.principal_type='EC2', rel.region=$region, rel.why=$why
                     """,
-                    {"e_id": e_id, "r_id": r_id}
+                    {"e_id": e_id, "r_id": r_id,
+                     "edge_id": hashlib.sha256(f"{e_id}|ATTACHED_TO|{r_id}".encode()).hexdigest(),
+                     "principal": e['id'], "region": e.get('region', 'unknown'),
+                     "why": f"EC2 instance '{e['id']}' is attached to role '{role_name}'"}
                 )
 
         # 13. Relationship: Lambda -> Role (EXECUTES_WITH) + Reconciliation
@@ -570,9 +626,14 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 execute_write(
                     """
                     MATCH (l:Lambda {id: $l_id}), (r:Role {id: $r_id})
-                    MERGE (l)-[:EXECUTES_WITH]->(r)
+                    MERGE (l)-[rel:EXECUTES_WITH]->(r)
+                    SET rel.edge_id=$edge_id, rel.source='LAMBDA_CONFIGURATION', rel.principal=$principal,
+                        rel.principal_type='Lambda', rel.region=$region, rel.why=$why
                     """,
-                    {"l_id": l_id, "r_id": r_id}
+                    {"l_id": l_id, "r_id": r_id,
+                     "edge_id": hashlib.sha256(f"{l_id}|EXECUTES_WITH|{r_id}".encode()).hexdigest(),
+                     "principal": l['name'], "region": l.get('region', 'unknown'),
+                     "why": f"Lambda function '{l['name']}' executes with role '{exec_role}'"}
                 )
 
         # 14. Configuration Node Reconciliation: prune stale AWS inventory nodes

@@ -16,9 +16,9 @@ apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('cloudscope_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
-  } else {
-    // In dev mode, send active dev role and user ID
-    const devRole = localStorage.getItem('cloudscope_dev_role') || 'ADMINISTRATOR';
+  } else if (import.meta.env.DEV) {
+    // Development-only role headers are ignored by production builds.
+    const devRole = localStorage.getItem('cloudscope_dev_role') || 'VIEWER';
     const devUser = localStorage.getItem('cloudscope_dev_user') || 'admin-user';
     config.headers['X-Dev-Role'] = devRole;
     config.headers['X-Dev-User'] = devUser;

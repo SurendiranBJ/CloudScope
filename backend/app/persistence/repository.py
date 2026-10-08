@@ -8,6 +8,9 @@ import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from sqlalchemy import desc
 
@@ -30,6 +33,27 @@ except Exception as e:
 
 SNAPSHOT_RETENTION_COUNT = int(os.getenv("SNAPSHOT_RETENTION_COUNT", "10"))
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
+
+
+def _json_default(value: Any):
+    """Serialize scan evidence deterministically without losing common Python types."""
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=lambda item: str(item))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (datetime,)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    raise TypeError(f"Unsupported JSON value in durable snapshot: {type(value).__name__}")
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, default=_json_default, sort_keys=True, separators=(",", ":"))
 
 
 # ==============================================================================
@@ -91,9 +115,9 @@ def record_scan_run_finish(
             run.duration_seconds = duration_seconds
             run.snapshot_id = snapshot_id
             run.active_phase = "COMPLETED" if status in ("SUCCESS", "PARTIAL") else "FAILED"
-            run.resolved_regions = json.dumps(resolved_regions or [])
-            run.successful_regions = json.dumps(successful_regions or [])
-            run.failed_regions = json.dumps(failed_regions or [])
+            run.resolved_regions = _json_dumps(resolved_regions or [])
+            run.successful_regions = _json_dumps(successful_regions or [])
+            run.failed_regions = _json_dumps(failed_regions or [])
             run.error_summary = error_summary
             run.completed_collectors = completed_collectors
     except Exception as e:
@@ -152,6 +176,7 @@ def save_authoritative_snapshot(
     policies: Optional[List[dict]] = None,
     resources: Optional[List[dict]] = None,
     alerts: Optional[List[dict]] = None,
+    correlated_risks: Optional[List[dict]] = None,
     findings: Optional[List[dict]] = None,
     risks: Optional[List[dict]] = None,
     attack_paths: Optional[List[dict]] = None,
@@ -186,25 +211,27 @@ def save_authoritative_snapshot(
             snap.published_at = published_at
             snap.status = status
             snap.duration_seconds = duration_seconds
-            snap.regions_json = json.dumps(reg_meta)
-            snap.resource_counts_json = json.dumps(res_cnt)
-            snap.finding_counts_json = json.dumps(find_cnt)
-            snap.metadata_json = json.dumps(scan_metadata or {})
+            snap.regions_json = _json_dumps(reg_meta)
+            snap.collection_completeness_json = _json_dumps(collection_completeness or {})
+            snap.resource_counts_json = _json_dumps(res_cnt)
+            snap.finding_counts_json = _json_dumps(find_cnt)
+            snap.metadata_json = _json_dumps(scan_metadata or {})
 
             # Authoritative complete collections
-            snap.users_json = json.dumps(users or [])
-            snap.groups_json = json.dumps(groups or [])
-            snap.roles_json = json.dumps(roles or [])
-            snap.policies_json = json.dumps(policies or [])
-            snap.resources_json = json.dumps(resources or [])
-            snap.alerts_json = json.dumps(alerts or [])
-            snap.findings_json = json.dumps(findings or [])
-            snap.risks_json = json.dumps(risks or [])
-            snap.attack_paths_json = json.dumps(attack_paths or [])
-            snap.graph_json = json.dumps(graph or [])
-            snap.effective_access_json = json.dumps(effective_access or [])
-            snap.dashboard_json = json.dumps(dashboard or {})
-            snap.scan_metadata_json = json.dumps(scan_metadata or {})
+            snap.users_json = _json_dumps(users or [])
+            snap.groups_json = _json_dumps(groups or [])
+            snap.roles_json = _json_dumps(roles or [])
+            snap.policies_json = _json_dumps(policies or [])
+            snap.resources_json = _json_dumps(resources or [])
+            snap.alerts_json = _json_dumps(alerts or [])
+            snap.correlated_risks_json = _json_dumps(correlated_risks or [])
+            snap.findings_json = _json_dumps(findings or [])
+            snap.risks_json = _json_dumps(risks or [])
+            snap.attack_paths_json = _json_dumps(attack_paths or [])
+            snap.graph_json = _json_dumps(graph or [])
+            snap.effective_access_json = _json_dumps(effective_access or [])
+            snap.dashboard_json = _json_dumps(dashboard or {})
+            snap.scan_metadata_json = _json_dumps(scan_metadata or {})
             snap.is_current = 1
 
             # 3. Transactionally advance the singleton current snapshot pointer
@@ -271,13 +298,14 @@ def load_authoritative_snapshot(snapshot_id: Optional[str] = None) -> Optional[D
                 "status": snap.status,
                 "duration_seconds": snap.duration_seconds,
                 "region_metadata": json.loads(snap.regions_json or "{}"),
-                "collection_completeness": json.loads(snap.regions_json or "{}"),
+                "collection_completeness": json.loads(getattr(snap, "collection_completeness_json", "{}") or "{}"),
                 "users": json.loads(snap.users_json or "[]"),
                 "groups": json.loads(snap.groups_json or "[]"),
                 "roles": json.loads(snap.roles_json or "[]"),
                 "policies": json.loads(snap.policies_json or "[]"),
                 "resources": json.loads(snap.resources_json or "[]"),
                 "alerts": json.loads(snap.alerts_json or "[]"),
+                "correlated_risks": json.loads(getattr(snap, "correlated_risks_json", "[]") or "[]"),
                 "findings": json.loads(snap.findings_json or "[]"),
                 "risks": json.loads(snap.risks_json or "[]"),
                 "attack_paths": json.loads(snap.attack_paths_json or "[]"),
@@ -315,10 +343,10 @@ def record_snapshot_metadata(
                     published_at=published_at,
                     status=status,
                     duration_seconds=duration_seconds,
-                    regions_json=json.dumps(regions or {}),
-                    resource_counts_json=json.dumps(resource_counts or {}),
-                    finding_counts_json=json.dumps(finding_counts or {}),
-                    metadata_json=json.dumps(metadata or {}),
+                    regions_json=_json_dumps(regions or {}),
+                    resource_counts_json=_json_dumps(resource_counts or {}),
+                    finding_counts_json=_json_dumps(finding_counts or {}),
+                    metadata_json=_json_dumps(metadata or {}),
                     is_current=1,
                 )
                 session.add(snap)
@@ -529,7 +557,7 @@ def record_audit_event(
                 result=result,
                 ip_address=ip_address,
                 user_agent=user_agent,
-                metadata_json=json.dumps(metadata or {}),
+                metadata_json=_json_dumps(metadata or {}),
             )
             session.add(ev)
     except Exception as e:

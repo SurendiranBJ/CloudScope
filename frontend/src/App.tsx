@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ScanLifecycleProvider } from './context/ScanLifecycleContext.tsx';
@@ -8,21 +8,22 @@ import { Navbar } from './components/Navbar';
 import { SimulationBanner } from './components/SimulationBanner';
 import { SecurityNoticeBanner } from './components/SecurityNoticeBanner';
 import { ProtectedRoute } from './components/ProtectedRoute';
-import { Dashboard } from './pages/Dashboard';
-import { Resources } from './pages/Resources';
-import { IdentityGraphPage } from './pages/IdentityGraphPage';
-import { AttackPaths } from './pages/AttackPaths';
-import { RiskAssessment } from './pages/RiskAssessment';
-import { AttackSimulation } from './pages/AttackSimulation';
-import { Alerts } from './pages/Alerts';
-import { Copilot } from './pages/Copilot';
-import { Reports } from './pages/Reports';
-import { SettingsPage } from './pages/Settings';
-import { Policies } from './pages/Policies';
-import { Relationships } from './pages/Relationships';
-import { Changes } from './pages/Changes';
-import { Operations } from './pages/Operations';
-import { Forbidden } from './pages/Forbidden';
+
+const Dashboard = lazy(async () => ({ default: (await import('./pages/Dashboard')).Dashboard }));
+const Resources = lazy(async () => ({ default: (await import('./pages/Resources')).Resources }));
+const IdentityGraphPage = lazy(async () => ({ default: (await import('./pages/IdentityGraphPage')).IdentityGraphPage }));
+const AttackPaths = lazy(async () => ({ default: (await import('./pages/AttackPaths')).AttackPaths }));
+const RiskAssessment = lazy(async () => ({ default: (await import('./pages/RiskAssessment')).RiskAssessment }));
+const AttackSimulation = lazy(async () => ({ default: (await import('./pages/AttackSimulation')).AttackSimulation }));
+const Alerts = lazy(async () => ({ default: (await import('./pages/Alerts')).Alerts }));
+const Copilot = lazy(async () => ({ default: (await import('./pages/Copilot')).Copilot }));
+const Reports = lazy(async () => ({ default: (await import('./pages/Reports')).Reports }));
+const SettingsPage = lazy(async () => ({ default: (await import('./pages/Settings')).SettingsPage }));
+const Policies = lazy(async () => ({ default: (await import('./pages/Policies')).Policies }));
+const Relationships = lazy(async () => ({ default: (await import('./pages/Relationships')).Relationships }));
+const Changes = lazy(async () => ({ default: (await import('./pages/Changes')).Changes }));
+const Operations = lazy(async () => ({ default: (await import('./pages/Operations')).Operations }));
+const Forbidden = lazy(async () => ({ default: (await import('./pages/Forbidden')).Forbidden }));
 
 const queryClient = new QueryClient();
 
@@ -51,6 +52,7 @@ function App() {
                 <main className="flex-1 min-h-0 overflow-hidden flex flex-col">
                   {/* Simulation active banner */}
                   <SimulationBanner />
+                  <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-enterprise-subtext" role="status">Loading view…</div>}>
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/resources" element={<Resources search={searchQuery} />} />
@@ -75,6 +77,7 @@ function App() {
                     />
                     <Route path="/forbidden" element={<Forbidden />} />
                   </Routes>
+                  </Suspense>
                 </main>
               </div>
             </div>

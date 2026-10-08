@@ -22,6 +22,6 @@ export interface ReportsSummary {
 }
 
 export const getReportsSummary = async (): Promise<ReportsSummary> => {
-  const res = await apiClient.get<APIResponse<ReportsSummary>>('/reports');
+  const res = await apiClient.get<APIResponse<ReportsSummary>>('/reports/summary');
   return res.data.data;
 };

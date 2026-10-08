@@ -103,6 +103,7 @@ class TestSnapshotDurabilityAndRecovery:
             dashboard=dashboard,
             region_metadata={"regions": ["us-east-1"]},
             collection_completeness={"us-east-1": "SUCCESS"},
+            correlated_risks=[{"id": "correlated-1"}],
             scan_metadata={"scan_id": snap_a_id, "duration_seconds": 12.5},
         )
         assert published_a.snapshot_id == snap_a_id
@@ -116,6 +117,8 @@ class TestSnapshotDurabilityAndRecovery:
         assert len(sql_snap["resources"]) == 1
         assert sql_snap["resources"][0]["name"] == "Production-App-Server"
         assert sql_snap["dashboard"]["security_score"] == 95
+        assert sql_snap["collection_completeness"] == {"us-east-1": "SUCCESS"}
+        assert sql_snap["correlated_risks"] == [{"id": "correlated-1"}]
 
         # 3. Simulate Total Loss of Redis AND In-Memory cache (backend crash & restart)
         # Wipe in-memory SnapshotStore
@@ -133,6 +136,8 @@ class TestSnapshotDurabilityAndRecovery:
         assert recovered.snapshot_id == snap_a_id
         assert len(recovered.policies) == 1
         assert len(recovered.resources) == 1
+        assert recovered.collection_completeness == {"us-east-1": "SUCCESS"}
+        assert list(recovered.correlated_risks) == [{"id": "correlated-1"}]
 
         # 5. Verify all read endpoints serve Snapshot A data with matching snapshot_id
         # Endpoint: /api/v1/policies
@@ -240,3 +245,21 @@ class TestSnapshotDurabilityAndRecovery:
         state_3 = get_finding_state(finding_id)
         assert state_3["status"] == "RESOLVED"
         assert state_3["resolved_at"] == resolved_time
+
+    def test_sql_pointer_overrides_stale_redis_pointer(self):
+        snap_sql = f"snap-sql-{int(time.time() * 1000)}"
+        snap_cache = f"snap-cache-{int(time.time() * 1000)}"
+        snapshot_store.publish(
+            snapshot_id=snap_sql,
+            status="SUCCESS",
+            published_at="2026-10-01T00:00:00Z",
+            users=[{"name": "sql-authoritative"}],
+        )
+        cache.set(f"v1:snapshot:{snap_cache}", {"snapshot_id": snap_cache, "users": [{"name": "stale-cache"}]})
+        cache.set("v1:current_snapshot_id", snap_cache)
+        snapshot_store.clear()
+
+        current = snapshot_store.get_current()
+        assert current is not None
+        assert current.snapshot_id == snap_sql
+        assert current.users[0]["name"] == "sql-authoritative"

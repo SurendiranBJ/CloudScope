@@ -29,6 +29,10 @@ async def lifespan(app: FastAPI):
     # 1. Enforce centralized startup configuration validation
     from app.security.config_validator import validate_startup_configuration
     validate_startup_configuration()
+    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        from app.cache import cache
+        if not cache.check_redis():
+            raise RuntimeError("Redis is mandatory in production and must be reachable at startup")
 
     # Display DEV_AUTH_MODE security warning if enabled
     dev_auth = os.getenv("DEV_AUTH_MODE", "false").lower() == "true"
@@ -127,6 +131,20 @@ async def prometheus_metrics_middleware(request: Request, call_next):
         ).observe(duration)
 
     return response
+
+
+@app.middleware("http")
+async def published_snapshot_middleware(request: Request, call_next):
+    """Keep all security-data reads in one request on one published version."""
+    if not request.url.path.startswith("/api/v1/"):
+        return await call_next(request)
+
+    from app.services.scanner.current_snapshot import pin_request_snapshot, reset_request_snapshot
+    token = pin_request_snapshot()
+    try:
+        return await call_next(request)
+    finally:
+        reset_request_snapshot(token)
 
 
 # ---------------------------------------------------------------------------

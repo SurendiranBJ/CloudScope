@@ -18,22 +18,23 @@ import { jsPDF } from 'jspdf';
 export const Reports: React.FC = () => {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadSuccess, setDownloadSuccess] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  const { data: reportsData } = useQuery({
+  const { data: reportsData, isLoading: reportsLoading, isError: reportsError } = useQuery({
     queryKey: ['reportsSummary'],
     queryFn: getReportsSummary,
     refetchInterval: 30000
   });
 
-  const { data: graphData } = useQuery({
+  const { data: graphData, isLoading: graphLoading, isError: graphError } = useQuery({
     queryKey: ['graphElements'],
     queryFn: getGraphElements
   });
 
   const reportTypes = [
-    { id: 'pdf', title: 'Security Audit Assessment Profile', format: 'PDF Document', desc: 'A complete management-level overview detailing critical attack paths, compliance deviations, and prioritized remediations list.', icon: FileText },
-    { id: 'csv', title: 'Asset Configuration Ledger', format: 'CSV spreadsheet', desc: 'Flat tabular manifest of all IAM users, trust documents, EC2 profiles, and credentials status tags.', icon: Download },
-    { id: 'json', title: 'Attack Path Diffs Payload', format: 'JSON Dataset', desc: 'Raw graph representation including vertices and assumed relationship metadata edges for external API integrations.', icon: FileJson },
+    { id: 'pdf', title: 'Security Audit Summary', format: 'PDF Document', desc: 'Management-level security score and measured control coverage with supporting evidence details.', icon: FileText },
+    { id: 'csv', title: 'Security Control Coverage', format: 'CSV spreadsheet', desc: 'Tabular export of measured controls, coverage scores, and evidence details.', icon: Download },
+    { id: 'json', title: 'Security Assessment Data', format: 'JSON Dataset', desc: 'Structured findings, control coverage, and graph nodes and relationships for integrations.', icon: FileJson },
     { id: 'svg', title: 'Identity Graph Architecture', format: 'SVG Graphic', desc: 'Vector drawing exporting the current visual state, groups, and connections in the Explorer canvas.', icon: Network }
   ];
 
@@ -74,6 +75,7 @@ export const Reports: React.FC = () => {
       };
     });
 
+    const escapeXml = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]!);
     let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">\n`;
     svgContent += `  <rect width="100%" height="100%" fill="#0B1120"/>\n`;
     svgContent += `  <text x="30" y="40" fill="#FFFFFF" font-family="sans-serif" font-size="20" font-weight="bold">CloudScope - Identity Graph Architecture</text>\n`;
@@ -96,8 +98,8 @@ export const Reports: React.FC = () => {
       const color = typeColors[n.type] || '#3B82F6';
       svgContent += `    <g transform="translate(${n.x}, ${n.y})">\n`;
       svgContent += `      <circle r="18" fill="${color}" stroke="#FFFFFF" stroke-width="2"/>\n`;
-      svgContent += `      <text y="32" fill="#E5E7EB" font-family="sans-serif" font-size="11" font-weight="bold" text-anchor="middle">${n.label}</text>\n`;
-      svgContent += `      <text y="44" fill="#9CA3AF" font-family="sans-serif" font-size="9" text-anchor="middle">${n.type}</text>\n`;
+      svgContent += `      <text y="32" fill="#E5E7EB" font-family="sans-serif" font-size="11" font-weight="bold" text-anchor="middle">${escapeXml(n.label)}</text>\n`;
+      svgContent += `      <text y="44" fill="#9CA3AF" font-family="sans-serif" font-size="9" text-anchor="middle">${escapeXml(n.type)}</text>\n`;
       svgContent += `    </g>\n`;
     });
     svgContent += `  </g>\n`;
@@ -106,9 +108,34 @@ export const Reports: React.FC = () => {
     return svgContent;
   };
 
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Keep the object URL alive through the browser's download handoff.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const csvCell = (value: unknown) => {
+    let text = String(value ?? '');
+    // Prevent spreadsheet formula execution for untrusted exported values.
+    if (/^[\s]*[=+@\-]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+  };
+
   const handleDownload = async (id: string) => {
+    if (reportsLoading || reportsError || ((id === 'json' || id === 'svg') && (graphLoading || graphError))) {
+      setDownloadError('Report data is still loading or unavailable. Retry after the report summary and graph finish loading.');
+      return;
+    }
     setDownloading(id);
     setDownloadSuccess(null);
+    setDownloadError(null);
 
     try {
       if (id === 'pdf') {
@@ -127,7 +154,7 @@ export const Reports: React.FC = () => {
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(156, 163, 175);
         doc.text(`Generated: ${now}`, 14, 30);
-        doc.text('Platform: IdentityScope AWS IAM Risk Engine', 14, 36);
+        doc.text('Platform: CloudScope AWS Security Analysis', 14, 36);
 
         // Line separator
         doc.setDrawColor(71, 85, 105);
@@ -169,44 +196,46 @@ export const Reports: React.FC = () => {
           doc.text('No scan data available. Trigger a discovery scan to evaluate security control coverage.', 20, yPos);
         } else {
           standards.forEach((std: any) => {
+            const detailLines = doc.splitTextToSize(String(std.details || ''), 170);
+            const cardHeight = Math.max(22, 13 + detailLines.length * 4.5);
+            if (yPos + cardHeight > 280) {
+              doc.addPage();
+              doc.setFillColor(11, 17, 32);
+              doc.rect(0, 0, 210, 297, 'F');
+              yPos = 20;
+            }
             doc.setFillColor(15, 23, 42);
-            doc.roundedRect(14, yPos, 182, 22, 2, 2, 'F');
+            doc.roundedRect(14, yPos, 182, cardHeight, 2, 2, 'F');
 
             doc.setFontSize(11);
             doc.setFont('helvetica', 'bold');
             doc.setTextColor(255, 255, 255);
-            doc.text(std.name, 20, yPos + 9);
+            doc.text(String(std.name || 'Unnamed control'), 20, yPos + 8);
 
             doc.setFontSize(10);
             doc.setTextColor(245, 158, 11);
-            doc.text(`${std.score}% Coverage`, 155, yPos + 9);
+            doc.text(`${std.score}% Coverage`, 155, yPos + 8);
 
             doc.setFontSize(9);
             doc.setFont('helvetica', 'normal');
             doc.setTextColor(156, 163, 175);
-            doc.text(std.details, 20, yPos + 16);
+            doc.text(detailLines, 20, yPos + 15);
 
-            yPos += 27;
+            yPos += cardHeight + 5;
           });
         }
 
         doc.save('cloudscope-security-assessment.pdf');
       } else if (id === 'csv') {
-        let content = 'Security Control,Coverage Score,Status Details\n';
+        let content = 'Security Control,Coverage Score,Status Details\r\n';
         const standards = reportsData?.compliance || [];
         standards.forEach((s: any) => {
-          content += `"${s.name}",${s.score}%,"${s.details}"\n`;
+          content += `${csvCell(s.name)},${csvCell(s.score)},${csvCell(s.details)}\r\n`;
         });
-        const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'cloudscope-control-coverage.csv';
-        a.click();
-        URL.revokeObjectURL(url);
+        downloadBlob(new Blob(['\uFEFF', content], { type: 'text/csv;charset=utf-8;' }), 'cloudscope-control-coverage.csv');
       } else if (id === 'json') {
         const content = JSON.stringify({
-          timestamp: new Date().toISOString(),
+          exportedAt: new Date().toISOString(),
           platform: 'CloudScope AWS IAM Security Analysis',
           hasData: reportsData?.has_data ?? ((reportsData?.compliance || []).length > 0),
           securityScore: reportsData?.summary?.score ?? null,
@@ -216,26 +245,15 @@ export const Reports: React.FC = () => {
           findingsByCategory: reportsData?.findings_by_category || {},
           controlCoverage: reportsData?.compliance || [],
           canonicalFindings: reportsData?.findings || [],
-          graphNodesCount: (graphData || []).filter(e => !e.data.source).length,
-          graphEdgesCount: (graphData || []).filter(e => e.data.source).length
+          graph: {
+            nodes: (graphData || []).filter(e => !e.data.source),
+            relationships: (graphData || []).filter(e => !!e.data.source)
+          }
         }, null, 2);
-
-        const blob = new Blob([content], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'cloudscope-security-findings.json';
-        a.click();
-        URL.revokeObjectURL(url);
+        downloadBlob(new Blob([content], { type: 'application/json;charset=utf-8' }), 'cloudscope-security-assessment.json');
       } else if (id === 'svg') {
         const svgString = generateSVGGraph(graphData || []);
-        const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'cloudscope-identity-graph.svg';
-        a.click();
-        URL.revokeObjectURL(url);
+        downloadBlob(new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' }), 'cloudscope-identity-graph.svg');
       }
 
       setDownloading(null);
@@ -243,6 +261,8 @@ export const Reports: React.FC = () => {
       setTimeout(() => setDownloadSuccess(null), 3000);
     } catch (err) {
       console.error(`Export failed for ${id}:`, err);
+      setDownloadError(`Could not export ${id.toUpperCase()} report. Please retry.`);
+    } finally {
       setDownloading(null);
     }
   };
@@ -282,7 +302,15 @@ export const Reports: React.FC = () => {
           <h2 className="text-xs font-bold text-white uppercase tracking-wider">
             Security Control Coverage
           </h2>
-          {!hasData ? (
+          {reportsLoading ? (
+            <div className="p-8 bg-enterprise-card border border-enterprise-border rounded-xl text-center text-xs text-enterprise-subtext" role="status">
+              Loading published security report…
+            </div>
+          ) : reportsError ? (
+            <div className="p-8 bg-enterprise-card border border-enterprise-border rounded-xl text-center text-xs text-enterprise-critical" role="alert">
+              Could not load report data. Refresh the page and try again.
+            </div>
+          ) : !hasData ? (
             <div className="p-8 bg-enterprise-card border border-enterprise-border rounded-xl text-center space-y-2">
               <p className="text-xs font-semibold text-gray-300">No scan data available</p>
               <p className="text-[11px] text-enterprise-subtext">Trigger a scan from the Control Center to evaluate verified AWS security controls.</p>
@@ -351,6 +379,7 @@ export const Reports: React.FC = () => {
         <h2 className="text-xs font-bold text-white uppercase tracking-wider">
           Generate & Export Report Documents
         </h2>
+        {downloadError && <p role="alert" className="text-xs text-enterprise-critical">{downloadError}</p>}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {reportTypes.map((report) => {
             const isDownloading = downloading === report.id;
@@ -379,7 +408,7 @@ export const Reports: React.FC = () => {
                 {/* Export Action Trigger */}
                 <button
                   onClick={() => handleDownload(report.id)}
-                  disabled={!!downloading}
+                  disabled={!!downloading || reportsLoading || reportsError || ((report.id === 'json' || report.id === 'svg') && (graphLoading || graphError))}
                   className="px-3.5 py-2 hover:bg-gray-800 text-enterprise-accent hover:text-white rounded-lg border border-enterprise-border hover:border-gray-700 font-semibold transition-colors flex items-center justify-center shrink-0 w-32"
                 >
                   <AnimatePresence mode="wait">

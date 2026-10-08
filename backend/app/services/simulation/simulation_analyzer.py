@@ -115,8 +115,10 @@ def build_desired_analysis(
         "current_score": current_global_score,
         "desired_score": desired_global_score,
         "delta": risk_delta,
-        "current_severity": get_severity_label(current_global_score),
-        "desired_severity": get_severity_label(desired_global_score),
+        # Scores are security posture (higher is better); risk severity is the
+        # inverse so that high posture scores do not appear as critical risk.
+        "current_severity": get_severity_label(100 - current_global_score),
+        "desired_severity": get_severity_label(100 - desired_global_score),
         "top_reasons": top_reasons,
         "simulation_active": True,
     }
@@ -625,11 +627,11 @@ def _build_summary(
 
     parts = []
     if delta > 0:
-        parts.append(f"Risk increased by {delta} points to {desired_sev.upper()}.")
+        parts.append(f"Security posture improved by {delta} points; residual risk is {desired_sev.upper()}.")
     elif delta < 0:
-        parts.append(f"Risk decreased by {abs(delta)} points to {desired_sev.upper()}.")
+        parts.append(f"Security posture declined by {abs(delta)} points; residual risk is {desired_sev.upper()}.")
     else:
-        parts.append(f"Risk unchanged ({desired_sev.upper()}).")
+        parts.append(f"Security posture unchanged; residual risk is {desired_sev.upper()}.")
 
     if new_paths:
         parts.append(f"{new_paths} new attack path(s) introduced.")

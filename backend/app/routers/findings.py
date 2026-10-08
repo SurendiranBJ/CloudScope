@@ -11,11 +11,13 @@ from app.schemas import APIResponse, SecurityFinding
 from app.services.findings.finding_service import finding_service
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
+    get_current_findings,
     get_current_snapshot_id,
     get_current_snapshot_published_at,
     has_published_snapshot,
 )
 from app.cache import cache
+from app.services.risk.risk_constants import RISK_MODEL_VERSION
 
 router = APIRouter(prefix="/findings", tags=["Security Findings"])
 
@@ -99,9 +101,16 @@ def get_security_findings(
     if offset is not None and offset < 0:
         raise HTTPException(status_code=400, detail="Query parameter 'offset' must be greater than or equal to 0.")
 
-    findings = finding_service.get_all_findings()
+    # Findings are read from the published scan payload. The lifecycle service
+    # is updated while a candidate scan is being reconciled and may therefore
+    # contain unpublished rows until the scan completes.
+    published_findings = get_current_findings()
+    findings = [
+        item if isinstance(item, SecurityFinding) else SecurityFinding(**item)
+        for item in published_findings
+    ]
 
-    if not findings and not scan_manager.is_running:
+    if not findings and not has_published_snapshot() and not scan_manager.is_running:
         scan_manager.trigger_async_scan()
 
     filtered = findings
@@ -166,7 +175,11 @@ def get_finding_by_id(
     current_user: AuthenticatedUser = Depends(require_viewer)
 ):
     """Retrieve detailed information for a specific security finding."""
-    finding = finding_service.get_finding_by_id(finding_id)
+    finding = next((
+        item if isinstance(item, SecurityFinding) else SecurityFinding(**item)
+        for item in get_current_findings()
+        if (item.id if isinstance(item, SecurityFinding) else item.get("id")) == finding_id
+    ), None)
     if not finding:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
@@ -186,7 +199,11 @@ def get_finding_evidence(
     current_user: AuthenticatedUser = Depends(require_viewer)
 ):
     """Retrieve detailed provenance and structured evidence for a security finding."""
-    finding = finding_service.get_finding_by_id(finding_id)
+    finding = next((
+        item if isinstance(item, SecurityFinding) else SecurityFinding(**item)
+        for item in get_current_findings()
+        if (item.id if isinstance(item, SecurityFinding) else item.get("id")) == finding_id
+    ), None)
     if not finding:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
@@ -196,7 +213,7 @@ def get_finding_evidence(
         "category": finding.category,
         "severity": finding.severity,
         "risk_score": finding.riskScore,
-        "risk_model_version": getattr(finding, "risk_model_version", None) or "phase3-v1",
+        "risk_model_version": getattr(finding, "risk_model_version", None) or RISK_MODEL_VERSION,
         "source": finding.source,
         "source_types": getattr(finding, "source_types", None) or [finding.source],
         "source_snapshot_id": getattr(finding, "source_snapshot_id", None) or get_current_snapshot_id(),

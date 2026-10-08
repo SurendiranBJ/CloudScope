@@ -22,6 +22,7 @@ from app.security.dependencies import require_viewer, require_security_officer
 from app.security.models import AuthenticatedUser
 from app.security.rate_limiter import rate_limit
 from app.services.audit.audit_service import audit_service
+from app.services.scanner.current_snapshot import get_published_snapshot
 
 logger = logging.getLogger("backend")
 router = APIRouter(tags=["Reports"])
@@ -31,14 +32,25 @@ def _compute_reports_from_cache() -> dict:
     """Derive real security control coverage scores from cached scan inventory data.
     Returns a dict matching the frontend's ReportsSummary shape.
     """
-    users = cache.get("v1:users") or []
-    roles = cache.get("v1:roles") or []
-    risks = cache.get("v1:risks") or []
-    findings = cache.get("v1:findings") or []
-    alerts = cache.get("v1:alerts") or []
-    resources = cache.get("v1:resources") or []
-    paths = cache.get("v1:attack-paths") or []
-    global_posture = cache.get("v1:global_posture")
+    snap = get_published_snapshot()
+    if snap is not None:
+        users = list(snap.users)
+        roles = list(snap.roles)
+        risks = list(snap.risks)
+        findings = list(snap.findings)
+        alerts = list(snap.alerts)
+        resources = list(snap.resources)
+        paths = list(snap.attack_paths)
+        global_posture = snap.dashboard.get("globalPosture")
+    else:
+        users = cache.get("v1:users") or []
+        roles = cache.get("v1:roles") or []
+        risks = cache.get("v1:risks") or []
+        findings = cache.get("v1:findings") or []
+        alerts = cache.get("v1:alerts") or []
+        resources = cache.get("v1:resources") or []
+        paths = cache.get("v1:attack-paths") or []
+        global_posture = cache.get("v1:global_posture")
 
     # If completely cold with zero scan data, return explicit empty data coverage state
     if not users and not roles and not resources and not risks and not paths and not findings:
@@ -173,7 +185,8 @@ def get_reports_summary(
     current_user: AuthenticatedUser = Depends(require_viewer)
 ):
     """Return verified security control coverage report. Accessible to VIEWER role."""
-    users = cache.get("v1:users") or []
+    snap = get_published_snapshot()
+    users = list(snap.users) if snap is not None else (cache.get("v1:users") or [])
     if not users and not scan_manager.is_running:
         scan_manager.trigger_async_scan()
 
@@ -199,8 +212,9 @@ def export_security_report_json(
     Includes bounded export limits to prevent memory exhaustion.
     """
     report = _compute_reports_from_cache()
-    scan_meta = cache.get("v1:scan_metadata") or {}
-    findings = cache.get("v1:findings") or []
+    snap = get_published_snapshot()
+    scan_meta = dict(snap.scan_metadata) if snap is not None else (cache.get("v1:scan_metadata") or {})
+    findings = list(snap.findings) if snap is not None else (cache.get("v1:findings") or [])
 
     bounded_findings = [
         f if isinstance(f, dict) else f.model_dump()

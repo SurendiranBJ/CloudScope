@@ -9,6 +9,16 @@ from app.services.attack.path_engine import (
 )
 
 
+def _add_verified_allow(graph, source, target, action="s3:GetObject"):
+    """Build a policy transition with the evidence the path engine requires."""
+    graph.add_edge(
+        source, target, label="ALLOWS", relationship="ALLOWS",
+        decision="ALLOWED", effect="Allow", action=action,
+        statement_sid="VerifiedTestStatement", condition_status="NONE",
+        evidence={"statement_sid": "VerifiedTestStatement", "effect": "Allow", "action": action},
+    )
+
+
 class TestFindAttackPaths:
     """Verify that find_attack_paths discovers expected paths in a
     synthetic graph conforming to canonical AWS IAM semantics."""
@@ -29,7 +39,7 @@ class TestFindAttackPaths:
 
         G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
         G.add_edge("rol-001", "pol-001", label="HAS_POLICY")
-        G.add_edge("pol-001", "res-001", label="ALLOWS")
+        _add_verified_allow(G, "pol-001", "res-001")
         return G
 
     def test_path_is_discovered(self):
@@ -103,12 +113,12 @@ class TestFindAttackPaths:
         # Path 1: alice -> DevRole -> DevPolicy -> ProductionDB
         G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
         G.add_edge("rol-001", "pol-001", label="HAS_POLICY")
-        G.add_edge("pol-001", "res-001", label="ALLOWS")
+        _add_verified_allow(G, "pol-001", "res-001", "rds:DescribeDBInstances")
 
         # Path 2: alice -> SecRole -> SecPolicy -> ProductionDB
         G.add_edge("usr-001", "rol-002", label="CAN_ASSUME")
         G.add_edge("rol-002", "pol-002", label="HAS_POLICY")
-        G.add_edge("pol-002", "res-001", label="ALLOWS")
+        _add_verified_allow(G, "pol-002", "res-001", "rds:DescribeDBInstances")
 
         paths = find_attack_paths(G)
         db_paths = [p for p in paths if p["destination"] == "res-001"]
@@ -161,12 +171,12 @@ class TestFindAttackPaths:
         # Also User -> Role -> Policy -> Bucket2 & DbPassword
         G.add_edge("usr-001", "grp-001", label="MEMBER_OF")
         G.add_edge("grp-001", "pol-001", label="HAS_POLICY")
-        G.add_edge("pol-001", "s3-001", label="ALLOWS")
+        _add_verified_allow(G, "pol-001", "s3-001")
 
         G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
         G.add_edge("rol-001", "pol-001", label="HAS_POLICY")
-        G.add_edge("pol-001", "s3-002", label="ALLOWS")
-        G.add_edge("pol-001", "sec-001", label="ALLOWS")
+        _add_verified_allow(G, "pol-001", "s3-002")
+        _add_verified_allow(G, "pol-001", "sec-001", "secretsmanager:GetSecretValue")
 
         desc, count = compute_effective_blast_radius("usr-001", G)
         # Even though there are 4 identity/privilege nodes (User, Group, Role, Policy),
@@ -184,10 +194,10 @@ class TestFindAttackPaths:
         G.add_node("res-high", label="HighSecret", type="Secrets", riskScore=95)
 
         G.add_edge("usr-001", "pol-001", label="HAS_POLICY")
-        G.add_edge("pol-001", "res-low", label="ALLOWS")
+        _add_verified_allow(G, "pol-001", "res-low")
 
         G.add_edge("usr-001", "pol-002", label="HAS_POLICY")
-        G.add_edge("pol-002", "res-high", label="ALLOWS")
+        _add_verified_allow(G, "pol-002", "res-high", "secretsmanager:GetSecretValue")
 
         paths = find_attack_paths(G)
         assert len(paths) >= 2
@@ -220,16 +230,16 @@ class TestFindAttackPaths:
 
         # Direct policy edges to compute & S3 & DynamoDB
         G.add_edge("usr-001", "pol-compute", label="HAS_POLICY")
-        G.add_edge("pol-compute", "lambda-001", label="ALLOWS")
-        G.add_edge("pol-compute", "ec2-001", label="ALLOWS")
-        G.add_edge("pol-compute", "s3-001", label="ALLOWS")
-        G.add_edge("pol-compute", "dyn-001", label="ALLOWS")
+        _add_verified_allow(G, "pol-compute", "lambda-001", "lambda:InvokeFunction")
+        _add_verified_allow(G, "pol-compute", "ec2-001", "ec2:DescribeInstances")
+        _add_verified_allow(G, "pol-compute", "s3-001")
+        _add_verified_allow(G, "pol-compute", "dyn-001", "dynamodb:Scan")
 
         # AssumeRole chain to RDS and Secrets
         G.add_edge("usr-001", "rol-001", label="CAN_ASSUME")
         G.add_edge("rol-001", "pol-data", label="HAS_POLICY")
-        G.add_edge("pol-data", "rds-001", label="ALLOWS")
-        G.add_edge("pol-data", "sec-001", label="ALLOWS")
+        _add_verified_allow(G, "pol-data", "rds-001", "rds:DescribeDBInstances")
+        _add_verified_allow(G, "pol-data", "sec-001", "secretsmanager:GetSecretValue")
 
         paths = find_attack_paths(G)
 
@@ -287,7 +297,7 @@ class TestFindAttackPaths:
 
         G.add_edge("lambda-workload", "rol-exec", label="EXECUTES_WITH")
         G.add_edge("rol-exec", "pol-s3", label="HAS_POLICY")
-        G.add_edge("pol-s3", "s3-target", label="ALLOWS")
+        _add_verified_allow(G, "pol-s3", "s3-target")
 
         # Lambda 2: Unconfigured Lambda without an execution role
         G.add_node("lambda-dormant", label="DormantFunction", type="Lambda", riskScore=20)
@@ -318,12 +328,12 @@ class TestFindAttackPaths:
 
         # Carol -> Policy -> FirstLambda
         G.add_edge("carol-no-mfa", "pol-invoke", label="HAS_POLICY")
-        G.add_edge("pol-invoke", "fn-first", label="ALLOWS")
+        _add_verified_allow(G, "pol-invoke", "fn-first", "lambda:InvokeFunction")
 
         # FirstLambda -> Role -> Policy -> S3
         G.add_edge("fn-first", "rol-exec", label="EXECUTES_WITH")
         G.add_edge("rol-exec", "pol-s3", label="HAS_POLICY")
-        G.add_edge("pol-s3", "s3-bucket", label="ALLOWS")
+        _add_verified_allow(G, "pol-s3", "s3-bucket")
 
         paths = find_attack_paths(G)
 

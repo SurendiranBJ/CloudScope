@@ -5,6 +5,7 @@ server-side filtering, and bounded results.
 """
 
 from typing import Optional, List, Any, Dict
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.schemas import APIResponse
@@ -45,7 +46,7 @@ def get_audit_trail(
     return APIResponse(
         success=True,
         message=f"Retrieved {len(events)} audit events",
-        timestamp=request.state.request_id if hasattr(request.state, "request_id") else "",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         data={
             "events": events,
             "count": len(events),

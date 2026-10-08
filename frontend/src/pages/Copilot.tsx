@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Bot, User, Send, Sparkles, Terminal, Trash2, AlertTriangle, ShieldAlert, CheckCircle2, HelpCircle } from 'lucide-react';
+import { Bot, User, Send, Sparkles, Terminal, Trash2, AlertTriangle, ShieldAlert, CheckCircle2, HelpCircle, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { postCopilotMessage, type CopilotMessage } from '../api/copilot';
 
@@ -25,7 +25,8 @@ export const Copilot: React.FC = () => {
     { title: 'Highest-Risk Findings', query: 'What are the highest-risk findings detected in the environment?' },
     { title: 'Dangerous Attack Paths', query: 'Explain the most critical lateral movement and privilege escalation attack paths.' },
     { title: 'Sensitive Resource Exposure', query: 'Which identities have direct or transitive access to sensitive cloud resources?' },
-    { title: 'IAM Least-Privilege Remediation', query: 'What are the recommended IAM policy remediations to reduce attack exposure?' },
+    { title: 'Prioritized Remediation Plan', query: 'Create a prioritized remediation plan from the verified findings and attack paths. For each item, cite the finding or path evidence, explain expected risk reduction, and identify validation steps. Do not suggest changes unsupported by the scan evidence.' },
+    { title: 'Permissions vs. Activity', query: 'Separate possible IAM capability from observed or correlated CloudTrail activity. Cite the evidence for each and state where activity telemetry is unavailable.' },
     { title: 'Correlated CloudTrail Activity', query: 'What runtime CloudTrail activity correlates with our active attack paths?' }
   ];
 
@@ -72,6 +73,31 @@ export const Copilot: React.FC = () => {
     ]);
   };
 
+  const downloadLatestAnalysis = () => {
+    const latest = [...messages].reverse().find((message) => message.sender === 'ai' && message.summary !== 'Chat Cleared');
+    if (!latest) return;
+    const sections = [
+      '# CloudScope AI Security Briefing',
+      `Generated: ${new Date().toISOString()}`,
+      latest.summary ? `\n## ${latest.summary}` : '',
+      latest.severity ? `\nSeverity: ${latest.severity}${latest.riskScore != null ? ` | Risk score: ${latest.riskScore}` : ''}` : '',
+      `\n## Analysis\n${latest.analysis || latest.text}`,
+      latest.affectedEntities?.length ? `\n## Affected entities\n${latest.affectedEntities.map((item) => `- ${item}`).join('\n')}` : '',
+      latest.evidence?.length ? `\n## Verified evidence\n${latest.evidence.map((item) => `- ${item}`).join('\n')}` : '',
+      latest.recommendations?.length ? `\n## Recommended actions\n${latest.recommendations.map((item) => `- ${item}`).join('\n')}` : '',
+      latest.limitations?.length ? `\n## Scope limitations\n${latest.limitations.map((item) => `- ${item}`).join('\n')}` : '',
+      latest.provider ? `\nProvider: ${latest.provider}${latest.model ? ` (${latest.model})` : ''}` : ''
+    ].filter(Boolean).join('\n');
+    const url = URL.createObjectURL(new Blob([sections], { type: 'text/markdown;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'cloudscope-ai-security-briefing.md';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const getSeverityBadge = (severity?: string) => {
     if (!severity) return null;
     const sev = severity.toUpperCase();
@@ -114,13 +140,23 @@ export const Copilot: React.FC = () => {
           </div>
         </div>
 
-        <button
-          onClick={clearChat}
-          className="w-full py-2 bg-gray-900 border border-enterprise-border hover:bg-red-950/20 text-enterprise-subtext hover:text-enterprise-critical font-semibold rounded-lg text-xs transition-colors flex items-center justify-center gap-2"
-        >
-          <Trash2 className="w-4 h-4" />
-          <span>Clear Chat Log</span>
-        </button>
+        <div className="space-y-2">
+          <button
+            onClick={downloadLatestAnalysis}
+            disabled={!messages.some((message) => message.sender === 'ai' && message.summary !== 'Chat Cleared')}
+            className="w-full py-2 bg-enterprise-bg border border-enterprise-border hover:bg-gray-800 text-enterprise-subtext hover:text-white font-semibold rounded-lg text-xs transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
+          >
+            <Download className="w-4 h-4" />
+            <span>Download AI Briefing</span>
+          </button>
+          <button
+            onClick={clearChat}
+            className="w-full py-2 bg-gray-900 border border-enterprise-border hover:bg-red-950/20 text-enterprise-subtext hover:text-enterprise-critical font-semibold rounded-lg text-xs transition-colors flex items-center justify-center gap-2"
+          >
+            <Trash2 className="w-4 h-4" />
+            <span>Clear Chat Log</span>
+          </button>
+        </div>
       </div>
 
       {/* Right panel - Chat Terminal Area */}

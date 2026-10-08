@@ -3,6 +3,15 @@ import pytest
 from app.services.attack.path_engine import find_attack_paths, get_downstream_reachable_assets
 
 
+def _add_verified_allow(graph, source, target, action="s3:GetObject"):
+    graph.add_edge(
+        source, target, label="ALLOWS", relationship="ALLOWS",
+        decision="ALLOWED", effect="Allow", action=action,
+        statement_sid="VerifiedTestStatement", condition_status="NONE",
+        evidence={"statement_sid": "VerifiedTestStatement", "effect": "Allow", "action": action},
+    )
+
+
 class TestRoleTargetDownstreamAssets:
     """Regression test suite for Cases A, B, C, D, E specified in task."""
 
@@ -34,7 +43,8 @@ class TestRoleTargetDownstreamAssets:
         ]
         for aid, aname, atype, arisk in assets:
             G.add_node(aid, label=aname, type=atype, riskScore=arisk, region="us-east-1")
-            G.add_edge("pol-admin", aid, label="ALLOWS", action=f"{atype.lower()}:*")
+            action_by_type = {"S3": "s3:GetObject", "EC2": "ec2:DescribeInstances", "Lambda": "lambda:InvokeFunction", "RDS": "rds:DescribeDBInstances"}
+            _add_verified_allow(G, "pol-admin", aid, action_by_type[atype])
 
         paths = find_attack_paths(G)
 
@@ -74,7 +84,7 @@ class TestRoleTargetDownstreamAssets:
         G.add_node("s3-target", label="data-bucket", type="S3", riskScore=70)
         G.add_edge("u-1", "r-1", label="CAN_ASSUME")
         G.add_edge("r-1", "pol-1", label="HAS_POLICY")
-        G.add_edge("pol-1", "s3-target", label="ALLOWS")
+        _add_verified_allow(G, "pol-1", "s3-target")
 
         paths = find_attack_paths(G)
         s3_paths = [p for p in paths if p["target"] == "s3-target"]
@@ -97,7 +107,7 @@ class TestRoleTargetDownstreamAssets:
         G.add_node("lam-target", label="process-function", type="Lambda", riskScore=70)
         G.add_edge("u-1", "r-1", label="CAN_ASSUME")
         G.add_edge("r-1", "pol-1", label="HAS_POLICY")
-        G.add_edge("pol-1", "lam-target", label="ALLOWS")
+        _add_verified_allow(G, "pol-1", "lam-target", "lambda:InvokeFunction")
 
         paths = find_attack_paths(G)
         lam_paths = [p for p in paths if p["target"] == "lam-target"]
@@ -118,7 +128,7 @@ class TestRoleTargetDownstreamAssets:
         G.add_node("ec2-target", label="i-database-worker", type="EC2", riskScore=70)
         G.add_edge("u-1", "r-1", label="CAN_ASSUME")
         G.add_edge("r-1", "pol-1", label="HAS_POLICY")
-        G.add_edge("pol-1", "ec2-target", label="ALLOWS")
+        _add_verified_allow(G, "pol-1", "ec2-target", "ec2:DescribeInstances")
 
         paths = find_attack_paths(G)
         ec2_paths = [p for p in paths if p["target"] == "ec2-target"]
@@ -143,7 +153,7 @@ class TestRoleTargetDownstreamAssets:
         # Carol has NO direct edge to pol-s3 or s3-confidential
         G.add_edge("u-carol", "r-power", label="CAN_ASSUME")
         G.add_edge("r-power", "pol-s3", label="HAS_POLICY")
-        G.add_edge("pol-s3", "s3-confidential", label="ALLOWS")
+        _add_verified_allow(G, "pol-s3", "s3-confidential")
 
         paths = find_attack_paths(G)
 
