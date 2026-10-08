@@ -8,78 +8,31 @@ CloudScope is a Cloud Security Posture Management (CSPM) and Cloud Infrastructur
 
 ---
 
+## 🎓 Project Purpose
+
+**CloudScope is a comprehensive academic project designed for college evaluation and portfolio demonstration.** 
+
+It serves as a functional prototype that demonstrates advanced architectural concepts, including distributed asynchronous scanning, deterministic graph-based risk modeling, real-time telemetry correlation, and evidence-grounded AI integration. It is designed to exhibit production-grade engineering practices—such as rigorous CI/CD pipelines, immutable container deployments, and deterministic security semantics—for evaluation by instructors and GitHub visitors.
+
+---
+
 ## 🏛️ Unified Architecture & Scanning Pipeline
 
 CloudScope operates as a single, continuous, unified security analysis pipeline:
 
-```
-                      ┌────────────────────────────────────────┐
-                      │              AWS Account               │
-                      └───────────────────┬────────────────────┘
-                                          │ Boto3 Read-Only Collectors
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │             AWS Inventory              │
-                      │  (IAM, S3, EC2, Lambda, Secrets, RDS)  │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │    IAM / Security Policy Evaluator     │
-                      │    (AST Statement Parser & Matcher)    │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │          Neo4j Graph Database          │
-                      │  (Idempotent MERGE on Stable Node IDs) │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │        NetworkX Graph Analytics        │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │          Attack Path Engine            │
-                      │   (Privilege Escalation & Lateral)     │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │          Blast Radius Engine           │
-                      │  (Reachable Cloud Resources Isolation) │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │      Deterministic Risk Engine         │
-                      │   (Factor-Based 0-100 & 5 Categories)  │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │     CloudTrail Activity Analysis       │
-                      │  (AssumeRole, Policy Mod, Idempotency) │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │       Dynamic Graph Correlation        │
-                      │    (Runtime Activity & Graph Edges)    │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │           FastAPI REST API             │
-                      └───────────────────┬────────────────────┘
-                                          │
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │         React / Cytoscape UI           │
-                      │     (Consolidated DAG Path Cards)      │
-                      └────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    AWS[AWS Account] -->|Boto3 Read-Only Collectors| Inv[AWS Inventory\nIAM, S3, EC2, Lambda, Secrets, RDS]
+    Inv -->|Metadata| Evaluator[IAM / Security Policy Evaluator\nAST Statement Parser & Matcher]
+    Evaluator -->|Parsed Policies| GraphDB[(Neo4j Graph Database\nIdempotent MERGE on Stable Node IDs)]
+    GraphDB -->|Topology| NetworkX[NetworkX Graph Analytics]
+    NetworkX -->|Graph Digraph| AttackEngine[Attack Path Engine\nPrivilege Escalation & Lateral]
+    AttackEngine -->|Attack Vectors| BlastEngine[Blast Radius Engine\nReachable Cloud Resources Isolation]
+    BlastEngine -->|Asset Impact| RiskEngine[Deterministic Risk Engine\nFactor-Based 0-100 & 5 Categories]
+    RiskEngine -->|Risks & Factors| CloudTrail[CloudTrail Activity Analysis\nAssumeRole, Policy Mod, Idempotency]
+    CloudTrail -->|Event Telemetry| Correlation[Dynamic Graph Correlation\nRuntime Activity & Graph Edges]
+    Correlation -->|Unified Findings| API[FastAPI REST API]
+    API -->|Consolidated Context| UI[React / Cytoscape UI\nConsolidated DAG Path Cards]
 ```
 
 ---
@@ -451,6 +404,24 @@ The scan pipeline instruments every execution phase with high-resolution monoton
 
 ---
 
+## 🔒 Security Guarantees & Known Limitations
+
+### Security Guarantees
+- **Read-Only Operation**: The scanner uses `SecurityAudit` and `ViewOnlyAccess` to inspect infrastructure. It **never** modifies AWS resources, policies, or configurations.
+- **Explicit Deny Precedence**: The policy evaluator strictly adheres to AWS authorization mechanics—an explicit `Deny` in any matching statement (identity, attached, or boundary) unconditionally overrides any `Allow`.
+- **Zero Remediation Mutations**: CloudScope provides actionable remediation guidance (e.g., policy JSON diffs, CLI commands), but it does not apply these changes automatically.
+- **Simulation Safety**: The "What-If" policy simulation engine operates entirely in memory and isolated cache. It does not test mutations against live AWS APIs.
+- **Authoritative Data Privacy**: Gemini Security Copilot redacts all credentials, access keys, and passwords before prompt dispatch. Secrets Manager values are never read or stored. AI models do not make autonomous authorization decisions.
+
+### Known Limitations
+As an academic prototype, CloudScope has several documented constraints (as verified in the Phase 0 audit):
+- **PARTIALLY IMPLEMENTED IAM Coverage**: The policy evaluator does not support all advanced AWS `Condition` context keys, Service Control Policies (SCPs), or Resource-based policies outside of a subset (S3, Secrets Manager). Complex or unresolved conditions currently fallback to `CONDITIONAL` states.
+- **PARTIALLY IMPLEMENTED Graph Completeness**: The attack path engine implements a hard truncation limit (`MAX_ROLE_HOPS=6`, `MAX_ATTACK_PATHS=200`) to prevent combinatorial explosions, meaning some deep lateral movement vectors in large accounts may remain undiscovered.
+- **UNVERIFIED Scale Performance**: The system has been validated on small-to-medium test topologies. Performance and API throttling behavior on enterprise-scale AWS accounts (10k+ resources) remain untested.
+- **CloudTrail Latency**: AWS CloudTrail delivery can be delayed by up to 15 minutes. Runtime correlation will not immediately reflect instantaneous activity.
+
+---
+
 ## 📡 API Endpoint Reference
 
 | Method | Endpoint | Description |
@@ -650,16 +621,6 @@ CloudScope incorporates enterprise production hardening designed for multi-insta
 - **Kubernetes Probes**: `/live` (in-memory liveness) and `/ready` (dependency check decoupled from AWS API availability).
 - **Prometheus Metrics**: `GET /metrics` exposing request counters, latency histograms, and scanner run counts.
 - **Operations Dashboard**: Dedicated UI at `/operations` (Restricted to `ADMINISTRATOR`) displaying real-time lock status, dependency health, scan execution history, and audit log inspector.
-
----
-
-## 🔒 Security & Limitations
-
-- **Read-Only Operation**: The scanner never modifies AWS infrastructure or policy configurations during discovery.
-- **No Secret Value Exposure**: Secrets Manager secret payloads are never retrieved.
-- **CloudTrail Latency**: CloudTrail monitoring operates via continuous/scheduled lookup rather than synchronous sub-second kernel streaming.
-- **IAM Condition Scope**: Implements standard Condition keys (`aws:PrincipalArn`, `aws:SourceIp`, MFA checks). Complex custom condition operator chaining outside AWS standard specs is reported as `CONDITIONAL`.
-- **Intended Purpose**: Designed for cloud security posture assessment, CIEM access analysis, and academic demonstration.
 
 ---
 

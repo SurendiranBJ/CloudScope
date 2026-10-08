@@ -47,13 +47,13 @@ CloudScope is packaged as modular OCI containers orchestrated via Docker Compose
 | `DEV_AUTH_MODE` | Enable dev header auth (`X-Dev-Role`) | No | `false` |
 | `AWS_PROFILE` | AWS credentials profile name | No | `identityscope-scanner` |
 | `AWS_DEFAULT_REGION`| Default regional scan target | No | `us-east-1` |
-| `AI_PROVIDER` | AI provider for Copilot (`gemini` or `mock`)| No | `gemini` |
+| `AI_PROVIDER` | AI provider for Copilot (`gemini`) | No | `gemini` |
 | `GEMINI_API_KEY` | Google Gemini API key | If AI enabled | None |
 
 ## 4. Running Locally (Development)
 ```bash
 # Start all services with local development defaults
-docker compose -f docker-compose.yml up --build
+docker compose -f compose.yaml up --build
 ```
 
 ## 5. Running in Production
@@ -62,6 +62,7 @@ docker compose -f docker-compose.yml up --build
 cp .env.example .env
 # Edit .env with strong NEO4J_PASSWORD, JWT_SECRET, GEMINI_API_KEY
 
-# 2. Launch production stack with isolated internal network
-docker compose -f compose.yaml up -d --build
+# 2. Launch production stack with released immutable images
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
 ```
