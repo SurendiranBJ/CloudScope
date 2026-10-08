@@ -27,6 +27,20 @@ KNOWN_INSECURE_SECRETS = {
     "123456",
 }
 
+def is_placeholder(val: str) -> bool:
+    if not val:
+        return False
+    v = val.lower()
+    if v.startswith("replace-with"):
+        return True
+    if "changeme" in v:
+        return True
+    if "example-only" in v:
+        return True
+    if v in KNOWN_INSECURE_SECRETS:
+        return True
+    return False
+
 
 def is_production() -> bool:
     """Return True if running in production environment."""
@@ -72,18 +86,24 @@ def validate_configuration() -> Tuple[bool, List[str]]:
                 issues.append("Production requires OIDC_JWKS_URL or a strong JWT_SECRET")
             elif len(jwt_secret) < 32:
                 issues.append("JWT_SECRET must be at least 32 characters in production")
-            elif jwt_secret.lower() in KNOWN_INSECURE_SECRETS:
+            elif is_placeholder(jwt_secret):
                 issues.append("Insecure placeholder JWT_SECRET detected in production")
 
         if not issuer_url:
             issues.append("OIDC_ISSUER_URL is required in production for issuer validation")
+        elif is_placeholder(issuer_url):
+            issues.append("Insecure placeholder OIDC_ISSUER_URL detected in production")
+            
         if not audience:
             issues.append("OIDC_AUDIENCE is required in production for audience validation")
+        elif is_placeholder(audience):
+            issues.append("Insecure placeholder OIDC_AUDIENCE detected in production")
+            
         if jwks_url and not jwks_url.lower().startswith("https://"):
             issues.append("OIDC_JWKS_URL must use HTTPS in production")
 
         # Production invariant 4: No default database passwords
-        if neo4j_pwd.lower() in KNOWN_INSECURE_SECRETS:
+        if is_placeholder(neo4j_pwd):
             issues.append(f"Insecure default NEO4J_PASSWORD ('{neo4j_pwd}') detected in production")
 
     return len(issues) == 0, issues

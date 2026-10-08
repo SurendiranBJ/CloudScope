@@ -29,10 +29,8 @@ export interface IdentityGraphProps {
   showLabels?: boolean;
   showEdgeLabels?: boolean;
   highlightRisky?: boolean;
-  securityFilter?: 'all' | 'critical' | 'high' | 'medium' | 'low' | 'attack_paths_only';
   showPolicies?: boolean;
   analystMode?: AnalystMode;
-  focusDepth?: FocusDepth;
   customElements?: any[];
   activeAttackPath?: string[];
   onClearFocus?: () => void;
@@ -119,10 +117,8 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
   showLabels = true,
   showEdgeLabels = true,
   highlightRisky = false,
-  securityFilter = 'all',
   showPolicies = false,
   analystMode = 'identity_overview',
-  focusDepth = 'all',
   customElements,
   activeAttackPath = [],
   onClearFocus
@@ -131,6 +127,11 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
   const cyRef = useRef<cytoscape.Core | null>(null);
 
   const [activeSelectedNodeId, setActiveSelectedNodeId] = useState<string | null>(null);
+
+  const handlersRef = useRef({ onNodeSelect, onEdgeSelect, onClearFocus });
+  useEffect(() => {
+    handlersRef.current = { onNodeSelect, onEdgeSelect, onClearFocus };
+  }, [onNodeSelect, onEdgeSelect, onClearFocus]);
 
   // Fetch raw elements
   const { data: rawElementsData, isLoading: graphLoading, isError: graphError, refetch: refetchGraph } = useQuery<CytoscapeElement[]>({
@@ -485,17 +486,9 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
 
   const visibleNodeCount = useMemo(() => transformedGraph.nodes.filter(node => {
     const type = node.data.type || 'Resource';
-    const score = Number(node.data.riskScore);
-    const hasScore = node.data.riskScore !== undefined && Number.isFinite(score);
-    const onPath = activeAttackPath.includes(node.data.id) || highlightedNodeIds.includes(node.data.id);
     if (activeFilters[type] === false) return false;
-    if (securityFilter === 'attack_paths_only') return onPath;
-    if (securityFilter === 'critical') return hasScore && score >= 80;
-    if (securityFilter === 'high') return hasScore && score >= 60 && score < 80;
-    if (securityFilter === 'medium') return hasScore && score >= 40 && score < 60;
-    if (securityFilter === 'low') return hasScore && score < 40;
     return true;
-  }).length, [transformedGraph, activeFilters, securityFilter, activeAttackPath, highlightedNodeIds]);
+  }).length, [transformedGraph, activeFilters, activeAttackPath, highlightedNodeIds]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // 2. SUBGRAPH FOCUS CALCULATION (Connected Security Subgraph)
@@ -534,7 +527,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       inEdgesMap.get(t)!.push({ edgeId: eid, source: s });
     });
 
-    const maxHops = focusDepth === '1-hop' ? 1 : focusDepth === '2-hop' ? 2 : Number.POSITIVE_INFINITY;
+    const maxHops = Number.POSITIVE_INFINITY;
 
     if (isIdentity) {
       // Forward downstream traversal from identity to reachable resources
@@ -596,7 +589,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       subEdges,
       isIdentity
     };
-  }, [activeFocusNodeId, transformedGraph, focusDepth]);
+  }, [activeFocusNodeId, transformedGraph]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // 3. CYTOSCAPE INITIALIZATION (Visual DAG Model matching AttackPaths.tsx)
@@ -624,7 +617,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         {
           selector: 'node',
           style: {
-            'content': showLabels ? 'data(shortLabel)' : '',
+            'content': 'data(shortLabel)',
             'font-family': 'Inter, sans-serif',
             'font-size': '11px',
             'font-weight': 'bold',
@@ -787,7 +780,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         {
           selector: 'edge',
           style: {
-            'label': showEdgeLabels ? 'data(label)' : '',
+            'label': 'data(label)',
             'font-family': 'Inter, monospace',
             'font-size': '9px',
             'font-weight': 'bold',
@@ -949,9 +942,9 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       const nId = node.id();
       setActiveSelectedNodeId(nId);
 
-      if (onEdgeSelect) onEdgeSelect(null);
-      if (onNodeSelect) {
-        onNodeSelect({
+      if (handlersRef.current.onEdgeSelect) handlersRef.current.onEdgeSelect(null);
+      if (handlersRef.current.onNodeSelect) {
+        handlersRef.current.onNodeSelect({
           id: nId,
           label: node.data('label') || nId,
           type: node.data('type') || 'Resource',
@@ -971,9 +964,9 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       const edge = evt.target;
       const d = edge.data();
 
-      if (onNodeSelect) onNodeSelect(null);
-      if (onEdgeSelect) {
-        onEdgeSelect({
+      if (handlersRef.current.onNodeSelect) handlersRef.current.onNodeSelect(null);
+      if (handlersRef.current.onEdgeSelect) {
+        handlersRef.current.onEdgeSelect({
           source: edge.source().data('label') || edge.source().id(),
           target: edge.target().data('label') || edge.target().id(),
           sourceType: edge.source().data('type') || 'Identity',
@@ -1032,9 +1025,9 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
     cy.on('tap', (evt) => {
       if (evt.target === cy) {
         setActiveSelectedNodeId(null);
-        if (onNodeSelect) onNodeSelect(null);
-        if (onEdgeSelect) onEdgeSelect(null);
-        if (onClearFocus) onClearFocus();
+        if (handlersRef.current.onNodeSelect) handlersRef.current.onNodeSelect(null);
+        if (handlersRef.current.onEdgeSelect) handlersRef.current.onEdgeSelect(null);
+        if (handlersRef.current.onClearFocus) handlersRef.current.onClearFocus();
       }
     });
 
@@ -1072,7 +1065,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [transformedGraph, showLabels, showEdgeLabels, onNodeSelect, onEdgeSelect, onClearFocus]);
+  }, [transformedGraph]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // 4. APPLY FOCUS & DIMMING SYSTEM (Synchronized across selection)
@@ -1137,15 +1130,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
         const type = node.data('type') || 'Resource';
         const nodeRisk = Number(node.data('riskScore'));
         const hasRisk = node.data('riskScore') !== undefined && Number.isFinite(nodeRisk);
-        const inSelectedPath = activeAttackPath.includes(node.id()) || highlightedNodeIds.includes(node.id());
-        let riskMatches = true;
-        if (securityFilter === 'attack_paths_only') riskMatches = inSelectedPath;
-        else if (securityFilter === 'critical') riskMatches = hasRisk && nodeRisk >= 80;
-        else if (securityFilter === 'high') riskMatches = hasRisk && nodeRisk >= 60 && nodeRisk < 80;
-        else if (securityFilter === 'medium') riskMatches = hasRisk && nodeRisk >= 40 && nodeRisk < 60;
-        else if (securityFilter === 'low') riskMatches = hasRisk && nodeRisk < 40;
-
-        const shouldShow = activeFilters[type] !== false && riskMatches;
+        const shouldShow = activeFilters[type] !== false;
         node.style('display', shouldShow ? 'element' : 'none');
         node.removeClass('risky');
         if (highlightRisky && hasRisk && nodeRisk >= 60) node.addClass('risky');
@@ -1153,14 +1138,8 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       });
 
       cy.edges().forEach(edge => {
-        const isPathTransition = activeAttackPath.some((nodeId, index) =>
-          index < activeAttackPath.length - 1 && edge.data('source') === nodeId && edge.data('target') === activeAttackPath[index + 1]
-        ) || highlightedNodeIds.some((nodeId, index) =>
-          index < highlightedNodeIds.length - 1 && edge.data('source') === nodeId && edge.data('target') === highlightedNodeIds[index + 1]
-        );
-        const pathMatches = securityFilter !== 'attack_paths_only' || isPathTransition;
         const endpointsVisible = visibleNodeIds.has(edge.data('source')) && visibleNodeIds.has(edge.data('target'));
-        edge.style('display', pathMatches && endpointsVisible ? 'element' : 'none');
+        edge.style('display', endpointsVisible ? 'element' : 'none');
       });
 
       // Search Query Spotlight
@@ -1175,8 +1154,14 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
           }
         });
       }
+
+      // Update label visibility dynamically without recreating Cytoscape
+      cy.style()
+        .selector('node').style('content', showLabels ? 'data(shortLabel)' : '')
+        .selector('edge').style('label', showEdgeLabels ? 'data(label)' : '')
+        .update();
     });
-  }, [relevantSubgraph, analystMode, activeAttackPath, highlightedNodeIds, activeFilters, securityFilter, highlightRisky, searchQuery]);
+  }, [relevantSubgraph, analystMode, activeAttackPath, highlightedNodeIds, activeFilters, highlightRisky, searchQuery, showLabels, showEdgeLabels]);
 
   // Zoom / Pan helpers
   const handleZoomIn = useCallback(() => {

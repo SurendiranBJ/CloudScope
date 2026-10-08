@@ -267,18 +267,18 @@ export const Reports: React.FC = () => {
     }
   };
 
+  const getColor = (score: number) => {
+    if (score >= 80) return 'border-l-4 border-enterprise-success bg-enterprise-success/5 text-enterprise-success';
+    if (score >= 60) return 'border-l-4 border-enterprise-warning bg-enterprise-warning/5 text-enterprise-warning';
+    return 'border-l-4 border-enterprise-critical bg-enterprise-critical/5 text-enterprise-critical';
+  };
+
   const complianceStandards = (reportsData?.compliance || []).map((standard: any) => ({
     name: standard.name,
     status: `${standard.score}% Coverage`,
     details: standard.details,
     color: getColor(standard.score)
   }));
-
-  const getColor = (score: number) => {
-    if (score >= 80) return 'border-l-4 border-enterprise-success bg-enterprise-success/5 text-enterprise-success';
-    if (score >= 60) return 'border-l-4 border-enterprise-warning bg-enterprise-warning/5 text-enterprise-warning';
-    return 'border-l-4 border-enterprise-critical bg-enterprise-critical/5 text-enterprise-critical';
-  };
 
   const hasData = reportsData?.has_data ?? (complianceStandards.length > 0);
 

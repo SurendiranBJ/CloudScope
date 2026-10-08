@@ -381,7 +381,12 @@ def sync_activity_into_neo4j(normalized_events: List[Dict[str, Any]]):
     (Principal) -[:OBSERVED_ACTIVITY]-> (:ActivityEvent) -[:TARGETS]-> (Target)
     Also preserves dynamic activity edges for graph visualization.
     """
+    consecutive_failures = 0
     for ev in normalized_events:
+        if consecutive_failures > 3:
+            logger.warning("Neo4j activity sync aborted due to consecutive connection failures.")
+            break
+            
         event_id = ev.get("event_id")
         if not event_id:
             continue
@@ -478,6 +483,7 @@ def sync_activity_into_neo4j(normalized_events: List[Dict[str, Any]]):
                         }
                     )
         except Exception as e:
+            consecutive_failures += 1
             logger.debug(f"Could not record activity in Neo4j for event {event_id}: {e}")
 
 

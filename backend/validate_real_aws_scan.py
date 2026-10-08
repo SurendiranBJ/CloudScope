@@ -2,13 +2,29 @@
 Execute real-AWS end-to-end scan validation and report authentic metrics.
 """
 import sys
-import json
+import time
 import logging
+import os
+from typing import Dict, Any
+
+# Ensure we run in a test-friendly mode without breaking prod rules during validation script
+os.environ["DEV_AUTH_MODE"] = "true"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 def main():
-    from app.services.scanner.scan_manager import scan_manager
+    from app.services.scanner.scan_coordinator import scan_coordinator
+    from app.services.scanner.current_snapshot import (
+        has_published_snapshot,
+        get_current_snapshot_id,
+        get_current_snapshot_published_at,
+        get_current_findings,
+        get_current_resources,
+        get_current_users,
+        get_current_roles,
+        get_current_risks,
+        get_current_graph,
+    )
     from app.services.aws.session import get_aws_diagnostic_info
 
     print("=" * 60)
@@ -24,73 +40,87 @@ def main():
     print("-" * 60)
 
     if not diag.get("authenticated"):
-        print("[FAIL] AWS is not authenticated!")
+        print("[BLOCKED] AWS is not authenticated. Ensure valid AWS credentials are provided.")
         sys.exit(1)
 
-    # 2. Execute Full Real-AWS Scan
-    print("Initiating full multi-service, multi-region scan...")
-    result = scan_manager.run_scan()
+    # 2. Trigger Scan via canonical coordinator
+    print("Initiating full multi-service, multi-region scan via coordinator...")
+    trigger_resp = scan_coordinator.request_scan(trigger_type="MANUAL", created_by="validation-script")
+    if trigger_resp.get("status") not in ["STARTED", "ALREADY_RUNNING"]:
+        print(f"[FAIL] Scan failed to start: {trigger_resp}")
+        sys.exit(1)
+
+    print("Waiting for scan to reach a terminal state...")
+    time.sleep(1) # Give worker thread time to initialize state
+    timeout = 300  # 5 minutes bounded timeout
+    start_time = time.time()
+    
+    status_data = {}
+    while time.time() - start_time < timeout:
+        status_data = scan_coordinator.get_status()
+        is_scanning = status_data.get("is_scanning", False)
+        if not is_scanning:
+            print(f"Scan reached terminal state: {status_data.get('status')}")
+            break
+        time.sleep(5)
+    else:
+        print("[FAIL] Scan timed out after 5 minutes remaining in SCANNING state.")
+        sys.exit(1)
+
+    scan_id = trigger_resp.get("scan_id")
+    
+    # 3. Verify Durable Snapshot Publication
+    if not has_published_snapshot():
+        print(f"[FAIL] Scan did not succeed or snapshot was not published. Last state: {state}")
+        sys.exit(1)
+
+    snapshot_id = get_current_snapshot_id()
+    if snapshot_id != scan_id:
+        print(f"[FAIL] The published snapshot {snapshot_id} does not match our triggered scan {scan_id}.")
+        sys.exit(1)
+        
+    pub_time = get_current_snapshot_published_at()
     print("-" * 60)
+    print(f"Snapshot Published: YES")
+    print(f"Snapshot ID:        {snapshot_id}")
+    print(f"Published At:       {pub_time}")
+    print(f"Duration:           {status_data.get('duration_seconds')}s")
 
-    # 3. Print Results Summary
-    status = result.get("status")
-    print(f"Scan Status:        {status}")
-    print(f"Scan ID:            {result.get('scan_id')}")
-    print(f"Duration:           {result.get('duration_seconds')}s")
-    print(f"Successful Regions: {result.get('successful_regions')}")
-    print(f"Failed Regions:     {result.get('failed_regions')}")
+    # 4. Authoritative Metrics Retrieval
+    # Verify graph consistency
+    graph_elements = get_current_graph() or []
+    nodes_count = len([e for e in graph_elements if e.get("group") == "nodes"])
+    edges_count = len([e for e in graph_elements if e.get("group") == "edges"])
+    
+    if edges_count > 0 and nodes_count == 0:
+        print(f"[FAIL] Graph inconsistency: 0 nodes but {edges_count} edges.")
+        sys.exit(1)
 
-    # Phase Durations
-    phase_durations = result.get("phase_durations") or scan_manager.get_status().get("phase_durations", {})
-    print("\nPhase Durations:")
-    for phase, dur in phase_durations.items():
-        print(f"  - {phase:25s}: {dur:.3f}s")
+    resources = get_current_resources() or []
+    users = get_current_users() or []
+    roles = get_current_roles() or []
+    findings = get_current_findings() or []
+    risks = get_current_risks() or []
 
-    # Inventory Counts
-    inv = scan_manager.inventory
     print("\nInventory Counts:")
-    print(f"  - IAM Users:      {len(inv.users)}")
-    print(f"  - IAM Roles:      {len(inv.roles)}")
-    print(f"  - IAM Groups:     {len(inv.groups)}")
-    print(f"  - IAM Policies:   {len(inv.policies)}")
-    print(f"  - S3 Buckets:     {len(inv.s3)}")
-    print(f"  - EC2 Instances:  {len(inv.ec2)}")
-    print(f"  - Lambda Funcs:   {len(inv.lambdas)}")
-    print(f"  - Secrets:        {len(inv.secrets)}")
-    print(f"  - RDS Instances:  {len(inv.rds)}")
-    print(f"  - DynamoDB Tables:{len(inv.dynamodb)}")
-
-    from app.services.findings.finding_service import finding_service
-    findings = finding_service.get_all_findings()
-    attack_paths_count = result.get("attack_paths_count", 0)
-    nodes_count = result.get("nodes_count", 0)
-    edges_count = result.get("edges_count", 0)
-
+    print(f"  - Total Resources: {len(resources)}")
+    print(f"  - Total Users:     {len(users)}")
+    print(f"  - Total Roles:     {len(roles)}")
+    
     print("\nSecurity Analytics Summary:")
     print(f"  - Security Graph Nodes:     {nodes_count}")
     print(f"  - Security Graph Edges:     {edges_count}")
-    print(f"  - Attack Paths Detected:    {attack_paths_count}")
     print(f"  - Total Canonical Findings: {len(findings)}")
-    finding_types = {}
-    finding_severities = {}
-    for f in findings:
-        ftype = f.get("finding_type") or f.get("type", "UNKNOWN")
-        sev = f.get("severity", "UNKNOWN")
-        finding_types[ftype] = finding_types.get(ftype, 0) + 1
-        finding_severities[sev] = finding_severities.get(sev, 0) + 1
-    print("    By Finding Type:")
-    for ftype, cnt in sorted(finding_types.items()):
-        print(f"      * {ftype}: {cnt}")
-    print("    By Severity:")
-    for sev, cnt in sorted(finding_severities.items()):
-        print(f"      * {sev}: {cnt}")
-
-    print(f"  - Security Score:           {result.get('security_score')}/100")
-    print(f"  - Critical Findings:        {result.get('critical_findings')}")
+    print(f"  - Risk Assessment Items:    {len(risks)}")
+    
+    if not findings and not resources:
+        print("[FAIL] Snapshot is completely empty. Expected at least some resources or permission errors.")
+        sys.exit(1)
 
     print("=" * 60)
     print("REAL-AWS E2E VALIDATION SUCCESSFUL")
     print("=" * 60)
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()

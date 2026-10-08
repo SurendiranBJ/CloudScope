@@ -136,7 +136,7 @@ export const Operations: React.FC = () => {
           </button>
           <button
             onClick={() => scanMutation.mutate()}
-            disabled={scanMutation.isPending || overview?.scanner.is_scanning}
+            disabled={scanMutation.isPending || overview?.scanner?.is_scanning}
             className="flex items-center gap-1.5 px-4 py-1.5 bg-enterprise-accent hover:bg-blue-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-md transition-colors"
           >
             <Play className="w-3.5 h-3.5" />
@@ -160,22 +160,22 @@ export const Operations: React.FC = () => {
         <div className="bg-enterprise-card border border-enterprise-border rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between text-xs text-enterprise-subtext mb-2">
             <span>Distributed Lock</span>
-            {overview?.distributed_lock.locked ? (
+            {overview?.distributed_lock?.locked ? (
               <Lock className="w-4 h-4 text-amber-400" />
             ) : (
               <Unlock className="w-4 h-4 text-emerald-400" />
             )}
           </div>
           <div className="text-xl font-bold text-white flex items-center gap-2">
-            {overview?.distributed_lock.locked ? (
+            {overview?.distributed_lock?.locked ? (
               <span className="text-amber-400">LOCKED</span>
             ) : (
               <span className="text-emerald-400">AVAILABLE</span>
             )}
           </div>
           <div className="text-[11px] text-enterprise-subtext mt-2 space-y-0.5 font-mono">
-            <div className="truncate">Owner: {overview?.distributed_lock.owner_instance_id || 'None'}</div>
-            <div>TTL: {overview?.distributed_lock.ttl_seconds ?? 0}s remaining</div>
+            <div className="truncate">Owner: {overview?.distributed_lock?.owner_instance_id || 'None'}</div>
+            <div>TTL: {overview?.distributed_lock?.ttl_seconds ?? 0}s remaining</div>
           </div>
         </div>
 
@@ -186,15 +186,15 @@ export const Operations: React.FC = () => {
             <Activity className="w-4 h-4 text-enterprise-accent" />
           </div>
           <div className="text-xl font-bold text-white">
-            {overview?.scanner.is_scanning ? (
+            {overview?.scanner?.is_scanning ? (
               <span className="text-blue-400">SCANNING</span>
             ) : (
               <span className="text-gray-300">IDLE</span>
             )}
           </div>
           <div className="text-[11px] text-enterprise-subtext mt-2 font-mono">
-            <div>Phase: {overview?.scanner.active_phase || 'READY'}</div>
-            <div>Mode: {overview?.scanner.mode || 'single'}</div>
+            <div>Phase: {overview?.scanner?.active_phase || 'READY'}</div>
+            <div>Mode: {overview?.scanner?.mode || 'single'}</div>
           </div>
         </div>
 
@@ -207,7 +207,7 @@ export const Operations: React.FC = () => {
           <div className="space-y-1 mt-1 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-gray-400">Neo4j Graph:</span>
-              {overview?.dependencies.neo4j ? (
+              {overview?.dependencies?.neo4j ? (
                 <span className="text-emerald-400 font-semibold">UP</span>
               ) : (
                 <span className="text-rose-400 font-semibold">DOWN</span>
@@ -215,7 +215,7 @@ export const Operations: React.FC = () => {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-gray-400">Redis Cache/Lock:</span>
-              {overview?.dependencies.redis ? (
+              {overview?.dependencies?.redis ? (
                 <span className="text-emerald-400 font-semibold">UP</span>
               ) : (
                 <span className="text-amber-400 font-semibold">MEMORY FALLBACK</span>
@@ -223,7 +223,7 @@ export const Operations: React.FC = () => {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-gray-400">Durable Relational DB:</span>
-              {overview?.dependencies.database ? (
+              {overview?.dependencies?.database ? (
                 <span className="text-emerald-400 font-semibold">UP</span>
               ) : (
                 <span className="text-rose-400 font-semibold">DOWN</span>

@@ -8,6 +8,7 @@ import { Navbar } from './components/Navbar';
 import { SimulationBanner } from './components/SimulationBanner';
 import { SecurityNoticeBanner } from './components/SecurityNoticeBanner';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const Dashboard = lazy(async () => ({ default: (await import('./pages/Dashboard')).Dashboard }));
 const Resources = lazy(async () => ({ default: (await import('./pages/Resources')).Resources }));
@@ -53,30 +54,32 @@ function App() {
                   {/* Simulation active banner */}
                   <SimulationBanner />
                   <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-enterprise-subtext" role="status">Loading view…</div>}>
-                  <Routes>
-                    <Route path="/" element={<Dashboard />} />
-                    <Route path="/resources" element={<Resources search={searchQuery} />} />
-                    <Route path="/graph" element={<IdentityGraphPage />} />
-                    <Route path="/attack-paths" element={<AttackPaths />} />
-                    <Route path="/risks" element={<RiskAssessment search={searchQuery} />} />
-                    <Route path="/simulation" element={<AttackSimulation />} />
-                    <Route path="/alerts" element={<Alerts />} />
-                    <Route path="/copilot" element={<Copilot />} />
-                    <Route path="/reports" element={<Reports />} />
-                    <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="/policies" element={<Policies />} />
-                    <Route path="/relationships" element={<Relationships />} />
-                    <Route path="/changes" element={<Changes />} />
-                    <Route
-                      path="/operations"
-                      element={
-                        <ProtectedRoute minRole="ADMINISTRATOR">
-                          <Operations />
-                        </ProtectedRoute>
-                      }
-                    />
-                    <Route path="/forbidden" element={<Forbidden />} />
-                  </Routes>
+                  <ErrorBoundary>
+                    <Routes>
+                      <Route path="/" element={<Dashboard />} />
+                      <Route path="/resources" element={<Resources search={searchQuery} />} />
+                      <Route path="/graph" element={<IdentityGraphPage />} />
+                      <Route path="/attack-paths" element={<AttackPaths />} />
+                      <Route path="/risks" element={<RiskAssessment search={searchQuery} />} />
+                      <Route path="/simulation" element={<AttackSimulation />} />
+                      <Route path="/alerts" element={<Alerts />} />
+                      <Route path="/copilot" element={<Copilot />} />
+                      <Route path="/reports" element={<Reports />} />
+                      <Route path="/settings" element={<SettingsPage />} />
+                      <Route path="/policies" element={<Policies />} />
+                      <Route path="/relationships" element={<Relationships />} />
+                      <Route path="/changes" element={<Changes />} />
+                      <Route
+                        path="/operations"
+                        element={
+                          <ProtectedRoute minRole="ADMINISTRATOR">
+                            <Operations />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route path="/forbidden" element={<Forbidden />} />
+                    </Routes>
+                  </ErrorBoundary>
                   </Suspense>
                 </main>
               </div>
