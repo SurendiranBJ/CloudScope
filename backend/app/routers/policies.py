@@ -57,7 +57,7 @@ def get_policy_catalog(
     # Only trigger an initial scan if genuinely NO snapshot ever existed
     if not scan_policies and catalog_cached is None and not has_published_snapshot():
         if not scan_manager.is_running:
-            scan_manager.trigger_async_scan()
+            pass
         scan_policies = get_current_policies()
         catalog_cached = cache.get("v1:policy_catalog")
 

@@ -245,7 +245,7 @@ def get_all_relationships(
     # If genuinely no snapshot has ever been published and idle, trigger initial scan
     if not users and not roles and not policies and not has_published_snapshot():
         if not scan_manager.is_running:
-            scan_manager.trigger_async_scan()
+            pass
 
     # Build raw relationships
     raw_relationships = _build_raw_relationships(users, roles, policies, groups, resources)

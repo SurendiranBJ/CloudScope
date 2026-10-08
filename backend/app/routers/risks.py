@@ -45,7 +45,7 @@ def get_risk_assessment_findings():
             ]
             data.sort(key=lambda x: x.riskScore, reverse=True)
         elif not has_published_snapshot() and not scan_manager.is_running:
-            scan_manager.trigger_async_scan()
+            pass
             data = []
         else:
             data = []

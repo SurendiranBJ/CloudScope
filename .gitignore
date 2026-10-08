@@ -45,3 +45,16 @@ backend/.env
 backend/.env.*
 !.env.example
 !backend/.env.example
+
+# AWS credential material
+.aws/
+credentials
+config
+
+# Private keys
+*.pem
+*.key
+
+# Runtime storage
+app/storage/
+

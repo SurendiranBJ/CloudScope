@@ -17,7 +17,7 @@ router = APIRouter(tags=["AWS Resources"], dependencies=[Depends(require_viewer)
 def get_iam_roles():
     raw_data = get_current_roles()
     if not raw_data and not has_published_snapshot() and not scan_manager.is_running:
-        scan_manager.trigger_async_scan()
+        pass
 
     return APIResponse(
         success=True,

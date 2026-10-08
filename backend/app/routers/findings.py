@@ -111,7 +111,7 @@ def get_security_findings(
     ]
 
     if not findings and not has_published_snapshot() and not scan_manager.is_running:
-        scan_manager.trigger_async_scan()
+        pass
 
     filtered = findings
 

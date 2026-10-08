@@ -19,7 +19,7 @@ router = APIRouter(tags=["Graph"], dependencies=[Depends(require_viewer)])
 def get_graph_elements():
     data = get_current_graph()
     if not data and not has_published_snapshot() and not scan_manager.is_running:
-        scan_manager.trigger_async_scan()
+        pass
 
     return APIResponse(
         success=True,

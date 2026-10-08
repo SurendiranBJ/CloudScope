@@ -188,7 +188,7 @@ def get_reports_summary(
     snap = get_published_snapshot()
     users = list(snap.users) if snap is not None else (cache.get("v1:users") or [])
     if not users and not scan_manager.is_running:
-        scan_manager.trigger_async_scan()
+        pass
 
     report_data = _compute_reports_from_cache()
 

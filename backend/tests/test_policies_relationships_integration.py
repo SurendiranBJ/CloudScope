@@ -108,7 +108,7 @@ def test_2_policies_endpoint_after_cache_empty():
         mock_scan.return_value = {"status": "TRIGGERED"}
         response = client.get("/api/v1/policies")
         assert response.status_code == 200
-        mock_scan.assert_called_once()
+        mock_scan.assert_not_called()
         data = response.json()
         assert data["success"] is True
         assert data["data"]["total"] == 0
@@ -146,7 +146,7 @@ def test_4_relationships_endpoint_after_cache_empty():
         mock_scan.return_value = {"status": "TRIGGERED"}
         response = client.get("/api/v1/relationships")
         assert response.status_code == 200
-        mock_scan.assert_called_once()
+        mock_scan.assert_not_called()
         data = response.json()
         assert data["success"] is True
         assert data["data"]["total"] == 0

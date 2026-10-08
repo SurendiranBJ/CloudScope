@@ -51,7 +51,7 @@ def get_security_alerts(
             else:
                 data.append(a)
     elif not has_published_snapshot() and not scan_manager.is_running:
-        scan_manager.trigger_async_scan()
+        pass
 
     filtered = data
     if principal:
@@ -109,7 +109,7 @@ def get_correlated_risks(
     data = get_current_correlated_risks()
     if not data and not has_published_snapshot():
         if not has_published_snapshot() and not scan_manager.is_running:
-            scan_manager.trigger_async_scan()
+            pass
 
     filtered = data or []
     if principal:

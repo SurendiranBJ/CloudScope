@@ -45,7 +45,7 @@ def get_attack_paths(
 
     data = get_current_attack_paths()
     if not data and not has_published_snapshot() and not scan_manager.is_running:
-        scan_manager.trigger_async_scan()
+        pass
         data = []
 
     filtered = data or []

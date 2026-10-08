@@ -78,7 +78,7 @@ def get_dashboard_summary():
     else:
         from app.services.scanner.current_snapshot import has_published_snapshot
         if not has_published_snapshot():
-            scan_manager.trigger_async_scan()
+            pass
             effective_status = "SCANNING"
         else:
             effective_status = "IDLE"
