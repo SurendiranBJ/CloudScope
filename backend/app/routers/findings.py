@@ -256,7 +256,7 @@ def acknowledge_finding(
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="FINDING_ACKNOWLEDGED",
         actor_id=current_user.subject,
@@ -291,7 +291,7 @@ def resolve_finding(
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="FINDING_RESOLVED",
         actor_id=current_user.subject,
@@ -326,7 +326,7 @@ def suppress_finding(
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="FINDING_SUPPRESSED",
         actor_id=current_user.subject,
@@ -361,7 +361,7 @@ def reopen_finding(
     if not updated:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="FINDING_REOPENED",
         actor_id=current_user.subject,

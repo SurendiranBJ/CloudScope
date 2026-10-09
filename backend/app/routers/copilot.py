@@ -192,7 +192,7 @@ async def get_copilot_response(
 
         data = _map_to_copilot_response(ai_resp)
 
-        client_ip = request.client.host if request.client else None
+        client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
         audit_service.log(
             action="COPILOT_REQUESTED",
             actor_id=current_user.subject,

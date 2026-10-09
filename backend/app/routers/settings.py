@@ -41,7 +41,7 @@ def update_scan_interval(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reschedule job: {str(e)}")
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="SCAN_INTERVAL_CHANGED",
         actor_id=current_user.subject,
@@ -79,7 +79,7 @@ def clear_cache(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="CACHE_CLEARED",
         actor_id=current_user.subject,
@@ -135,7 +135,7 @@ def update_scan_region(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update scan mode: {str(e)}")
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="REGION_CONFIGURATION_CHANGED",
         actor_id=current_user.subject,

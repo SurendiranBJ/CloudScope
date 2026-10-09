@@ -197,7 +197,7 @@ def add_simulation_change(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="SIMULATION_EXECUTED",
         actor_id=current_user.subject,
@@ -280,7 +280,7 @@ def preview_simulation_change(
         current_global_posture=current_global_posture,
     )
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="SIMULATION_EXECUTED",
         actor_id=current_user.subject,

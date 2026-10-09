@@ -49,10 +49,10 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
             user_id = user.subject if user else None
 
             # Extract client IP
-            client_ip = request.client.host if request.client else "unknown"
-            forwarded = request.headers.get("X-Forwarded-For")
-            if forwarded:
-                client_ip = forwarded.split(",")[0].strip()
+            client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else "unknown")
+            
+            # Store in request state for downstream handlers
+            request.state.client_ip = client_ip
 
             # Skip logging health/metrics endpoints at high frequency to keep logs clean
             path = request.url.path

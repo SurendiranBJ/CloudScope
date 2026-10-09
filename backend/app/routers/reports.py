@@ -239,7 +239,7 @@ def export_security_report_json(
         "canonical_findings": bounded_findings
     }
 
-    client_ip = request.client.host if request.client else None
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
         action="REPORT_EXPORTED",
         actor_id=current_user.subject,
