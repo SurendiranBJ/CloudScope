@@ -1,3 +1,4 @@
+from app.config import settings
 """
 API Rate Limiter backed by Redis sliding window counter, with in-memory fallback.
 Supports per-principal rate limiting (by authenticated user subject, or IP fallback).
@@ -19,13 +20,13 @@ logger = logging.getLogger(__name__)
 
 # Configurable rate limits: (limit, window_seconds)
 RATE_LIMIT_CONFIGS = {
-    "scan": (int(os.getenv("RATE_LIMIT_SCAN_MAX", "5")), int(os.getenv("RATE_LIMIT_SCAN_WINDOW", "600"))),  # 5 per 10m
-    "copilot": (int(os.getenv("RATE_LIMIT_COPILOT_MAX", "30")), int(os.getenv("RATE_LIMIT_COPILOT_WINDOW", "60"))),  # 30 per 1m
-    "simulation": (int(os.getenv("RATE_LIMIT_SIMULATION_MAX", "30")), int(os.getenv("RATE_LIMIT_SIMULATION_WINDOW", "60"))),  # 30 per 1m
-    "finding": (int(os.getenv("RATE_LIMIT_FINDING_MAX", "60")), int(os.getenv("RATE_LIMIT_FINDING_WINDOW", "60"))),  # 60 per 1m
-    "audit": (int(os.getenv("RATE_LIMIT_AUDIT_MAX", "60")), int(os.getenv("RATE_LIMIT_AUDIT_WINDOW", "60"))),  # 60 per 1m
-    "export": (int(os.getenv("RATE_LIMIT_EXPORT_MAX", "20")), int(os.getenv("RATE_LIMIT_EXPORT_WINDOW", "60"))),  # 20 per 1m
-    "general": (int(os.getenv("RATE_LIMIT_GENERAL_MAX", "300")), int(os.getenv("RATE_LIMIT_GENERAL_WINDOW", "60"))),  # 300 per 1m
+    "scan": (settings.RATE_LIMIT_SCAN_MAX, settings.RATE_LIMIT_SCAN_WINDOW),  # 5 per 10m
+    "copilot": (settings.RATE_LIMIT_COPILOT_MAX, settings.RATE_LIMIT_COPILOT_WINDOW),  # 30 per 1m
+    "simulation": (settings.RATE_LIMIT_SIMULATION_MAX, settings.RATE_LIMIT_SIMULATION_WINDOW),  # 30 per 1m
+    "finding": (settings.RATE_LIMIT_FINDING_MAX, settings.RATE_LIMIT_FINDING_WINDOW),  # 60 per 1m
+    "audit": (settings.RATE_LIMIT_AUDIT_MAX, settings.RATE_LIMIT_AUDIT_WINDOW),  # 60 per 1m
+    "export": (settings.RATE_LIMIT_EXPORT_MAX, settings.RATE_LIMIT_EXPORT_WINDOW),  # 20 per 1m
+    "general": (settings.RATE_LIMIT_GENERAL_MAX, settings.RATE_LIMIT_GENERAL_WINDOW),  # 300 per 1m
 }
 
 
@@ -50,7 +51,7 @@ class RateLimiter:
         window_start = now - window_seconds
         limiter_key = f"{key_prefix}:{identifier}"
 
-        prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+        prod = settings.is_production
         r = self.redis
         if r is not None:
             redis_key = f"rate_limit:{limiter_key}"

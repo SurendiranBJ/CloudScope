@@ -30,4 +30,4 @@ def test_get_aws_diagnostic_info_failure():
         diag = get_aws_diagnostic_info()
         assert diag["authenticated"] is False
         assert diag["account_id"] is None
-        assert "No credentials" in diag["error"]
+        assert "Unable to locate credentials or verify AWS session" in diag["error"]

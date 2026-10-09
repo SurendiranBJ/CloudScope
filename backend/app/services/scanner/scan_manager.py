@@ -1,3 +1,4 @@
+from app.config import settings
 import os
 import json
 import time
@@ -463,7 +464,7 @@ class ScanManager:
         """Start a scan in a background thread with atomic slot claim. Returns immediately."""
         # Production/API callers must use the distributed coordinator. Keep the
         # local path for isolated ScanManager instances used by unit tests.
-        if self is scan_manager or os.getenv("ENVIRONMENT", "development").lower() == "production":
+        if self is scan_manager or settings.is_production:
             from app.services.scanner.scan_coordinator import scan_coordinator
             result = scan_coordinator.request_scan(trigger_type="AUTOMATIC", actor_id="system")
             if result.get("status") == "STARTED":
@@ -510,7 +511,7 @@ class ScanManager:
 
     def run_scan(self) -> dict:
         """Execute a scan synchronously with atomic slot claim."""
-        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        if settings.is_production:
             from app.services.scanner.scan_coordinator import scan_coordinator
             return scan_coordinator.request_scan(trigger_type="MANUAL", actor_id="system")
         with self._lock:
@@ -567,7 +568,7 @@ class ScanManager:
         logger.info(f"[INFO] SCAN START: Initializing AWS security scan (scan_id={scan_id})")
 
         try:
-            if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            if settings.is_production:
                 lease_valid = getattr(self, "_scan_lease_valid", None)
                 if lease_valid is None or not lease_valid():
                     raise RuntimeError("Production scan execution requires a valid Redis lock lease")

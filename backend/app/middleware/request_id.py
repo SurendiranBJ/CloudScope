@@ -48,6 +48,12 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
             user = getattr(request.state, "user", None)
             user_id = user.subject if user else None
 
+            # Extract client IP
+            client_ip = request.client.host if request.client else "unknown"
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                client_ip = forwarded.split(",")[0].strip()
+
             # Skip logging health/metrics endpoints at high frequency to keep logs clean
             path = request.url.path
             if not (path == "/live" or path == "/ready" or path == "/metrics"):
@@ -56,6 +62,7 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
                     extra={
                         "request_id": req_id,
                         "user_id": user_id,
+                        "client_ip": client_ip,
                         "route": path,
                         "method": request.method,
                         "status_code": response.status_code,
@@ -69,6 +76,7 @@ class RequestCorrelationMiddleware(BaseHTTPMiddleware):
                 f"Unhandled exception processing {request.method} {request.url.path}: {exc}",
                 extra={
                     "request_id": req_id,
+                    "client_ip": client_ip if 'client_ip' in locals() else "unknown",
                     "route": request.url.path,
                     "method": request.method,
                     "duration_ms": duration_ms,

@@ -1,3 +1,4 @@
+from app.config import settings
 """
 CloudScope Centralized Configuration & Security Invariant Validator.
 
@@ -44,7 +45,7 @@ def is_placeholder(val: str) -> bool:
 
 def is_production() -> bool:
     """Return True if running in production environment."""
-    return os.getenv("ENVIRONMENT", "development").lower() == "production"
+    return settings.is_production
 
 
 def validate_configuration() -> Tuple[bool, List[str]]:
@@ -55,19 +56,19 @@ def validate_configuration() -> Tuple[bool, List[str]]:
     issues: List[str] = []
     prod = is_production()
 
-    auth_enabled_str = os.getenv("AUTH_ENABLED", "false").lower()
-    auth_required_str = os.getenv("AUTH_REQUIRED", "false").lower()
-    dev_auth_str = os.getenv("DEV_AUTH_MODE", "false").lower()
+    auth_enabled_str = str(settings.AUTH_ENABLED).lower()
+    auth_required_str = str(settings.AUTH_REQUIRED).lower()
+    dev_auth_str = str(settings.DEV_AUTH_MODE).lower()
 
     auth_enabled = auth_enabled_str in ("true", "1", "yes")
     auth_required = auth_required_str in ("true", "1", "yes")
     dev_auth_mode = dev_auth_str in ("true", "1", "yes")
 
-    jwt_secret = os.getenv("JWT_SECRET", "").strip()
-    jwks_url = os.getenv("OIDC_JWKS_URL", "").strip()
-    issuer_url = os.getenv("OIDC_ISSUER_URL", "").strip()
-    audience = os.getenv("OIDC_AUDIENCE", "").strip()
-    neo4j_pwd = os.getenv("NEO4J_PASSWORD", "").strip()
+    jwt_secret = settings.JWT_SECRET.strip()
+    jwks_url = settings.OIDC_JWKS_URL.strip()
+    issuer_url = settings.OIDC_ISSUER_URL.strip()
+    audience = settings.OIDC_AUDIENCE.strip()
+    neo4j_pwd = settings.NEO4J_PASSWORD.strip()
 
     if prod:
         # Production invariant 1: DEV_AUTH_MODE is prohibited

@@ -1,3 +1,4 @@
+from app.config import settings
 """
 Structured JSON / Key-Value Logger for CloudScope.
 Sanitizes sensitive patterns (AWS keys, session tokens, passwords, Gemini keys).
@@ -57,8 +58,8 @@ def configure_logging():
     Configure global logging with structured JSON formatting in production
     or readable structured logs in development.
     """
-    log_format = os.getenv("LOG_FORMAT", "json").lower()
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_format = settings.LOG_FORMAT.lower()
+    log_level = settings.LOG_LEVEL.upper()
 
     handler = logging.StreamHandler(sys.stdout)
     if log_format == "json":

@@ -1,3 +1,4 @@
+from app.config import settings
 """
 Health, Readiness, Liveness, and Metrics endpoints for CloudScope.
 Adheres strictly to Phase 2 operations requirements:
@@ -23,13 +24,15 @@ from app.persistence.database import check_db_connectivity
 from app.services.aws.session import get_aws_diagnostic_info
 from app.services.aws.region_cache import get_scan_mode_state
 from app.metrics import get_metrics_output
+from app.security.dependencies import require_admin
+from fastapi import Depends, HTTPException, status
 
 router = APIRouter(tags=["Health & Operations"])
 
 # Startup time and commit identification
 START_TIME = datetime.now(timezone.utc).isoformat()
-APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
-BUILD_VERSION = os.getenv("BUILD_VERSION", f"v{APP_VERSION}")
+APP_VERSION = settings.APP_VERSION
+BUILD_VERSION = (settings.BUILD_VERSION or f"v{settings.APP_VERSION}")
 
 try:
     COMMIT_HASH = subprocess.check_output(
@@ -37,7 +40,7 @@ try:
         stderr=subprocess.DEVNULL
     ).decode("utf-8").strip()
 except Exception:
-    COMMIT_HASH = os.getenv("GIT_COMMIT", os.getenv("COMMIT_SHA", os.getenv("APP_VERSION", os.getenv("IMAGE_TAG", "unknown"))))
+    COMMIT_HASH = (settings.GIT_COMMIT or settings.COMMIT_SHA or settings.APP_VERSION or settings.IMAGE_TAG or "unknown")
 
 
 @router.get("/live", summary="Liveness probe for orchestrators/containers")
@@ -100,7 +103,7 @@ def _get_aws_diag() -> dict:
     return get_aws_diagnostic_info()
 
 
-@router.get("/health/aws", summary="AWS STS diagnostic check")
+@router.get("/health/aws", summary="AWS STS diagnostic check", dependencies=[Depends(require_admin)])
 def get_aws_health():
     """
     STS-based AWS credential and connectivity diagnostic.
@@ -114,7 +117,7 @@ def get_aws_health():
     )
 
 
-@router.get("/health/dependencies", summary="Detailed multi-dependency health report")
+@router.get("/health/dependencies", summary="Detailed multi-dependency health report", dependencies=[Depends(require_admin)])
 def get_dependencies_health():
     """
     Detailed inspection of Redis, Neo4j, DB, and AWS.
@@ -150,7 +153,7 @@ def get_dependencies_health():
     )
 
 
-@router.get("/health", summary="Application version and runtime information")
+@router.get("/health", summary="Application version and runtime information", dependencies=[Depends(require_admin)])
 def get_health():
     """
     Exposes build version, commit SHA, app version, and current scan configuration.
@@ -180,9 +183,17 @@ def get_health():
 
 
 @router.get("/metrics", summary="Prometheus application metrics")
-def get_metrics():
+def get_metrics(request: Request):
     """
     Prometheus text exposition format.
     """
+    metrics_token = getattr(settings, "METRICS_TOKEN", None)
+    if not metrics_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics disabled (no token configured)")
+    
+    auth_header = request.headers.get("Authorization")
+    if auth_header != f"Bearer {metrics_token}":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid METRICS_TOKEN")
+
     output, content_type = get_metrics_output()
     return PlainTextResponse(output.decode("utf-8"), media_type=content_type)

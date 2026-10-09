@@ -97,8 +97,7 @@ def get_aws_diagnostic_info() -> Dict[str, Any]:
             "error": None
         }
     except Exception as e:
-        err_msg = str(e)
-        logger.error(f"AWS authentication check failed: {err_msg}")
+        logger.error(f"AWS authentication check failed: {str(e)}")
         return {
             "authenticated": False,
             "account_id": None,
@@ -106,5 +105,5 @@ def get_aws_diagnostic_info() -> Dict[str, Any]:
             "user_id": None,
             "profile": settings.AWS_PROFILE,
             "region": settings.AWS_DEFAULT_REGION,
-            "error": err_msg
+            "error": "Unable to locate credentials or verify AWS session"
         }

@@ -1,3 +1,4 @@
+from app.config import settings
 """
 CloudScope OIDC / OAuth2 JWT Authentication Service.
 
@@ -19,17 +20,9 @@ from app.security.models import AuthenticatedUser, Role
 
 logger = logging.getLogger("cloudscope.security")
 
-# Configuration loaded from environment
-AUTH_ENABLED: bool = os.getenv("AUTH_ENABLED", "false").lower() in ("true", "1", "yes")
-AUTH_REQUIRED: bool = os.getenv("AUTH_REQUIRED", "false").lower() in ("true", "1", "yes")
-DEV_AUTH_MODE: bool = os.getenv("DEV_AUTH_MODE", "false").lower() in ("true", "1", "yes")
-OIDC_ISSUER_URL: str = os.getenv("OIDC_ISSUER_URL", "").rstrip("/")
-OIDC_AUDIENCE: str = os.getenv("OIDC_AUDIENCE", "")
-OIDC_JWKS_URL: str = os.getenv("OIDC_JWKS_URL", "")
-JWT_SECRET: str = os.getenv("JWT_SECRET", "")
-JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
 
-if DEV_AUTH_MODE:
+
+if settings.DEV_AUTH_MODE:
     logger.warning(
         "\n"
         "********************************************************************************\n"
@@ -40,11 +33,11 @@ if DEV_AUTH_MODE:
     )
 
 _jwks_client: Optional[PyJWKClient] = None
-if OIDC_JWKS_URL:
+if settings.OIDC_JWKS_URL:
     try:
-        _jwks_client = PyJWKClient(OIDC_JWKS_URL, cache_keys=True, max_cached_keys=16, cache_jwk_set=True, lifespan=3600)
+        _jwks_client = PyJWKClient(settings.OIDC_JWKS_URL, cache_keys=True, max_cached_keys=16, cache_jwk_set=True, lifespan=3600)
     except Exception as e:
-        logger.error(f"Failed to initialize PyJWKClient for {OIDC_JWKS_URL}: {e}")
+        logger.error(f"Failed to initialize PyJWKClient for {settings.OIDC_JWKS_URL}: {e}")
 
 
 def _normalize_roles(raw_roles: Any) -> List[Role]:
@@ -116,17 +109,17 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
             logger.warning(f"OIDC JWKS token verification failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid authentication token: {e}",
+                detail="Invalid authentication token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
     # 2. Symmetric Secret Verification (Development / Test)
-    active_secret = os.getenv("JWT_SECRET") or JWT_SECRET
+    active_secret = settings.JWT_SECRET
     if active_secret:
         try:
-            active_algo = os.getenv("JWT_ALGORITHM") or JWT_ALGORITHM
-            active_aud = os.getenv("OIDC_AUDIENCE") or OIDC_AUDIENCE
-            active_iss = os.getenv("OIDC_ISSUER_URL") or OIDC_ISSUER_URL
+            active_algo = settings.JWT_ALGORITHM
+            active_aud = settings.OIDC_AUDIENCE
+            active_iss = settings.OIDC_ISSUER_URL.rstrip("/") if settings.OIDC_ISSUER_URL else ""
 
             decode_kwargs = {
                 "key": active_secret,
@@ -143,13 +136,13 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
             logger.warning(f"JWT secret token verification failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid authentication token: {e}",
+                detail="Invalid authentication token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
     # 3. Development Insecure Fallback (ONLY if DEV_AUTH_MODE explicitly enabled and NOT production)
-    is_prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
-    if DEV_AUTH_MODE and not is_prod:
+    is_prod = settings.is_production
+    if settings.DEV_AUTH_MODE and not is_prod:
         try:
             payload = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
             return payload

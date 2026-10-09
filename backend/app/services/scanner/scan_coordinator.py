@@ -1,3 +1,4 @@
+from app.config import settings
 """
 CloudScope Unified Scan Coordinator.
 
@@ -58,7 +59,7 @@ class ScanCoordinator:
             owner_token = distributed_scan_lock.acquire(lease_seconds=180)
             if not owner_token:
                 if (
-                    os.getenv("ENVIRONMENT", "development").lower() == "production"
+                    settings.is_production
                     and not cache.check_redis()
                 ):
                     return {

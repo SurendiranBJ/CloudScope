@@ -1,3 +1,4 @@
+from app.config import settings
 """
 CloudScope FastAPI Authentication & RBAC Dependencies.
 
@@ -10,8 +11,6 @@ from fastapi import Depends, HTTPException, Header, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.security.auth import (
-    AUTH_REQUIRED,
-    DEV_AUTH_MODE,
     build_principal_from_claims,
     decode_and_verify_token,
 )
@@ -21,21 +20,19 @@ security_scheme = HTTPBearer(auto_error=False)
 
 
 def is_auth_required() -> bool:
-    """Authentication is unconditionally mandatory in production."""
-    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+    """Auth is required by default, unless explicitly bypassed in dev mode."""
+    if settings.is_production:
         return True
-    if os.getenv("AUTH_REQUIRED", "false").lower() in ("true", "1", "yes"):
-        return True
-    return bool(globals().get("AUTH_REQUIRED", False))
-
+    # If in dev, auth is required unless DEV_AUTH_MODE is explicitly True
+    if settings.DEV_AUTH_MODE:
+        return False
+    return True
 
 def is_dev_auth_mode() -> bool:
     """DEV_AUTH_MODE is unconditionally forbidden in production."""
-    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+    if settings.is_production:
         return False
-    if os.getenv("DEV_AUTH_MODE", "false").lower() in ("true", "1", "yes"):
-        return True
-    return bool(globals().get("DEV_AUTH_MODE", False))
+    return settings.DEV_AUTH_MODE
 
 
 def get_current_user(
@@ -45,7 +42,7 @@ def get_current_user(
     x_dev_subject: Optional[str] = Header(None, alias="X-Dev-Subject"),
 ) -> AuthenticatedUser:
     """Resolve and authenticate the calling principal."""
-    prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+    prod = settings.is_production
     dev_mode = is_dev_auth_mode()
     auth_req = is_auth_required()
 
@@ -55,7 +52,7 @@ def get_current_user(
             try:
                 role = Role(x_dev_role.strip().upper())
             except ValueError:
-                role = Role.ADMINISTRATOR
+                role = Role.VIEWER
             sub = x_dev_subject.strip() if x_dev_subject else "dev-user"
             return AuthenticatedUser(
                 subject=sub,
@@ -66,39 +63,17 @@ def get_current_user(
                 issuer="cloudscope:dev",
             )
 
-        # In dev mode, if no bearer token is supplied and auth is not strictly required, provide dev admin
-        if not credentials and not auth_req:
-            return AuthenticatedUser(
-                subject="local-dev-admin",
-                email="admin@cloudscope.dev",
-                name="Local Dev Admin",
-                roles=[Role.ADMINISTRATOR],
-                scopes=["*"],
-                issuer="cloudscope:dev",
-            )
-
     # 2. Bearer Token Verification
     if credentials and credentials.credentials:
         token = credentials.credentials.strip()
         claims = decode_and_verify_token(token)
         return build_principal_from_claims(claims)
 
-    # 3. If Authentication is Required (mandatory in production), reject unauthenticated requests
-    if auth_req or prod:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Please provide a valid Bearer token.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # 4. Backward-compatible default for unauthenticated local development / test suites
-    return AuthenticatedUser(
-        subject="default-admin",
-        email="default-admin@cloudscope.local",
-        name="Default Administrator",
-        roles=[Role.ADMINISTRATOR],
-        scopes=["*"],
-        issuer="cloudscope:local",
+    # 3. Reject unauthenticated requests
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Please provide a valid Bearer token.",
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
 

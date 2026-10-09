@@ -29,13 +29,13 @@ async def lifespan(app: FastAPI):
     # 1. Enforce centralized startup configuration validation
     from app.security.config_validator import validate_startup_configuration
     validate_startup_configuration()
-    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+    if settings.is_production:
         from app.cache import cache
         if not cache.check_redis():
             raise RuntimeError("Redis is mandatory in production and must be reachable at startup")
 
     # Display DEV_AUTH_MODE security warning if enabled
-    dev_auth = os.getenv("DEV_AUTH_MODE", "false").lower() == "true"
+    dev_auth = settings.DEV_AUTH_MODE
     if dev_auth:
         logger.warning(
             "*** SECURITY WARNING: DEV_AUTH_MODE IS ENABLED. "
@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
         start_scheduler()
     except Exception as e:
         logger.critical(f"Server startup failed: {str(e)}", exc_info=True)
-        if os.getenv("ENVIRONMENT", "").lower() == "production":
+        if settings.is_production:
             raise
 
     yield
@@ -87,7 +87,7 @@ app.add_middleware(RequestCorrelationMiddleware)
 cors_origins = [o.strip() for o in settings.CORS_ORIGINS if o.strip()]
 allow_creds = True
 if "*" in cors_origins:
-    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+    if settings.is_production:
         logger.warning("CORS wildcard '*' with credentials detected in production. Restricting wildcard credentials.")
         allow_creds = False
 

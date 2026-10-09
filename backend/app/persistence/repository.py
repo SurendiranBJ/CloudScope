@@ -1,3 +1,4 @@
+from app.config import settings
 """
 CloudScope Durable Relational Repository.
 
@@ -31,8 +32,8 @@ try:
 except Exception as e:
     logger.error(f"Failed to auto-initialize relational database tables: {e}")
 
-SNAPSHOT_RETENTION_COUNT = int(os.getenv("SNAPSHOT_RETENTION_COUNT", "10"))
-AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
+SNAPSHOT_RETENTION_COUNT = settings.SNAPSHOT_RETENTION_COUNT
+AUDIT_RETENTION_DAYS = settings.AUDIT_RETENTION_DAYS
 
 
 def _json_default(value: Any):

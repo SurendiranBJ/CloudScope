@@ -4,7 +4,10 @@ from unittest.mock import patch
 from app.main import app
 from app.cache import cache
 
-client = TestClient(app)
+from app.config import settings
+settings.DEV_AUTH_MODE = True
+
+client = TestClient(app, headers={"X-Dev-Role": "ADMINISTRATOR", "X-Dev-Subject": "test-user"})
 
 
 def test_health_endpoint():

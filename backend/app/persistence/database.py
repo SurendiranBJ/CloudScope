@@ -1,3 +1,4 @@
+from app.config import settings
 """
 CloudScope Durable Relational Database Configuration.
 
@@ -15,7 +16,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 os.makedirs(DATA_DIR, exist_ok=True)
 
 DEFAULT_DB_FILE = os.path.join(DATA_DIR, "cloudscope.db")
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_FILE}")
+DATABASE_URL = settings.DATABASE_URL
 
 engine_kwargs = {"echo": False}
 
@@ -24,9 +25,9 @@ if DATABASE_URL.startswith("sqlite"):
 else:
     # PostgreSQL production pool configuration
     engine_kwargs.update({
-        "pool_size": int(os.getenv("DB_POOL_SIZE", "10")),
-        "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
-        "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "30")),
+        "pool_size": settings.DB_POOL_SIZE if hasattr(settings, "DB_POOL_SIZE") else 10,
+        "max_overflow": settings.DB_MAX_OVERFLOW if hasattr(settings, "DB_MAX_OVERFLOW") else 20,
+        "pool_timeout": settings.DB_POOL_TIMEOUT if hasattr(settings, "DB_POOL_TIMEOUT") else 30,
         "pool_pre_ping": True,
     })
 

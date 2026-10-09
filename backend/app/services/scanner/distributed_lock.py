@@ -1,3 +1,4 @@
+from app.config import settings
 """
 CloudScope Redis Distributed Scan Lock.
 
@@ -16,7 +17,7 @@ from app.cache import cache
 logger = logging.getLogger("cloudscope.lock")
 
 DEFAULT_LOCK_KEY = "cloudscope:scan:lock"
-DEFAULT_LEASE_SECONDS = int(os.getenv("SCAN_LOCK_LEASE_SECONDS", "180"))
+DEFAULT_LEASE_SECONDS = settings.SCAN_LOCK_LEASE_SECONDS
 
 # Lua script for atomic lease extension (only if owner token matches)
 RENEW_LUA_SCRIPT = """
@@ -50,7 +51,7 @@ class DistributedScanLock:
         """Attempt to acquire the distributed scan lock atomically."""
         lease = lease_seconds or self._lease_seconds
         token = str(uuid.uuid4())
-        prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+        prod = settings.is_production
         client = cache.redis_client
 
         if client is None:
@@ -90,7 +91,7 @@ class DistributedScanLock:
     def renew(self, owner_token: str, lease_seconds: Optional[int] = None) -> bool:
         """Extend the lock lease if the calling instance is the owner."""
         lease = lease_seconds or self._lease_seconds
-        prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+        prod = settings.is_production
         client = cache.redis_client
 
         if client is None:
@@ -133,7 +134,7 @@ class DistributedScanLock:
                 logger.warning(f"[DISTRIBUTED_LOCK] Refused to release lock: token {owner_token[:8]}... does not match owner")
                 return False
         except Exception as e:
-            prod = os.getenv("ENVIRONMENT", "development").lower() == "production"
+            prod = settings.is_production
             if prod:
                 logger.error(f"[DISTRIBUTED_LOCK] Redis release failed in production: {e}")
                 return False
