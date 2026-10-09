@@ -16,7 +16,7 @@ apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('cloudscope_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
-  } else if (import.meta.env.DEV) {
+  } else if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
     // Development-only role headers are ignored by production builds.
     const devRole = localStorage.getItem('cloudscope_dev_role') || 'VIEWER';
     const devUser = localStorage.getItem('cloudscope_dev_user') || 'admin-user';

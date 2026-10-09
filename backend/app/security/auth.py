@@ -107,11 +107,7 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
             return jwt.decode(token, **decode_kwargs)
         except PyJWTError as e:
             logger.warning(f"OIDC JWKS token verification failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication token",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise ValueError(f"Invalid authentication token: {e}")
 
     # 2. Symmetric Secret Verification (Development / Test)
     active_secret = settings.JWT_SECRET
@@ -134,11 +130,7 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
             return jwt.decode(token, **decode_kwargs)
         except PyJWTError as e:
             logger.warning(f"JWT secret token verification failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication token",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise ValueError(f"Invalid authentication token: {e}")
 
     # 3. Development Insecure Fallback (ONLY if DEV_AUTH_MODE explicitly enabled and NOT production)
     is_prod = settings.is_production
@@ -149,22 +141,14 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication system not properly configured with OIDC JWKS or secret",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    raise ValueError("Authentication system not properly configured with OIDC JWKS or secret")
 
 
 def build_principal_from_claims(claims: Dict[str, Any]) -> AuthenticatedUser:
     """Construct canonical AuthenticatedUser domain entity from verified JWT claims."""
     subject = claims.get("sub")
     if not subject:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing mandatory 'sub' subject claim",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise ValueError("Token missing mandatory 'sub' subject claim")
 
     # Extract roles from standard claim locations: roles, role, groups, realm_access
     raw_roles = (

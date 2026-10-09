@@ -29,16 +29,14 @@ import os
 TEST_SECRET = os.getenv("JWT_SECRET", "phase2-test-secret-key-32-chars-long!")
 
 
+from app.config import settings
+
 @pytest.fixture(autouse=True)
 def configure_auth_env(monkeypatch):
-    monkeypatch.setenv("JWT_SECRET", TEST_SECRET)
-    monkeypatch.setenv("JWT_ALGORITHM", "HS256")
-    monkeypatch.setenv("OIDC_ISSUER_URL", "https://auth.cloudscope.test")
-    monkeypatch.setenv("OIDC_AUDIENCE", "cloudscope-api")
-    monkeypatch.setattr("app.security.auth.JWT_SECRET", TEST_SECRET)
-    monkeypatch.setattr("app.security.auth.JWT_ALGORITHM", "HS256")
-    monkeypatch.setattr("app.security.auth.OIDC_ISSUER_URL", "https://auth.cloudscope.test")
-    monkeypatch.setattr("app.security.auth.OIDC_AUDIENCE", "cloudscope-api")
+    monkeypatch.setattr(settings, "JWT_SECRET", TEST_SECRET)
+    monkeypatch.setattr(settings, "JWT_ALGORITHM", "HS256")
+    monkeypatch.setattr(settings, "OIDC_ISSUER_URL", "https://auth.cloudscope.test")
+    monkeypatch.setattr(settings, "OIDC_AUDIENCE", "cloudscope-api")
 
 
 def create_token(sub="user-123", roles=None, issuer="https://auth.cloudscope.test", audience="cloudscope-api", exp_offset=3600, secret=None):
@@ -88,8 +86,8 @@ class TestAuthenticationJWT:
         assert "signature" in str(exc_info.value).lower() or "decode" in str(exc_info.value).lower()
 
     def test_missing_token_when_auth_required(self, monkeypatch):
-        monkeypatch.setattr("app.security.dependencies.AUTH_REQUIRED", True)
-        monkeypatch.setattr("app.security.dependencies.DEV_AUTH_MODE", False)
+        monkeypatch.setattr(settings, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(settings, "DEV_AUTH_MODE", False)
 
         resp = client.post("/api/v1/scan")
         assert resp.status_code == 401
@@ -161,41 +159,41 @@ class TestRBACAuthorization:
 class TestProductionConfigurationInvariants:
     def test_production_rejects_missing_auth_configuration(self, monkeypatch):
         from app.security.config_validator import validate_startup_configuration, ConfigurationError
-        monkeypatch.setenv("ENVIRONMENT", "production")
-        monkeypatch.setenv("AUTH_ENABLED", "false")
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "AUTH_ENABLED", False)
         with pytest.raises(ConfigurationError) as exc_info:
             validate_startup_configuration()
         assert "AUTH_ENABLED" in str(exc_info.value)
 
     def test_production_rejects_dev_auth_mode(self, monkeypatch):
         from app.security.config_validator import validate_startup_configuration, ConfigurationError
-        monkeypatch.setenv("ENVIRONMENT", "production")
-        monkeypatch.setenv("AUTH_ENABLED", "true")
-        monkeypatch.setenv("AUTH_REQUIRED", "true")
-        monkeypatch.setenv("DEV_AUTH_MODE", "true")
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+        monkeypatch.setattr(settings, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(settings, "DEV_AUTH_MODE", True)
         with pytest.raises(ConfigurationError) as exc_info:
             validate_startup_configuration()
         assert "DEV_AUTH_MODE" in str(exc_info.value)
 
     def test_production_rejects_auth_required_false(self, monkeypatch):
         from app.security.config_validator import validate_startup_configuration, ConfigurationError
-        monkeypatch.setenv("ENVIRONMENT", "production")
-        monkeypatch.setenv("AUTH_ENABLED", "true")
-        monkeypatch.setenv("AUTH_REQUIRED", "false")
-        monkeypatch.setenv("DEV_AUTH_MODE", "false")
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+        monkeypatch.setattr(settings, "AUTH_REQUIRED", False)
+        monkeypatch.setattr(settings, "DEV_AUTH_MODE", False)
         with pytest.raises(ConfigurationError) as exc_info:
             validate_startup_configuration()
         assert "AUTH_REQUIRED" in str(exc_info.value)
 
     def test_production_requires_issuer_and_audience_validation(self, monkeypatch):
         from app.security.config_validator import validate_configuration
-        monkeypatch.setenv("ENVIRONMENT", "production")
-        monkeypatch.setenv("AUTH_ENABLED", "true")
-        monkeypatch.setenv("AUTH_REQUIRED", "true")
-        monkeypatch.setenv("DEV_AUTH_MODE", "false")
-        monkeypatch.setenv("JWT_SECRET", "phase2-test-secret-key-32-chars-long!")
-        monkeypatch.setenv("OIDC_ISSUER_URL", "")
-        monkeypatch.setenv("OIDC_AUDIENCE", "")
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+        monkeypatch.setattr(settings, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(settings, "DEV_AUTH_MODE", False)
+        monkeypatch.setattr(settings, "JWT_SECRET", "phase2-test-secret-key-32-chars-long!")
+        monkeypatch.setattr(settings, "OIDC_ISSUER_URL", "")
+        monkeypatch.setattr(settings, "OIDC_AUDIENCE", "")
         valid, issues = validate_configuration()
         assert not valid
         assert any("OIDC_ISSUER_URL" in issue for issue in issues)
@@ -207,14 +205,15 @@ class TestProductionConfigurationInvariants:
         assert _normalize_roles(["non-admin-team"] ) == [Role.VIEWER]
 
     def test_production_unauthenticated_request_fails_closed_with_401(self, monkeypatch):
-        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+        monkeypatch.setattr(settings, "DEV_AUTH_MODE", False)
         resp = client.get("/api/v1/policies")
         assert resp.status_code == 401
         assert "authentication required" in resp.json()["detail"].lower()
 
     def test_development_explicit_auth_bypass_allowed(self, monkeypatch):
-        monkeypatch.setenv("ENVIRONMENT", "development")
-        monkeypatch.setattr("app.security.dependencies.DEV_AUTH_MODE", True)
+        monkeypatch.setattr(settings, "ENVIRONMENT", "development")
+        monkeypatch.setattr(settings, "DEV_AUTH_MODE", True)
         resp = client.get("/api/v1/policies", headers={"X-Dev-Role": "ADMINISTRATOR"})
         assert resp.status_code == 200
 

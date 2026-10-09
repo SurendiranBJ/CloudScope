@@ -66,8 +66,16 @@ def get_current_user(
     # 2. Bearer Token Verification
     if credentials and credentials.credentials:
         token = credentials.credentials.strip()
-        claims = decode_and_verify_token(token)
-        return build_principal_from_claims(claims)
+        try:
+            claims = decode_and_verify_token(token)
+            return build_principal_from_claims(claims)
+        except ValueError as e:
+            # Catch token validation errors and return generic 401 to avoid info disclosure
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     # 3. Reject unauthenticated requests
     raise HTTPException(
