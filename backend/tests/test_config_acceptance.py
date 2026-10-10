@@ -25,8 +25,9 @@ def test_production_auth_acceptance(mock_env_file):
         assert test_settings.AUTH_ENABLED is True
         assert test_settings.AUTH_REQUIRED is True
         
-        # Patch the global settings with our test settings
-        with mock.patch('app.config.settings', test_settings):
+        # Patch the global settings AND the locally-bound reference in dependencies
+        with mock.patch('app.config.settings', test_settings), \
+             mock.patch('app.security.dependencies.settings', test_settings):
             # Now load app (so dependencies get the patched settings)
             from app.main import app
             

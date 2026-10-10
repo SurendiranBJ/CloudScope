@@ -2,7 +2,7 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-@theme {
+:root, html.dark, body.dark {
   --color-enterprise-bg: #0B1220;
   --color-enterprise-card: #111827;
   --color-enterprise-accent: #3B82F6;
@@ -11,6 +11,30 @@
   --color-enterprise-critical: #EF4444;
   --color-enterprise-border: #1F2937;
   --color-enterprise-subtext: #9CA3AF;
+  --color-enterprise-text: #F3F4F6;
+}
+
+html.light, body.light {
+  --color-enterprise-bg: #F8FAFC;
+  --color-enterprise-card: #FFFFFF;
+  --color-enterprise-accent: #2563EB;
+  --color-enterprise-success: #059669;
+  --color-enterprise-warning: #D97706;
+  --color-enterprise-critical: #DC2626;
+  --color-enterprise-border: #E2E8F0;
+  --color-enterprise-subtext: #64748B;
+  --color-enterprise-text: #0F172A;
+}
+
+@theme {
+  --color-enterprise-bg: var(--color-enterprise-bg);
+  --color-enterprise-card: var(--color-enterprise-card);
+  --color-enterprise-accent: var(--color-enterprise-accent);
+  --color-enterprise-success: var(--color-enterprise-success);
+  --color-enterprise-warning: var(--color-enterprise-warning);
+  --color-enterprise-critical: var(--color-enterprise-critical);
+  --color-enterprise-border: var(--color-enterprise-border);
+  --color-enterprise-subtext: var(--color-enterprise-subtext);
 
   --font-sans: 'Inter', sans-serif;
 }
@@ -18,35 +42,81 @@
 body {
   margin: 0;
   font-family: 'Inter', sans-serif;
-  background-color: #0B1220;
-  color: #F3F4F6;
+  background-color: var(--color-enterprise-bg);
+  color: var(--color-enterprise-text);
   overflow-x: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Custom premium dark scrollbars */
+/* Light mode text contrast and card adaptations */
+.light .text-white {
+  color: #0F172A !important;
+}
+
+.light .text-gray-100,
+.light .text-gray-200,
+.light .text-gray-300 {
+  color: #1E293B !important;
+}
+
+.light .text-gray-400 {
+  color: #475569 !important;
+}
+
+.light .bg-gray-900\/50,
+.light .bg-gray-900\/60,
+.light .bg-gray-900\/80,
+.light .bg-gray-900 {
+  background-color: #F1F5F9 !important;
+}
+
+.light .bg-gray-850\/50,
+.light .bg-gray-800,
+.light .bg-gray-800\/80,
+.light .bg-gray-800\/50 {
+  background-color: #E2E8F0 !important;
+}
+
+.light .border-gray-800,
+.light .border-gray-700 {
+  border-color: #CBD5E1 !important;
+}
+
+.light .bg-enterprise-bg\/60,
+.light .bg-enterprise-bg\/70 {
+  background-color: #F8FAFC !important;
+}
+
+.light .shadow-lg,
+.light .shadow-xl,
+.light .shadow-2xl {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Custom premium scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #0B1220;
+  background: var(--color-enterprise-bg);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1F2937;
+  background: var(--color-enterprise-border);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3B82F6;
+  background: var(--color-enterprise-accent);
 }
 
 /* Cytoscape graph custom wrapper styles */
 .cytoscape-container {
   width: 100%;
   height: 100%;
-  background: radial-gradient(circle at center, #111827 0%, #0B1220 100%);
+  background: radial-gradient(circle at center, var(--color-enterprise-card) 0%, var(--color-enterprise-bg) 100%);
 }
 
 /* Glassmorphism custom styling utilities */

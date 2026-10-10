@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { useScanLifecycle } from '../hooks/useScanLifecycle.ts';
 import { useAuth, type Role } from '../context/AuthContext';
+import { ThemeToggle } from './ThemeToggle';
 
 interface NavbarProps {
   onSearchChange?: (val: string) => void;
@@ -71,6 +72,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
             <span>Updated</span>
           </button>
         ) : null}
+
+        {/* Theme Toggle Button */}
+        <ThemeToggle className="hidden sm:inline-flex" />
 
         {/* Notifications Dropdown */}
         <div className="relative">

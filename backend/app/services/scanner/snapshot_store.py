@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.cache import cache
+from app.config import settings
 
 logger = logging.getLogger("scanner")
 
@@ -259,7 +260,7 @@ class SnapshotStore:
                         self._history[snapshot.snapshot_id] = snapshot
                     return snapshot
                 return None
-            if __import__("os").getenv("ENVIRONMENT", "development").lower() == "production":
+            if settings.is_production:
                 # A valid SQL database with no pointer means there is no
                 # published snapshot; never resurrect one from a stale cache.
                 return None
@@ -267,7 +268,7 @@ class SnapshotStore:
             logger.error(f"[SNAPSHOT_STORE] SQL pointer lookup failed: {e}")
             # Do not accept a Redis/local pointer when the authoritative SQL
             # pointer cannot be read in production.
-            if __import__("os").getenv("ENVIRONMENT", "development").lower() == "production":
+            if settings.is_production:
                 return None
 
         curr_id = cache.get("v1:current_snapshot_id") or cache.get("v1:last_published_scan_id")

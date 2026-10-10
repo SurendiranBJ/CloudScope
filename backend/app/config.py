@@ -1,5 +1,6 @@
 import os
-from typing import Optional
+from typing import Optional, Any
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -78,10 +79,32 @@ class Settings(BaseSettings):
     AI_CONTEXT_MAX_CHARS: int = 24000
     AI_TIMEOUT_SECONDS: int = 30
 
+    @field_validator("GEMINI_API_KEY", mode="before")
+    @classmethod
+    def normalize_gemini_api_key(cls, v: Any) -> Optional[str]:
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped:
+                return stripped
+        # Fallback to checking root .env if present and non-empty
+        root_env_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"
+        )
+        if os.path.exists(root_env_path):
+            try:
+                from dotenv import dotenv_values
+                values = dotenv_values(root_env_path)
+                root_val = values.get("GEMINI_API_KEY")
+                if root_val and root_val.strip():
+                    return root_val.strip()
+            except Exception:
+                pass
+        return None
+
     model_config = SettingsConfigDict(
         env_file=(
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
             os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
         ),
         env_file_encoding="utf-8",
         extra="ignore"

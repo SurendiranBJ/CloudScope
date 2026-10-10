@@ -62,6 +62,8 @@ services:
     volumes:
       - app_storage:/app/storage
       - ${AWS_CREDENTIALS_DIR:-~/.aws}:/home/cloudscope/.aws:ro
+    env_file:
+      - .env
     environment:
       AWS_PROFILE: ${AWS_PROFILE:-default}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
@@ -80,7 +82,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       AI_PROVIDER: ${AI_PROVIDER:-gemini}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
       APP_VERSION: development
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/ready || exit 1"]

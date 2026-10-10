@@ -126,7 +126,8 @@ class TestDistributedScanLock:
 
     def test_redis_failure_in_production_fails_closed(self, monkeypatch):
         """In production, Redis failure MUST fail closed and NEVER fall back to in-memory lock."""
-        monkeypatch.setenv("ENVIRONMENT", "production")
+        from app.config import settings
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
         monkeypatch.setattr("app.cache.cache.redis_client", None)
 
         lock = DistributedScanLock(lock_key="test:scan:lock")
@@ -135,7 +136,8 @@ class TestDistributedScanLock:
 
     def test_two_workers_cannot_both_acquire_in_production_when_redis_fails(self, monkeypatch):
         """Two simulated workers cannot both execute a scan when Redis is down in production."""
-        monkeypatch.setenv("ENVIRONMENT", "production")
+        from app.config import settings
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
         monkeypatch.setattr("app.cache.cache.redis_client", None)
 
         worker_a_lock = DistributedScanLock(lock_key="test:scan:lock")
@@ -148,7 +150,8 @@ class TestDistributedScanLock:
         assert token_b is None
 
     def test_production_release_does_not_fall_back_to_process_memory(self, monkeypatch):
-        monkeypatch.setenv("ENVIRONMENT", "production")
+        from app.config import settings
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
         monkeypatch.setattr("app.cache.cache.redis_client", None)
         lock = DistributedScanLock(lock_key="test:production:lock")
         monkeypatch.setattr("app.cache.cache.get", lambda key: "owner-token")
@@ -161,7 +164,8 @@ class TestDistributedScanLock:
     def test_coordinator_reports_unavailable_when_production_redis_is_down(self, monkeypatch):
         from app.services.scanner.scan_coordinator import ScanCoordinator
         from app.services.scanner.scan_manager import scan_manager
-        monkeypatch.setenv("ENVIRONMENT", "production")
+        from app.config import settings
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
         monkeypatch.setattr("app.services.scanner.scan_coordinator.distributed_scan_lock.acquire", lambda **kwargs: None)
         monkeypatch.setattr("app.services.scanner.scan_coordinator.cache.check_redis", lambda: False)
         monkeypatch.setattr(scan_manager, "_is_running", False)

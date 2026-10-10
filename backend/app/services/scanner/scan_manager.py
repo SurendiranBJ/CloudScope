@@ -554,6 +554,10 @@ class ScanManager:
         self._scan_started_perf = start_perf
         self._service_status = {}
         self._publication_state = "NOT_PUBLISHED"
+        with self._lock:
+            self._completed_collectors = 0
+            self._total_collectors = len(ALL_COLLECTOR_NAMES)
+            self._collector_status = {name: "PENDING" for name in ALL_COLLECTOR_NAMES}
 
         self._phase_durations = {
             "discovery": {"duration_seconds": 0.0, "status": "SKIPPED"},
@@ -729,7 +733,7 @@ class ScanManager:
                         collector_failures[name] = str(err)
                         collector_results[name] = []
 
-                    self._completed_collectors += 1
+                    self._completed_collectors = min(self._total_collectors, self._completed_collectors + 1)
                     self._last_progress_at = datetime.utcnow().isoformat() + "Z"
 
                     # Live resource & identity count telemetry
@@ -1616,6 +1620,7 @@ class ScanManager:
                         self._active_phase = "FAILED"
                     else:
                         self._active_phase = "COMPLETED"
+                        self._completed_collectors = self._total_collectors
                 self._active_phase_started_at = None
                 if self._scan_started_perf is not None:
                     self._scan_elapsed_seconds = max(0.0, round(time.perf_counter() - self._scan_started_perf, 2))

@@ -91,7 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
                 transition={{ duration: 0.2 }}
                 className="font-bold text-lg bg-gradient-to-r from-white via-gray-200 to-enterprise-accent bg-clip-text text-transparent truncate"
               >
-                IdentityScope
+                CloudScope
               </motion.span>
             )}
           </div>

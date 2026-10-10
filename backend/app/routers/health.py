@@ -186,14 +186,16 @@ def get_health():
 def get_metrics(request: Request):
     """
     Prometheus text exposition format.
+    Requires METRICS_TOKEN bearer auth in production; open in dev when no token is configured.
     """
     metrics_token = getattr(settings, "METRICS_TOKEN", None)
-    if not metrics_token:
+    if metrics_token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header != f"Bearer {metrics_token}":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid METRICS_TOKEN")
+    elif settings.is_production:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Metrics disabled (no token configured)")
-    
-    auth_header = request.headers.get("Authorization")
-    if auth_header != f"Bearer {metrics_token}":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid METRICS_TOKEN")
+    # In dev/test with no token — serve metrics openly
 
     output, content_type = get_metrics_output()
     return PlainTextResponse(output.decode("utf-8"), media_type=content_type)

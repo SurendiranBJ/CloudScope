@@ -222,3 +222,82 @@ class TestProviderFactory:
     def test_unsupported_provider_raises_config_error(self):
         with pytest.raises(AIConfigurationError):
             get_ai_provider("unsupported_provider_xyz")
+
+
+class TestGeminiKeyConfigurationRegression:
+    """Regression tests verifying GEMINI_API_KEY loading and resolution."""
+
+    def test_valid_fake_key_loaded_into_settings(self, monkeypatch):
+        fake_key = "fake_test_key_ai_copilot_12345"
+        from app.config import settings
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", fake_key)
+        reset_ai_provider()
+
+        provider = get_ai_provider("gemini")
+        assert provider.effective_api_key == fake_key
+
+    def test_missing_or_empty_key_raises_auth_error(self, monkeypatch):
+        from app.config import settings
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+        reset_ai_provider()
+
+        provider = GeminiProvider(api_key=None)
+        assert provider.effective_api_key is None
+
+        with pytest.raises(AIAuthenticationError) as exc_info:
+            provider._get_client()
+        assert "AI Copilot is not configured with an API key." in str(exc_info.value.user_friendly_message)
+
+    def test_whitespace_key_normalized_to_none(self, monkeypatch):
+        from app.config import settings
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", "   ")
+        reset_ai_provider()
+
+        provider = GeminiProvider(api_key=None)
+        assert provider.effective_api_key is None
+
+    def test_gemini_provider_updates_dynamically_when_settings_updated(self, monkeypatch):
+        from app.config import settings
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+        reset_ai_provider()
+
+        provider = get_ai_provider("gemini")
+        assert provider.effective_api_key is None
+
+        # Simulate developer configuring the key at runtime
+        fake_key = "dynamic_fake_key_configured_later_67890"
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", fake_key)
+
+        assert provider.effective_api_key == fake_key
+
+    def test_empty_value_normalization_fallback(self):
+        from app.config import Settings
+        s = Settings(GEMINI_API_KEY="")
+        # If root .env has key, it resolves; if not, it stays None, but never empty string
+        if s.GEMINI_API_KEY is not None:
+            assert len(s.GEMINI_API_KEY) > 0
+        else:
+            assert s.GEMINI_API_KEY is None
+
+    def test_secrets_never_leaked_in_exception_messages(self, monkeypatch):
+        fake_secret = "sensitive_fake_secret_key_never_leak"
+        from app.config import settings
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", fake_secret)
+        provider = GeminiProvider(api_key=fake_secret)
+
+        api_err = APIError(401, "API_KEY_INVALID: User key is invalid.")
+        with patch.object(provider, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.aio.models.generate_content = AsyncMock(side_effect=api_err)
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(AIAuthenticationError) as exc_info:
+                asyncio.run(provider.generate_security_response(
+                    prompt="Analyze finding",
+                    security_context={}
+                ))
+            err_text = str(exc_info.value)
+            user_msg = exc_info.value.user_friendly_message
+            assert fake_secret not in err_text
+            assert fake_secret not in user_msg
+

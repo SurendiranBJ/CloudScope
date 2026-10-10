@@ -65,16 +65,27 @@ class GeminiProvider(AIProvider):
         self.temperature = temperature if temperature is not None else settings.AI_TEMPERATURE
         self.max_output_tokens = max_output_tokens or settings.AI_MAX_OUTPUT_TOKENS or 1200
         self._client: Optional[genai.Client] = None
+        self._active_key: Optional[str] = None
+
+    @property
+    def effective_api_key(self) -> Optional[str]:
+        """Resolve current active API key from instance or updated settings."""
+        key = self.api_key if self.api_key is not None else settings.GEMINI_API_KEY
+        if key and key.strip():
+            return key.strip()
+        return None
 
     def _get_client(self) -> genai.Client:
         """Lazily initialize genai.Client with validated API key."""
-        if not self.api_key or not self.api_key.strip():
+        active_key = self.effective_api_key
+        if not active_key:
             raise AIAuthenticationError(
                 "GEMINI_API_KEY is not configured.",
                 user_friendly_message="AI Copilot is not configured with an API key."
             )
-        if self._client is None:
-            self._client = genai.Client(api_key=self.api_key)
+        if self._client is None or self._active_key != active_key:
+            self._client = genai.Client(api_key=active_key)
+            self._active_key = active_key
         return self._client
 
     def _build_config(self, model_name: str, include_thinking: bool = True) -> types.GenerateContentConfig:

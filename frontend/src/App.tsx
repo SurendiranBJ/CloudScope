@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ScanLifecycleProvider } from './context/ScanLifecycleContext.tsx';
 import { AuthProvider } from './context/AuthContext';
+import { ThemeProvider } from './context/ThemeContext';
 import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
 import { SimulationBanner } from './components/SimulationBanner';
@@ -34,12 +35,13 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <ScanLifecycleProvider>
-          <Router>
-            <div className="flex h-screen w-screen overflow-hidden bg-enterprise-bg text-gray-200">
-              {/* Collapsible Left Sidebar */}
-              <Sidebar collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
+      <ThemeProvider>
+        <AuthProvider>
+          <ScanLifecycleProvider>
+            <Router>
+              <div className="flex h-screen w-screen overflow-hidden bg-enterprise-bg text-enterprise-text transition-colors duration-200">
+                {/* Collapsible Left Sidebar */}
+                <Sidebar collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
 
               {/* Right Main Content Column */}
               <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
@@ -87,7 +89,8 @@ function App() {
           </Router>
         </ScanLifecycleProvider>
       </AuthProvider>
-    </QueryClientProvider>
+    </ThemeProvider>
+  </QueryClientProvider>
   );
 }
 

@@ -77,7 +77,8 @@ class TestRateLimiting:
 
     def test_redis_failure_in_production_fails_closed(self, monkeypatch):
         """In production, Redis failure MUST fail closed without in-memory bypass."""
-        monkeypatch.setenv("ENVIRONMENT", "production")
+        from app.config import settings
+        monkeypatch.setattr(settings, "ENVIRONMENT", "production")
         monkeypatch.setattr("app.cache.cache.redis_client", None)
 
         limiter = RateLimiter()

@@ -127,12 +127,16 @@ export const ScanLifecycleProvider: React.FC<ScanLifecycleProviderProps> = ({ ch
       return;
     }
 
-    const startTs = scanStatus?.started_at ? new Date(scanStatus.started_at).getTime() : Date.now();
+    const clientScanStart = Date.now();
+    const backendStartTs = scanStatus?.started_at ? new Date(scanStatus.started_at).getTime() : clientScanStart;
+    const initialElapsed = Math.floor(scanStatus?.elapsed_seconds ?? 0);
 
     const updateTimer = () => {
-      const diff = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-      const backendElapsed = scanStatus?.elapsed_seconds ?? 0;
-      setLiveElapsed(Math.max(diff, Math.floor(backendElapsed)));
+      const now = Date.now();
+      const serverDiff = Math.floor((now - backendStartTs) / 1000);
+      const clientDiff = Math.floor((now - clientScanStart) / 1000);
+      const computed = Math.max(serverDiff, clientDiff, initialElapsed);
+      setLiveElapsed(Math.max(1, computed));
     };
 
     updateTimer();
@@ -249,7 +253,7 @@ export const ScanLifecycleProvider: React.FC<ScanLifecycleProviderProps> = ({ ch
     elapsedSeconds: liveElapsed,
     elapsed: liveElapsed,
     elapsedFormatted,
-    completedCollectors: scanStatus?.completed_collectors ?? 0,
+    completedCollectors: Math.min(scanStatus?.completed_collectors ?? 0, scanStatus?.total_collectors ?? 12),
     totalCollectors: scanStatus?.total_collectors ?? 12,
     collectorStatus: scanStatus?.collector_status ?? {},
     regionalStatus: scanStatus?.regional_status ?? {},

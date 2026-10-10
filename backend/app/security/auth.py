@@ -99,10 +99,10 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
                 "algorithms": ["RS256", "ES256", "RS384", "RS512"],
                 "options": options,
             }
-            if OIDC_AUDIENCE:
-                decode_kwargs["audience"] = OIDC_AUDIENCE
-            if OIDC_ISSUER_URL:
-                decode_kwargs["issuer"] = OIDC_ISSUER_URL
+            if settings.OIDC_AUDIENCE:
+                decode_kwargs["audience"] = settings.OIDC_AUDIENCE
+            if settings.OIDC_ISSUER_URL:
+                decode_kwargs["issuer"] = settings.OIDC_ISSUER_URL.rstrip("/")
 
             return jwt.decode(token, **decode_kwargs)
         except PyJWTError as e:

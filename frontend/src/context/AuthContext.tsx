@@ -65,7 +65,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('cloudscope_token'));
   const [activeDevRole, setActiveDevRoleState] = useState<Role>(() => {
-    return (localStorage.getItem('cloudscope_dev_role') as Role) || 'VIEWER';
+    return (localStorage.getItem('cloudscope_dev_role') as Role) || 'ADMINISTRATOR';
   });
   const [activeNotice, setActiveNotice] = useState<SecurityNotice | null>(null);
   const [isLoading] = useState<boolean>(false);
@@ -92,11 +92,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }), [isDevMode, token, roles, permissions]);
 
   const setDevRole = useCallback((role: Role) => {
-    if (!import.meta.env.DEV || token) return;
+    if (!import.meta.env.DEV) return;
     localStorage.setItem('cloudscope_dev_role', role);
     setActiveDevRoleState(role);
-    // Reload or notify consumers if needed
-  }, [token]);
+  }, []);
 
   const login = useCallback((jwtToken: string) => {
     localStorage.setItem('cloudscope_token', jwtToken);
@@ -168,6 +167,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const handleAuthError = (e: Event) => {
       const detail = (e as CustomEvent<ErrorEventDetail>).detail;
+      localStorage.removeItem('cloudscope_token');
+      setToken(null);
       setActiveNotice({
         type: 'AUTH_ERROR',
         message: detail.message || 'Authentication failed or expired.',

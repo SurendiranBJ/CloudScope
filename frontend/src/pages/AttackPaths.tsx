@@ -878,12 +878,35 @@ Explain why this shared privilege path introduces high blast radius across multi
         [group.groupId]: { loading: false, text: response.analysis || response.text, codeBlock: response.codeBlock }
       }));
     } catch (err: any) {
-      const detail = err?.response?.data?.detail || 'Unable to connect to AI Security Copilot service.';
+      const status = err?.response?.status;
+      const data = err?.response?.data;
+      const detail =
+        (data?.error && data?.error?.message) ||
+        data?.detail ||
+        err?.message ||
+        'Unable to connect to AI Security Copilot service.';
+      const reqId =
+        err?.response?.headers?.['x-request-id'] ||
+        data?.request_id ||
+        (data?.error && data?.error?.request_id);
+      const reqIdSuffix = reqId ? ` (Request ID: ${reqId})` : '';
+
+      let textMsg: string;
+      if (status === 401) {
+        textMsg = `Authentication Failed (401): ${detail}. Stale credentials have been cleared — please retry to use your active session.${reqIdSuffix}`;
+      } else if (status === 403) {
+        textMsg = `Access Denied (403): ${detail}. Analyst role or higher is required for AI Copilot.${reqIdSuffix}`;
+      } else if (status === 429) {
+        textMsg = `Rate Limited (429): ${detail}.${reqIdSuffix}`;
+      } else {
+        textMsg = `AI Explanation Unavailable: ${detail}${reqIdSuffix}`;
+      }
+
       setAiExpanded(prev => ({
         ...prev,
         [group.groupId]: {
           loading: false,
-          text: `AI Explanation Unavailable: ${detail}`
+          text: textMsg
         }
       }));
     }

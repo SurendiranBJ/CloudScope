@@ -167,6 +167,8 @@ class ScanCoordinator:
             scan_manager._scan_id = scan_id
             scan_manager._scan_started_at = datetime.now(timezone.utc).isoformat() + "Z"
             scan_manager._scan_started_perf = time.perf_counter()
+            scan_manager._completed_collectors = 0
+            scan_manager._total_collectors = 12
             scan_manager._is_running = True
             scan_manager._scan_status = "SCANNING"
 

@@ -18,10 +18,11 @@ apiClient.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${token}`;
   } else if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
     // Development-only role headers are ignored by production builds.
-    const devRole = localStorage.getItem('cloudscope_dev_role') || 'VIEWER';
+    const devRole = localStorage.getItem('cloudscope_dev_role') || 'ADMINISTRATOR';
     const devUser = localStorage.getItem('cloudscope_dev_user') || 'admin-user';
     config.headers['X-Dev-Role'] = devRole;
     config.headers['X-Dev-User'] = devUser;
+    config.headers['X-Dev-Subject'] = devUser;
   }
   return config;
 });
@@ -55,9 +56,15 @@ apiClient.interceptors.response.use(
       const code = (data.error && data.error.code) || 'UNKNOWN_ERROR';
 
       if (status === 401) {
+        // Evict stale or invalid token to unblock session recovery
+        localStorage.removeItem('cloudscope_token');
+        const authMessage =
+          (data.error && data.error.message) ||
+          data.detail ||
+          'Session expired or unauthenticated.';
         window.dispatchEvent(
           new CustomEvent<ErrorEventDetail>('cloudscope:auth_error', {
-            detail: { status: 401, message: 'Session expired or unauthenticated.', requestId, code },
+            detail: { status: 401, message: authMessage, requestId, code },
           })
         );
       } else if (status === 403) {

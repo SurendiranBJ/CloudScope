@@ -56,19 +56,15 @@ def validate_configuration() -> Tuple[bool, List[str]]:
     issues: List[str] = []
     prod = is_production()
 
-    auth_enabled_str = str(settings.AUTH_ENABLED).lower()
-    auth_required_str = str(settings.AUTH_REQUIRED).lower()
-    dev_auth_str = str(settings.DEV_AUTH_MODE).lower()
+    auth_enabled = bool(settings.AUTH_ENABLED)
+    auth_required = bool(settings.AUTH_REQUIRED)
+    dev_auth_mode = bool(settings.DEV_AUTH_MODE)
 
-    auth_enabled = auth_enabled_str in ("true", "1", "yes")
-    auth_required = auth_required_str in ("true", "1", "yes")
-    dev_auth_mode = dev_auth_str in ("true", "1", "yes")
-
-    jwt_secret = settings.JWT_SECRET.strip()
-    jwks_url = settings.OIDC_JWKS_URL.strip()
-    issuer_url = settings.OIDC_ISSUER_URL.strip()
-    audience = settings.OIDC_AUDIENCE.strip()
-    neo4j_pwd = settings.NEO4J_PASSWORD.strip()
+    jwt_secret = (settings.JWT_SECRET or "").strip()
+    jwks_url = (settings.OIDC_JWKS_URL or "").strip()
+    issuer_url = (settings.OIDC_ISSUER_URL or "").strip()
+    audience = (settings.OIDC_AUDIENCE or "").strip()
+    neo4j_pwd = (settings.NEO4J_PASSWORD or "").strip()
 
     if prod:
         # Production invariant 1: DEV_AUTH_MODE is prohibited

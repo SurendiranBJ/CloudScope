@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  ShieldCheck,
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
@@ -20,14 +19,11 @@ export const GlobalScanStatus: React.FC = () => {
     completedCollectors,
     totalCollectors,
     collectorStatus,
-    regionalStatus,
     publicationState,
-    progressSecondsAgo,
     hasProgressWarning,
     progressWarningText,
     currentSnapshotId,
     newScanId,
-    lastPublishedAt,
     isPartial,
     isFailed,
     failedRegions,
@@ -40,12 +36,16 @@ export const GlobalScanStatus: React.FC = () => {
   const newShort = newScanId ? newScanId.slice(0, 8) : null;
   const isInitializing = (activePhase || '').toUpperCase() === 'INITIALIZING';
 
+  const safeTotal = totalCollectors > 0 ? totalCollectors : 12;
+  const safeCompleted = Math.min(safeTotal, Math.max(0, completedCollectors));
+  const progressPct = Math.round((safeCompleted / safeTotal) * 100);
+
   // 0. CONNECTING STATE BEFORE BACKEND ARRIVES
   if (manualTriggerLoading && !isScanning) {
     return (
-      <div className="bg-enterprise-card/95 border border-blue-500/30 rounded-xl px-3.5 py-2.5 shadow-lg text-xs w-full sm:max-w-xs min-w-0 transition-all flex items-center gap-2">
+      <div className="bg-enterprise-card/95 border border-blue-500/30 rounded-xl px-4 py-3 shadow-lg text-xs w-full transition-all flex items-center gap-3">
         <svg
-          className="animate-spin w-3.5 h-3.5 shrink-0 text-blue-400"
+          className="animate-spin w-4 h-4 shrink-0 text-blue-400"
           xmlns="http://www.w3.org/2000/svg"
           fill="none"
           viewBox="0 0 24 24"
@@ -57,144 +57,121 @@ export const GlobalScanStatus: React.FC = () => {
             d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
           />
         </svg>
-        <span className="text-gray-300 font-medium">Connecting to scan service...</span>
+        <span className="text-gray-200 font-medium">Connecting to CloudScope AWS Scan Coordinator...</span>
       </div>
     );
   }
 
-  // 1. ACTIVE SCANNING STATE (Compact, responsive card)
+  // 1. ACTIVE SCANNING STATE (Full-width executive status banner)
   if (isScanning) {
     const collectorKeys = Object.keys(collectorStatus || {});
-    const hasCollectorData = collectorKeys.length > 0;
 
     return (
-      <div className="bg-enterprise-card/95 border border-blue-500/30 rounded-xl px-3.5 py-2.5 shadow-lg text-xs w-full sm:max-w-md min-w-0 transition-all">
-        {/* Top row: Title + Elapsed Timer */}
-        <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-enterprise-border/50">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="relative flex h-2.5 w-2.5 shrink-0">
+      <div className="bg-enterprise-card/95 border border-blue-500/40 rounded-2xl p-4 shadow-xl text-xs w-full transition-all space-y-3">
+        {/* Top row: Status, Phase & Live Timer */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-enterprise-border/60">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="relative flex h-3 w-3 shrink-0">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500" />
             </span>
-            <span className="font-semibold text-white truncate">Scanning AWS</span>
+            <div>
+              <span className="font-bold text-white text-sm">Scanning AWS Cloud Infrastructure</span>
+              <span className="text-enterprise-subtext text-xs ml-2">
+                — {phaseDescription}
+              </span>
+            </div>
           </div>
-          <span className="font-mono text-blue-400 font-bold shrink-0 text-[13px]">
-            {elapsedFormatted}
-          </span>
+
+          <div className="flex items-center gap-3">
+            {newShort && (
+              <span className="font-mono text-gray-400 text-xs bg-gray-800/80 px-2 py-0.5 rounded border border-gray-700/60">
+                Scan ID: <strong className="text-blue-300">{newShort}</strong>
+              </span>
+            )}
+            <span className="font-mono text-blue-400 font-bold bg-blue-950/60 border border-blue-500/30 px-3 py-1 rounded-lg text-sm">
+              {elapsedFormatted}
+            </span>
+          </div>
         </div>
 
-        {/* Middle details: Phase + Collector counter */}
-        <div className="mt-1.5 space-y-1">
-          <div className="flex items-center justify-between gap-2 text-[11px]">
-            <span className="text-enterprise-subtext shrink-0">Phase:</span>
-            <span className="font-medium text-blue-200 truncate text-right">
-              {phaseDescription}
-            </span>
-          </div>
-
-          <div className="flex items-center justify-between gap-2 text-[11px]">
-            <div className="flex items-center gap-1.5 text-enterprise-subtext shrink-0">
-              <span>Progress:</span>
+        {/* Progress Bar & Collector Metrics */}
+        <div className="space-y-1.5">
+          <div className="flex justify-between items-center text-[11px] text-gray-300">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-enterprise-subtext">Collector Pipeline:</span>
               {isInitializing ? (
-                <span className="text-[10px] text-blue-300 font-medium">
-                  AWS authentication / scan setup
+                <span className="text-blue-300 font-medium">AWS Authentication & Regional Discovery</span>
+              ) : (
+                <span className="text-white font-mono font-medium">{safeCompleted} / {safeTotal} collectors ({progressPct}%)</span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              {currentShort && (
+                <span className="text-[10px] text-gray-400">
+                  Current: <strong className="text-gray-300 font-mono">{currentShort}</strong>
                 </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setShowCollectors(!showCollectors)}
-                  className="text-[10px] text-gray-400 hover:text-white inline-flex items-center gap-0.5 underline transition-colors cursor-pointer"
-                  title="Toggle collector details"
-                >
-                  <span>{completedCollectors} / {totalCollectors} collectors</span>
-                  {showCollectors ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                </button>
               )}
+              <span className="text-[10px] text-gray-400">
+                Status: <strong className="text-blue-300 font-mono">{publicationState}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowCollectors(!showCollectors)}
+                className="text-[11px] text-blue-400 hover:text-blue-300 inline-flex items-center gap-1 font-semibold transition-colors cursor-pointer"
+              >
+                <span>{showCollectors ? 'Hide Details' : 'View Collectors'}</span>
+                {showCollectors ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
             </div>
-            {newShort && (
-              <span className="font-mono text-gray-400 text-[10px] shrink-0">
-                Scan: {newShort}
-              </span>
-            )}
           </div>
 
-          {/* Current snapshot & active scan ID */}
-          <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5 gap-2">
-            {currentShort && (
-              <span className="truncate">
-                Current snapshot: <span className="font-mono text-gray-300">{currentShort}</span>
-              </span>
-            )}
-            {newShort && (
-              <span className="truncate text-blue-300 text-right">
-                Updating: <span className="font-mono font-medium">{newShort}</span>
-              </span>
-            )}
+          {/* Visual Progress Bar */}
+          <div className="w-full bg-gray-800/80 rounded-full h-2 overflow-hidden border border-gray-700/40">
+            <div
+              className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-300"
+              style={{ width: `${Math.max(5, progressPct)}%` }}
+            />
           </div>
-
-          <div className="flex items-center justify-between text-[10px] text-gray-400">
-            <span>Publication:</span>
-            <span className="font-mono text-blue-200">{publicationState}</span>
-          </div>
-          {Object.keys(regionalStatus).length > 0 && (
-            <div className="text-[10px] text-gray-400 truncate" title={JSON.stringify(regionalStatus)}>
-              Regional status: <span className="font-mono text-gray-300">{Object.entries(regionalStatus).map(([region, state]) => `${region}=${state}`).join(', ')}</span>
-            </div>
-          )}
-
-          {/* Heartbeat / Progress check (Requirement 15) */}
-          <div className="text-[10px] pt-0.5">
-            {hasProgressWarning ? (
-              <div className="flex items-start gap-1 text-amber-400">
-                <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
-                <span className="truncate">{progressWarningText}</span>
-              </div>
-            ) : progressSecondsAgo !== null ? (
-              <span className="text-gray-400">
-                Last progress: {progressSecondsAgo}s ago
-              </span>
-            ) : null}
-          </div>
-
-          {/* Optional expandable collectors drawer (Requirement 12) */}
-          {showCollectors && (
-            <div className="mt-2 pt-2 border-t border-enterprise-border/50 max-h-36 overflow-y-auto space-y-1">
-              {isInitializing ? (
-                <p className="text-[10px] text-gray-400 italic py-1">
-                  Collectors have not started yet.
-                </p>
-              ) : !hasCollectorData ? (
-                <p className="text-[10px] text-gray-400 italic py-1">
-                  Waiting for backend collector status...
-                </p>
-              ) : (
-                <div className="grid grid-cols-2 gap-1 text-[10px]">
-                  {Object.entries(collectorStatus).map(([name, status]) => (
-                    <div
-                      key={name}
-                      className="flex items-center justify-between bg-enterprise-bg/60 px-1.5 py-0.5 rounded border border-enterprise-border/40"
-                    >
-                      <span className="text-gray-300 truncate max-w-[85px]" title={name}>{name}</span>
-                      <span
-                        className={`font-mono text-[9px] ${
-                          status.startsWith('SUCCESS')
-                            ? 'text-green-400'
-                            : status === 'RUNNING'
-                              ? 'text-blue-400 animate-pulse'
-                              : status === 'FAILED'
-                                ? 'text-red-400'
-                                : 'text-gray-400'
-                        }`}
-                      >
-                        {status === 'SUCCESS_WITH_DATA' ? 'DATA' : status === 'SUCCESS_EMPTY' ? 'EMPTY' : status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
         </div>
+
+        {/* Heartbeat warning if any */}
+        {hasProgressWarning && (
+          <div className="flex items-center gap-1.5 text-amber-400 text-xs bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-lg">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span>{progressWarningText}</span>
+          </div>
+        )}
+
+        {/* Collapsible Collector Status Grid */}
+        {showCollectors && collectorKeys.length > 0 && (
+          <div className="pt-2 border-t border-enterprise-border/60">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 pt-1">
+              {Object.entries(collectorStatus).map(([name, status]) => {
+                const isSuccess = status.includes('SUCCESS');
+                const isFail = status.includes('FAILED');
+                const isRunning = status === 'RUNNING';
+                return (
+                  <div
+                    key={name}
+                    className="p-2 rounded-lg bg-enterprise-bg/60 border border-enterprise-border/60 text-[10px] flex justify-between items-center"
+                  >
+                    <span className="text-gray-300 font-medium truncate" title={name}>{name}</span>
+                    <span className={`px-1.5 py-0.2 rounded font-mono font-bold text-[9px] ${
+                      isSuccess ? 'text-emerald-400 bg-emerald-500/10' :
+                      isFail ? 'text-rose-400 bg-rose-500/10' :
+                      isRunning ? 'text-blue-400 bg-blue-500/10 animate-pulse' :
+                      'text-gray-400 bg-gray-800'
+                    }`}>
+                      {status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -202,61 +179,45 @@ export const GlobalScanStatus: React.FC = () => {
   // 2. JUST COMPLETED STATE
   if (scanJustCompleted) {
     return (
-      <div className={`border rounded-xl px-3 py-2 shadow-md text-xs w-full sm:max-w-xs min-w-0 transition-all ${
+      <div className={`border rounded-2xl p-3.5 shadow-lg text-xs w-full transition-all ${
         isPartial
           ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
           : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
       }`}>
-        <div className="flex items-center gap-2">
-          {isPartial ? (
-            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-          ) : (
-            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-          )}
-          <div className="min-w-0 flex-1">
-            <p className="font-semibold text-white truncate">
-              {isPartial ? 'Scan completed with regional failures' : 'Scan completed'}
-            </p>
-            <p className="text-[10px] text-gray-300 truncate">
-              Snapshot: <span className="font-mono">{currentShort || 'published'}</span>
-              {failedRegions.length > 0 ? ` (failed: ${failedRegions.join(', ')})` : ''}
-            </p>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            {isPartial ? (
+              <AlertTriangle className="w-5 h-5 shrink-0 text-amber-400" />
+            ) : (
+              <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
+            )}
+            <div>
+              <p className="font-bold text-white text-xs">
+                {isPartial ? 'Scan completed with regional warnings' : 'Scan published successfully'}
+              </p>
+              <p className="text-[11px] text-gray-300 mt-0.5">
+                Authoritative snapshot <span className="font-mono text-white font-semibold">{currentShort || 'updated'}</span> is active.
+                {failedRegions.length > 0 ? ` (failed regions: ${failedRegions.join(', ')})` : ''}
+              </p>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  // 3. ERROR / FAILED STATE (Requirement 19)
+  // 3. ERROR / FAILED STATE
   if (scanError || isFailed) {
     return (
-      <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2 shadow-md text-xs w-full sm:max-w-xs min-w-0">
-        <div className="flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+      <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-3.5 shadow-lg text-xs w-full">
+        <div className="flex items-center gap-2.5">
+          <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
           <div className="min-w-0 flex-1">
-            <p className="font-semibold text-red-300 truncate">Scan failed</p>
-            <p className="text-[10px] text-gray-300 truncate" title={scanError || undefined}>
-              {scanError || 'Showing last snapshot: ' + (currentShort || 'none')}
+            <p className="font-bold text-rose-300">Scan execution failed</p>
+            <p className="text-[11px] text-gray-300 mt-0.5" title={scanError || undefined}>
+              {scanError || 'Prior published snapshot ' + (currentShort || 'none') + ' remains active.'}
             </p>
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  // 4. IDLE STATE WITH SNAPSHOT (Compact status chip)
-  if (currentShort) {
-    return (
-      <div className="hidden md:flex items-center gap-2.5 bg-enterprise-card/60 border border-enterprise-border/60 rounded-xl px-3 py-1.5 text-xs text-gray-300">
-        <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-        <div className="text-[11px] leading-tight">
-          <span className="text-gray-400">Snapshot:</span>{' '}
-          <span className="font-mono text-white font-medium">{currentShort}</span>
-          {lastPublishedAt && (
-            <span className="text-gray-400 text-[10px] ml-1.5">
-              ({new Date(lastPublishedAt).toLocaleTimeString()})
-            </span>
-          )}
         </div>
       </div>
     );
