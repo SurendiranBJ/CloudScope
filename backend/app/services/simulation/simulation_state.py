@@ -21,6 +21,7 @@ logger = logging.getLogger("scanner")
 
 # Actions supported by the simulation engine
 SUPPORTED_ACTIONS = {"ATTACH_POLICY", "DETACH_POLICY"}
+MAX_CHANGES_PER_ANALYST = 100
 
 # Principal types supported
 SUPPORTED_PRINCIPAL_TYPES = {"USER", "GROUP", "ROLE"}
@@ -80,6 +81,8 @@ class SimulationStateManager:
 
     def __init__(self):
         self._changes: Dict[str, SimulationChange] = {}
+        self._change_owners: Dict[str, str] = {}
+        self._owner_change_counts: Dict[str, int] = {}
         self._lock = Lock()
 
     # ------------------------------------------------------------------
@@ -92,6 +95,7 @@ class SimulationStateManager:
         principal_id: str,
         policy_arn: str,
         policy_name: Optional[str] = None,
+        owner_id: str = "default",
     ) -> SimulationChange:
         """Record an ATTACH_POLICY simulation change."""
         change = SimulationChange(
@@ -102,7 +106,11 @@ class SimulationStateManager:
             policy_name=policy_name,
         )
         with self._lock:
+            if self._owner_change_counts.get(owner_id, 0) >= MAX_CHANGES_PER_ANALYST:
+                raise ValueError(f"A simulation can contain at most {MAX_CHANGES_PER_ANALYST} pending changes.")
             self._changes[change.change_id] = change
+            self._change_owners[change.change_id] = owner_id
+            self._owner_change_counts[owner_id] = self._owner_change_counts.get(owner_id, 0) + 1
         logger.info(
             f"[SIMULATION] ATTACH_POLICY queued: {principal_type} '{principal_id}' "
             f"← {change.policy_name} ({policy_arn}) [change_id={change.change_id}]"
@@ -115,6 +123,7 @@ class SimulationStateManager:
         principal_id: str,
         policy_arn: str,
         policy_name: Optional[str] = None,
+        owner_id: str = "default",
     ) -> SimulationChange:
         """Record a DETACH_POLICY simulation change."""
         change = SimulationChange(
@@ -125,52 +134,70 @@ class SimulationStateManager:
             policy_name=policy_name,
         )
         with self._lock:
+            if self._owner_change_counts.get(owner_id, 0) >= MAX_CHANGES_PER_ANALYST:
+                raise ValueError(f"A simulation can contain at most {MAX_CHANGES_PER_ANALYST} pending changes.")
             self._changes[change.change_id] = change
+            self._change_owners[change.change_id] = owner_id
+            self._owner_change_counts[owner_id] = self._owner_change_counts.get(owner_id, 0) + 1
         logger.info(
             f"[SIMULATION] DETACH_POLICY queued: {principal_type} '{principal_id}' "
             f"× {change.policy_name} ({policy_arn}) [change_id={change.change_id}]"
         )
         return change
 
-    def remove_change(self, change_id: str) -> bool:
+    def remove_change(self, change_id: str, owner_id: str = "default") -> bool:
         """Remove a pending simulation change by ID. Returns True if found."""
         with self._lock:
-            if change_id in self._changes:
+            if change_id in self._changes and self._change_owners.get(change_id, "default") == owner_id:
                 removed = self._changes.pop(change_id)
+                owner = self._change_owners.pop(change_id, "default")
+                remaining = self._owner_change_counts.get(owner, 1) - 1
+                if remaining > 0:
+                    self._owner_change_counts[owner] = remaining
+                else:
+                    self._owner_change_counts.pop(owner, None)
                 logger.info(f"[SIMULATION] Change removed: {change_id} ({removed.action} {removed.policy_name})")
                 return True
         logger.warning(f"[SIMULATION] Change not found for removal: {change_id}")
         return False
 
-    def reset(self):
-        """Clear all pending simulation changes."""
+    def reset(self, owner_id: str = "default"):
+        """Clear only the current analyst's pending simulation changes."""
         with self._lock:
-            count = len(self._changes)
-            self._changes.clear()
-        logger.info(f"[SIMULATION] Simulation state reset: {count} changes cleared")
+            owned_ids = [change_id for change_id, owner in self._change_owners.items() if owner == owner_id]
+            for change_id in owned_ids:
+                self._changes.pop(change_id, None)
+                self._change_owners.pop(change_id, None)
+            count = len(owned_ids)
+            self._owner_change_counts.pop(owner_id, None)
+        logger.info(f"[SIMULATION] Simulation state reset for {owner_id}: {count} changes cleared")
 
     # ------------------------------------------------------------------
     # Query helpers
     # ------------------------------------------------------------------
 
-    def get_changes(self) -> List[dict]:
+    def get_changes(self, owner_id: str = "default") -> List[dict]:
         """Return a snapshot of all pending changes as dicts."""
         with self._lock:
-            return [c.to_dict() for c in self._changes.values()]
+            return [
+                change.to_dict()
+                for change_id, change in self._changes.items()
+                if self._change_owners.get(change_id, "default") == owner_id
+            ]
 
-    def has_changes(self) -> bool:
+    def has_changes(self, owner_id: str = "default") -> bool:
         with self._lock:
-            return len(self._changes) > 0
+            return any(owner == owner_id for owner in self._change_owners.values())
 
-    def change_count(self) -> int:
+    def change_count(self, owner_id: str = "default") -> int:
         with self._lock:
-            return len(self._changes)
+            return sum(owner == owner_id for owner in self._change_owners.values())
 
     # ------------------------------------------------------------------
     # Desired inventory derivation
     # ------------------------------------------------------------------
 
-    def get_desired_inventory(self, current_inventory: Any) -> Any:
+    def get_desired_inventory(self, current_inventory: Any, owner_id: str = "default") -> Any:
         """Derive the desired inventory by applying pending simulation changes
         to a deep-copy of the current AWS inventory.
 
@@ -186,7 +213,11 @@ class SimulationStateManager:
         from app.services.scanner.inventory import AWSInventory
 
         with self._lock:
-            changes_snapshot = list(self._changes.values())
+            changes_snapshot = [
+                change
+                for change_id, change in self._changes.items()
+                if self._change_owners.get(change_id, "default") == owner_id
+            ]
 
         # Deep-copy all lists so we never mutate the real scan data
         desired = AWSInventory()

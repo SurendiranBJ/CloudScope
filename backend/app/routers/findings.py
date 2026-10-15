@@ -8,7 +8,11 @@ from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from app.schemas import APIResponse, SecurityFinding, FindingTriageUpdate
-from app.persistence import get_all_finding_states, update_finding_triage
+from app.persistence import (
+    get_all_finding_states,
+    get_finding_state_history,
+    update_finding_triage,
+)
 from app.services.findings.finding_service import finding_service
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
@@ -110,9 +114,18 @@ def get_security_findings(
         item if isinstance(item, SecurityFinding) else SecurityFinding(**item)
         for item in published_findings
     ]
-    triage_states = get_all_finding_states()
+    try:
+        triage_states = get_all_finding_states()
+    except Exception as err:
+        raise HTTPException(status_code=503, detail="Finding lifecycle state is temporarily unavailable") from err
     for finding in findings:
         state = triage_states.get(finding.id, {})
+        if state.get("status"):
+            finding.status = state["status"]
+        finding.firstSeen = state.get("first_seen") or finding.firstSeen
+        finding.lastSeen = state.get("last_seen") or finding.lastSeen
+        finding.updatedAt = state.get("updated_at") or finding.updatedAt
+        finding.resolvedAt = state.get("resolved_at") or finding.resolvedAt
         finding.assignedTo = state.get("assigned_to")
         finding.dueDate = state.get("due_date")
         finding.analystNotes = state.get("analyst_notes")
@@ -190,7 +203,16 @@ def get_finding_by_id(
     if not finding:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
-    state = get_all_finding_states().get(finding_id, {})
+    try:
+        state = get_all_finding_states().get(finding_id, {})
+    except Exception as err:
+        raise HTTPException(status_code=503, detail="Finding lifecycle state is temporarily unavailable") from err
+    if state.get("status"):
+        finding.status = state["status"]
+    finding.firstSeen = state.get("first_seen") or finding.firstSeen
+    finding.lastSeen = state.get("last_seen") or finding.lastSeen
+    finding.updatedAt = state.get("updated_at") or finding.updatedAt
+    finding.resolvedAt = state.get("resolved_at") or finding.resolvedAt
     finding.assignedTo = state.get("assigned_to")
     finding.dueDate = state.get("due_date")
     finding.analystNotes = state.get("analyst_notes")
@@ -202,6 +224,32 @@ def get_finding_by_id(
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=finding
+    )
+
+
+@router.get("/{finding_id}/history", response_model=APIResponse[List[dict]])
+def get_finding_history(
+    finding_id: str,
+    current_user: AuthenticatedUser = Depends(require_viewer),
+):
+    """Return persisted status transitions for one finding."""
+    finding_exists = any(
+        (item.id if isinstance(item, SecurityFinding) else item.get("id")) == finding_id
+        for item in get_current_findings()
+    )
+    if not finding_exists:
+        raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+    try:
+        history = get_finding_state_history(finding_id)
+    except Exception as err:
+        raise HTTPException(status_code=503, detail="Finding history is temporarily unavailable") from err
+    return APIResponse(
+        success=True,
+        message="Finding status history retrieved successfully",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=get_current_snapshot_id(),
+        snapshot_published_at=get_current_snapshot_published_at(),
+        data=history,
     )
 
 

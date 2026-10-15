@@ -67,7 +67,7 @@ def update_scan_interval(
 @router.post(
     "/settings/clear-cache",
     response_model=APIResponse[dict],
-    summary="Manually clear the Redis and memory cache",
+    summary="Clear CloudScope-owned Redis and memory cache entries",
     description="Restricted to ADMINISTRATOR."
 )
 def clear_cache(
@@ -92,7 +92,7 @@ def clear_cache(
 
     return APIResponse(
         success=True,
-        message="Cache cleared successfully",
+        message="CloudScope cache cleared successfully",
         timestamp=datetime.now(timezone.utc).isoformat(),
         data={"cleared": True}
     )

@@ -88,6 +88,21 @@ class FindingStateModel(Base):
     analyst_notes = Column(Text, nullable=True)
 
 
+class FindingStateHistoryModel(Base):
+    """Append-only record of finding lifecycle transitions."""
+
+    __tablename__ = "finding_state_history"
+
+    event_id = Column(String(64), primary_key=True, index=True)
+    finding_id = Column(String(128), nullable=False, index=True)
+    from_status = Column(String(32), nullable=True)
+    to_status = Column(String(32), nullable=False)
+    occurred_at = Column(String(64), nullable=False, index=True)
+    actor_id = Column(String(128), nullable=True)
+    reason = Column(Text, nullable=True)
+    snapshot_id = Column(String(64), nullable=True, index=True)
+
+
 class AuditEventModel(Base):
     __tablename__ = "audit_events"
 

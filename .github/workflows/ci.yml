@@ -417,9 +417,9 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
-      - name: Dependency Security Audit (Informational)
+      - name: Fail on high-severity dependency vulnerabilities
         working-directory: frontend
-        run: npm audit --audit-level=high || true
+        run: npm audit --audit-level=high
 
   frontend-build:
     name: Frontend - Production Build

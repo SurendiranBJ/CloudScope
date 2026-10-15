@@ -31,8 +31,11 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
     if not G or not G.has_node(node_id):
         return {
             "node_id": node_id,
-            "blast_score": 0,
-            "severity": "low",
+            "status": "NOT_FOUND",
+            "is_complete": False,
+            "calculation_scope": "graph_topology_approximation",
+            "blast_score": None,
+            "severity": "unknown",
             "reachable_resource_count": 0,
             "reachable_identities_count": 0,
             "reachable_privilege_count": 0,
@@ -48,10 +51,12 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
     try:
         from app.services.attack.constants import MAX_ROLE_HOPS
 
-        try:
-            reachable_lengths = nx.single_source_shortest_path_length(G, node_id, cutoff=MAX_ROLE_HOPS)
-        except Exception:
-            reachable_lengths = {}
+        reachable_lengths = nx.single_source_shortest_path_length(G, node_id, cutoff=MAX_ROLE_HOPS)
+        truncated_nodes = [
+            nid for nid, depth in reachable_lengths.items()
+            if depth >= MAX_ROLE_HOPS
+            and any(successor not in reachable_lengths for successor in G.successors(nid))
+        ]
 
         descendants = [nid for nid in reachable_lengths if nid != node_id]
 
@@ -82,13 +87,10 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
 
             # Measure shortest path
             path_to_node = []
-            try:
-                path_to_node = nx.shortest_path(G, node_id, nid)
-                d = len(path_to_node) - 1
-                if d > max_depth:
-                    max_depth = d
-            except Exception:
-                pass
+            path_to_node = nx.shortest_path(G, node_id, nid)
+            d = len(path_to_node) - 1
+            if d > max_depth:
+                max_depth = d
 
             if ntype in IDENTITY_TYPES:
                 identities.append(nid)
@@ -147,10 +149,18 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
             evidence.append(f"{res_count} total cloud infrastructure resources accessible within {max_depth} hop(s).")
         if priv_count > 0:
             evidence.append(f"{priv_count} intermediate IAM roles/groups traversed in lateral attack graph.")
+        if truncated_nodes:
+            evidence.append(
+                f"Traversal stopped at the {MAX_ROLE_HOPS}-hop limit; the result may omit deeper reachable assets."
+            )
 
         sorted_regions = sorted(list(affected_regions))
         return {
             "node_id": node_id,
+            "status": "PARTIAL" if truncated_nodes else "COMPLETE",
+            "is_complete": not truncated_nodes,
+            "calculation_scope": "graph_topology_approximation",
+            "truncation_reason": f"Traversal limit of {MAX_ROLE_HOPS} hops reached." if truncated_nodes else None,
             "blast_score": blast_score,
             "severity": severity,
             "affected_resource_count": res_count,
@@ -183,8 +193,12 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
         logger.error(f"Failed to calculate blast radius for {node_id}: {e}")
         return {
             "node_id": node_id,
-            "blast_score": 0,
-            "severity": "low",
+            "status": "ERROR",
+            "is_complete": False,
+            "calculation_scope": "graph_topology_approximation",
+            "error": "Blast radius calculation failed; exposure is unknown.",
+            "blast_score": None,
+            "severity": "unknown",
             "reachable_resource_count": 0,
             "reachable_identities_count": 0,
             "reachable_privilege_count": 0,
@@ -193,5 +207,6 @@ def calculate_blast_radius(G: nx.DiGraph, node_id: str) -> Dict[str, Any]:
             "critical_assets": [],
             "reachable_nodes": [],
             "resource_types": {},
-            "evidence": []
+            "evidence": [],
+            "risk_model_version": RISK_MODEL_VERSION,
         }

@@ -8,6 +8,7 @@ Handles transactions for ScanRuns, Snapshots, Finding lifecycle states, and Audi
 import json
 import logging
 import os
+import uuid
 from datetime import datetime, timezone, timedelta
 from dataclasses import asdict, is_dataclass
 from enum import Enum
@@ -21,6 +22,7 @@ from app.persistence.models import (
     ScanSnapshotModel,
     CurrentSnapshotPointerModel,
     FindingStateModel,
+    FindingStateHistoryModel,
     AuditEventModel,
 )
 
@@ -499,7 +501,7 @@ def record_finding_state(
     changed_by: Optional[str] = None,
     change_reason: Optional[str] = None,
 ) -> None:
-    """Persist finding lifecycle state transition durably."""
+    """Persist lifecycle state and its transition history in one transaction."""
     try:
         now_str = datetime.now(timezone.utc).isoformat() + "Z"
         first_seen_str = first_seen or now_str
@@ -507,10 +509,12 @@ def record_finding_state(
         snapshot_id_str = snapshot_id or "snap-initial"
         with get_db_session() as session:
             item = session.query(FindingStateModel).filter_by(finding_id=finding_id).first()
+            previous_status = item.status if item else None
+            normalized_status = str(status).upper()
             if not item:
                 item = FindingStateModel(
                     finding_id=finding_id,
-                    status=status,
+                    status=normalized_status,
                     first_seen=first_seen_str,
                     last_seen=last_seen_str,
                     resolved_at=resolved_at,
@@ -521,18 +525,61 @@ def record_finding_state(
                 )
                 session.add(item)
             else:
-                item.status = status
+                item.status = normalized_status
                 item.last_seen = last_seen_str
                 item.updated_at = now_str
                 item.snapshot_id = snapshot_id_str
-                if resolved_at is not None:
+                if normalized_status in {"OPEN", "RESOLVED"}:
+                    item.resolved_at = resolved_at
+                elif resolved_at is not None:
                     item.resolved_at = resolved_at
                 if changed_by:
                     item.changed_by = changed_by
                 if change_reason:
                     item.change_reason = change_reason
+            if previous_status is None or previous_status.upper() != normalized_status:
+                session.add(FindingStateHistoryModel(
+                    event_id=str(uuid.uuid4()),
+                    finding_id=finding_id,
+                    from_status=previous_status,
+                    to_status=normalized_status,
+                    occurred_at=now_str,
+                    actor_id=changed_by,
+                    reason=change_reason,
+                    snapshot_id=snapshot_id_str,
+                ))
     except Exception as e:
-        logger.warning(f"Failed to record finding state for {finding_id}: {e}")
+        logger.error(f"Failed to durably record finding state for {finding_id}: {e}", exc_info=True)
+        raise DatabasePersistenceError(f"Failed to durably record finding state: {finding_id}") from e
+
+
+def get_finding_state_history(finding_id: str) -> List[Dict[str, Any]]:
+    """Return an immutable, newest-first finding status history."""
+    try:
+        with get_db_session() as session:
+            events = (
+                session.query(FindingStateHistoryModel)
+                .filter_by(finding_id=finding_id)
+                .order_by(desc(FindingStateHistoryModel.occurred_at), desc(FindingStateHistoryModel.event_id))
+                .limit(500)
+                .all()
+            )
+            return [
+                {
+                    "event_id": event.event_id,
+                    "finding_id": event.finding_id,
+                    "from_status": event.from_status,
+                    "to_status": event.to_status,
+                    "occurred_at": event.occurred_at,
+                    "actor_id": event.actor_id,
+                    "reason": event.reason,
+                    "snapshot_id": event.snapshot_id,
+                }
+                for event in events
+            ]
+    except Exception as e:
+        logger.error(f"Failed to query finding state history for {finding_id}: {e}", exc_info=True)
+        raise DatabaseQueryError("Could not retrieve finding history") from e
 
 
 def get_finding_state(finding_id: str) -> Optional[Dict[str, Any]]:
@@ -584,8 +631,8 @@ def get_all_finding_states() -> Dict[str, Dict[str, Any]]:
                 for item in items
             }
     except Exception as e:
-        logger.warning(f"Failed to fetch all finding states: {e}")
-        return {}
+        logger.error(f"Failed to fetch all finding states: {e}", exc_info=True)
+        raise DatabaseQueryError("Could not retrieve finding lifecycle state") from e
 
 
 def update_finding_triage(finding_id: str, assigned_to: Optional[str], due_date: Optional[str], analyst_notes: Optional[str]) -> Dict[str, Any]:

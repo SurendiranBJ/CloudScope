@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import type { ErrorEventDetail } from '../api/client';
+import { apiClient } from '../api/client';
 
 export type Role = 'VIEWER' | 'ANALYST' | 'SECURITY_OFFICER' | 'ADMINISTRATOR';
 
@@ -29,6 +30,15 @@ export const ROLE_PERMISSIONS: Record<Role, string[]> = {
 export interface UserProfile {
   id: string;
   email?: string;
+  name?: string;
+  roles: Role[];
+  permissions: string[];
+}
+
+interface SessionProfileResponse {
+  subject: string;
+  email?: string | null;
+  name?: string | null;
   roles: Role[];
   permissions: string[];
 }
@@ -68,28 +78,64 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return (localStorage.getItem('cloudscope_dev_role') as Role) || 'ADMINISTRATOR';
   });
   const [activeNotice, setActiveNotice] = useState<SecurityNotice | null>(null);
-  const [isLoading] = useState<boolean>(false);
+  const [serverProfile, setServerProfile] = useState<UserProfile | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
   const isDevMode = import.meta.env.DEV && !token;
 
-  // Compute effective roles and permissions
+  // Server-validated roles are authoritative for deployed tokens. The saved
+  // developer role only selects a local development identity.
   const roles: Role[] = useMemo(() => {
-    return isDevMode ? [activeDevRole] : [];
-  }, [activeDevRole, isDevMode]);
+    return serverProfile?.roles ?? (isDevMode ? [activeDevRole] : []);
+  }, [activeDevRole, isDevMode, serverProfile]);
 
   const highestRoleLevel = Math.max(...roles.map((r) => ROLE_HIERARCHY[r] || 1));
   const permissions: string[] = useMemo(() => {
-    return isDevMode ? ROLE_PERMISSIONS[activeDevRole] || ROLE_PERMISSIONS.VIEWER : [];
-  }, [activeDevRole, isDevMode]);
+    return serverProfile?.permissions ?? (isDevMode ? ROLE_PERMISSIONS[activeDevRole] || ROLE_PERMISSIONS.VIEWER : []);
+  }, [activeDevRole, isDevMode, serverProfile]);
 
   const currentUser: UserProfile = useMemo(() => ({
-    id: isDevMode
+    id: serverProfile?.id ?? (isDevMode
       ? localStorage.getItem('cloudscope_dev_user') || 'dev-user'
-      : token ? 'Authenticated user' : 'Not authenticated',
-    email: undefined,
+      : token ? 'Authenticated user' : 'Not authenticated'),
+    email: serverProfile?.email,
+    name: serverProfile?.name,
     roles,
     permissions,
-  }), [isDevMode, token, roles, permissions]);
+  }), [isDevMode, token, roles, permissions, serverProfile]);
+
+  useEffect(() => {
+    if (!token && !isDevMode) {
+      setServerProfile(null);
+      setIsLoading(false);
+      return;
+    }
+
+    let active = true;
+    setIsLoading(true);
+    apiClient.get<{ data: SessionProfileResponse }>('/auth/me')
+      .then(({ data }) => {
+        if (!active) return;
+        const profile = data.data;
+        setServerProfile({
+          id: profile.subject,
+          email: profile.email ?? undefined,
+          name: profile.name ?? undefined,
+          roles: profile.roles,
+          permissions: profile.permissions,
+        });
+      })
+      .catch(() => {
+        if (active) setServerProfile(null);
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [token, isDevMode, activeDevRole]);
 
   const setDevRole = useCallback((role: Role) => {
     if (!import.meta.env.DEV) return;
@@ -105,6 +151,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const logout = useCallback(() => {
     localStorage.removeItem('cloudscope_token');
     setToken(null);
+    setServerProfile(null);
   }, []);
 
   const hasRole = useCallback(

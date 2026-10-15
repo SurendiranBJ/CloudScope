@@ -32,7 +32,7 @@ def isolate_published_state_between_tests():
         from app.persistence.database import get_db_session
         from app.persistence.models import (
             ScanRunModel, ScanSnapshotModel, CurrentSnapshotPointerModel,
-            FindingStateModel, AuditEventModel,
+            FindingStateModel, FindingStateHistoryModel, AuditEventModel,
         )
 
         with cache._lock:
@@ -40,7 +40,7 @@ def isolate_published_state_between_tests():
             cache._local_expiry.clear()
         snapshot_store.clear()
         with get_db_session() as session:
-            for model in (CurrentSnapshotPointerModel, ScanSnapshotModel, ScanRunModel, FindingStateModel, AuditEventModel):
+            for model in (CurrentSnapshotPointerModel, ScanSnapshotModel, ScanRunModel, FindingStateHistoryModel, FindingStateModel, AuditEventModel):
                 session.query(model).delete()
     except Exception:
         # Import-time setup may be incomplete for tests that only inspect source.

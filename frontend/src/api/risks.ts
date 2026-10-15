@@ -12,6 +12,22 @@ export const getSecurityFindings = async (params?: Record<string, string>): Prom
   return res.data.data;
 };
 
+export interface FindingStatusHistory {
+  event_id: string;
+  finding_id: string;
+  from_status: string | null;
+  to_status: string;
+  occurred_at: string;
+  actor_id: string | null;
+  reason: string | null;
+  snapshot_id: string | null;
+}
+
+export const getFindingStatusHistory = async (id: string): Promise<FindingStatusHistory[]> => {
+  const res = await apiClient.get<APIResponse<FindingStatusHistory[]>>(`/findings/${encodeURIComponent(id)}/history`);
+  return res.data.data;
+};
+
 export const acknowledgeFinding = async (id: string): Promise<SecurityFinding> => {
   const res = await apiClient.post<APIResponse<SecurityFinding>>(`/findings/${id}/acknowledge`);
   return res.data.data;

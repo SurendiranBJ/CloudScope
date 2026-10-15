@@ -22,6 +22,7 @@ from app.services.risk.risk_constants import (
     RISK_MODEL_VERSION
 )
 from app.services.findings.remediation_engine import generate_remediation
+from app.services.attack.policy_evaluator import evaluate_trust_policy_risk, parse_policy_document
 from app.cache import cache
 
 logger = logging.getLogger("scanner")
@@ -168,34 +169,29 @@ class FindingService:
                             msg += " Reopen the finding first."
                         raise ValueError(msg)
 
-                    f.status = target
-                    f.updatedAt = now_iso
-                    if target == "RESOLVED":
-                        f.resolvedAt = now_iso
-                    elif target == "OPEN":
-                        f.resolvedAt = None
-
                     matched = f
                     break
 
             if matched:
+                # Commit the authoritative lifecycle state and append-only
+                # history before exposing the mutation through memory/disk.
+                from app.persistence.repository import record_finding_state
+                from app.services.scanner.current_snapshot import get_current_snapshot_id
+                resolved_at = now_iso if target == "RESOLVED" else None
+                record_finding_state(
+                    finding_id=matched.id,
+                    status=target,
+                    first_seen=matched.firstSeen,
+                    last_seen=matched.lastSeen,
+                    resolved_at=resolved_at,
+                    snapshot_id=get_current_snapshot_id(),
+                    changed_by=changed_by,
+                    change_reason=change_reason,
+                )
+                matched.status = target
+                matched.updatedAt = now_iso
+                matched.resolvedAt = resolved_at
                 self._save_findings(findings)
-                # Persist to relational durable store
-                try:
-                    from app.persistence.repository import record_finding_state
-                    from app.services.scanner.current_snapshot import get_current_snapshot_id
-                    record_finding_state(
-                        finding_id=matched.id,
-                        status=matched.status,
-                        first_seen=matched.firstSeen,
-                        last_seen=matched.lastSeen,
-                        resolved_at=matched.resolvedAt,
-                        snapshot_id=get_current_snapshot_id(),
-                        changed_by=changed_by,
-                        change_reason=change_reason
-                    )
-                except Exception as de:
-                    logger.warning(f"Failed to record durable finding state in DB: {de}")
 
             return matched
 
@@ -417,36 +413,47 @@ class FindingService:
             score = r.get("riskScore", 0)
             trust_policy = str(r.get("trustPolicy", ""))
             factors = r.get("riskAssessment", {}).get("factors", [])
+            trust_risk = evaluate_trust_policy_risk(trust_policy)
+            trust_factors = [
+                factor for factor in trust_risk.get("factors", [])
+                if factor.get("code") in {"WILDCARD_TRUST_PRINCIPAL", "UNRESTRICTED_SERVICE_TRUST"}
+            ]
 
-            # A. Wildcard AssumeRole Trust
-            if "*" in trust_policy:
+            # A. Structurally verified broad AssumeRole trust. A wildcard in an
+            # unrelated condition/resource string is not enough to create a finding.
+            if trust_factors:
                 fid = compute_deterministic_id("ASSUMEROLE_RISK", principal=rarn or rname)
                 trust_score = max(score, 75)
                 remediation = generate_remediation("ASSUMEROLE_RISK", r)
+                has_conditions = any(
+                    statement.get("Condition")
+                    for statement in parse_policy_document(trust_policy)
+                    if statement.get("Effect") == "Allow"
+                )
                 findings.append(SecurityFinding(
                     id=fid,
                     type="ASSUMEROLE_RISK",
                     category="IAM",
                     title=f"Broad AssumeRole Trust Policy on Role '{rname}'",
-                    description=f"IAM role '{rname}' allows wildcard or cross-account principals to assume it.",
+                    description=f"IAM role '{rname}' contains a structurally verified wildcard AssumeRole principal. Review its conditions and caller context.",
                     severity=get_severity_label(trust_score),
                     riskScore=trust_score,
-                    riskFactors=[{"code": "WILDCARD_TRUST_PRINCIPAL", "points": 25, "reason": "Trust policy contains wildcard Principal."}],
+                    riskFactors=trust_factors,
                     principal=rname,
                     principalType="Role",
                     resource=rname,
                     resourceType="Role",
                     resourceArn=rarn,
                     region="global",
-                    evidence={"trust_policy": trust_policy, "role_arn": rarn},
-                    impact="Any external entity or account may assume this role if trust conditions are insufficiently constrained.",
+                    evidence={"trust_policy": trust_policy, "role_arn": rarn, "trust_risk_factors": trust_factors, "has_conditions": has_conditions},
+                    impact="A wildcard trust principal can broaden who may assume the role. Conditions may reduce exposure, but must be evaluated against the actual caller context.",
                     remediation=remediation,
                     status="OPEN",
                     source="STATIC_IAM",
                     tags=["iam", "trust-policy", "assumerole"],
                     identity=rname,
                     identityType="Role",
-                    issue="Broad trust policy allows untrusted or wildcard principals to assume role.",
+                    issue="Trust policy contains a wildcard principal that requires review.",
                     recommendation=remediation.title
                 ))
 

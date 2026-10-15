@@ -7,6 +7,7 @@ import time
 from app.config import settings
 
 logger = logging.getLogger("backend")
+CACHE_KEY_PREFIX = "v1:"
 
 class CacheManager:
     def __init__(self):
@@ -131,11 +132,20 @@ class CacheManager:
         self.invalidate(key)
 
     def clear(self):
+        """Clear CloudScope-owned cached data without touching shared Redis keys."""
         if self.redis_client:
             try:
-                self.redis_client.flushdb()
+                batch = []
+                for key in self.redis_client.scan_iter(match=f"{CACHE_KEY_PREFIX}*"):
+                    batch.append(key)
+                    if len(batch) >= 500:
+                        self.redis_client.delete(*batch)
+                        batch.clear()
+                if batch:
+                    self.redis_client.delete(*batch)
             except Exception as e:
-                logger.error(f"Redis flush error: {str(e)}")
+                logger.error(f"CloudScope Redis cache clear error: {str(e)}")
+                raise RuntimeError("Could not clear CloudScope Redis cache") from e
         
         # Local fallback
         with self._lock:

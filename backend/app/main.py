@@ -253,7 +253,8 @@ from app.routers import (
     findings,
     audit,
     operations,
-    health
+    health,
+    session
 )
 
 # Mount Routers under /api/v1
@@ -276,6 +277,7 @@ api_v1_router.include_router(findings.router)
 api_v1_router.include_router(audit.router)
 api_v1_router.include_router(operations.router)
 api_v1_router.include_router(health.router)
+api_v1_router.include_router(session.router)
 
 app.include_router(api_v1_router)
 

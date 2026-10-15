@@ -55,6 +55,11 @@ logger = logging.getLogger("scanner")
 router = APIRouter(tags=["Simulation"], dependencies=[Depends(require_analyst)])
 
 
+def _simulation_owner(current_user: AuthenticatedUser) -> str:
+    """Use issuer plus immutable subject to isolate analyst simulation drafts."""
+    return f"{current_user.issuer}:{current_user.subject}"
+
+
 def _get_current_inventory():
     """Rebuild the simulation input from the authoritative published snapshot."""
     if not has_published_snapshot():
@@ -96,7 +101,7 @@ def _get_policy_doc_map(policies: list[dict]) -> dict:
     return doc_map
 
 
-def _build_analysis():
+def _build_analysis(owner_id: str):
     """Run full desired-state analysis."""
     inv = _get_current_inventory()
     if not inv:
@@ -107,7 +112,7 @@ def _build_analysis():
     current_global_posture = get_current_dashboard().get("globalPosture")
 
     # Build desired inventory
-    desired_inv = simulation_state.get_desired_inventory(inv)
+    desired_inv = simulation_state.get_desired_inventory(inv, owner_id=owner_id)
 
     # Ensure policy documents are available for newly simulated policies
     desired_doc_map = dict(policy_doc_map)
@@ -147,16 +152,17 @@ def _enrich_desired_policy_docs(desired_inv, doc_map: dict):
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("/simulation/state", response_model=APIResponse[dict])
-def get_simulation_state():
+def get_simulation_state(current_user: AuthenticatedUser = Depends(require_analyst)):
     """Return the current list of pending simulation changes."""
-    changes = simulation_state.get_changes()
+    owner_id = _simulation_owner(current_user)
+    changes = simulation_state.get_changes(owner_id=owner_id)
     return APIResponse(
         success=True,
         message=f"Simulation state: {len(changes)} pending change(s). "
                 "SIMULATION ONLY — NOT APPLIED TO AWS.",
         timestamp=datetime.utcnow().isoformat() + "Z",
         data={
-            "simulation_active": simulation_state.has_changes(),
+            "simulation_active": simulation_state.has_changes(owner_id=owner_id),
             "pending_changes": len(changes),
             "changes": changes,
         },
@@ -188,11 +194,13 @@ def add_simulation_change(
     try:
         if action == "ATTACH_POLICY":
             change = simulation_state.attach_policy(
-                ptype, body.principal_id, body.policy_arn, policy_name
+                ptype, body.principal_id, body.policy_arn, policy_name,
+                owner_id=_simulation_owner(current_user),
             )
         else:
             change = simulation_state.detach_policy(
-                ptype, body.principal_id, body.policy_arn, policy_name
+                ptype, body.principal_id, body.policy_arn, policy_name,
+                owner_id=_simulation_owner(current_user),
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -219,9 +227,9 @@ def add_simulation_change(
 
 
 @router.delete("/simulation/changes/{change_id}", response_model=APIResponse[dict])
-def remove_simulation_change(change_id: str):
+def remove_simulation_change(change_id: str, current_user: AuthenticatedUser = Depends(require_analyst)):
     """Remove a single pending simulation change by ID."""
-    removed = simulation_state.remove_change(change_id)
+    removed = simulation_state.remove_change(change_id, owner_id=_simulation_owner(current_user))
     if not removed:
         raise HTTPException(status_code=404, detail=f"Change '{change_id}' not found")
     return APIResponse(
@@ -233,10 +241,11 @@ def remove_simulation_change(change_id: str):
 
 
 @router.post("/simulation/reset", response_model=APIResponse[dict])
-def reset_simulation():
+def reset_simulation(current_user: AuthenticatedUser = Depends(require_analyst)):
     """Clear all pending simulation changes. Returns to real AWS current state."""
-    count = simulation_state.change_count()
-    simulation_state.reset()
+    owner_id = _simulation_owner(current_user)
+    count = simulation_state.change_count(owner_id=owner_id)
+    simulation_state.reset(owner_id=owner_id)
     return APIResponse(
         success=True,
         message=f"Simulation reset: {count} change(s) cleared. "
@@ -304,9 +313,10 @@ def preview_simulation_change(
 
 
 @router.get("/simulation/diff", response_model=APIResponse[dict])
-def get_simulation_diff():
+def get_simulation_diff(current_user: AuthenticatedUser = Depends(require_analyst)):
     """Return the graph diff between current and desired state."""
-    if not simulation_state.has_changes():
+    owner_id = _simulation_owner(current_user)
+    if not simulation_state.has_changes(owner_id=owner_id):
         return APIResponse(
             success=True,
             message="No simulation active.",
@@ -314,7 +324,7 @@ def get_simulation_diff():
             data={"simulation_active": False, "graph_diff": None},
         )
 
-    analysis, err = _build_analysis()
+    analysis, err = _build_analysis(owner_id)
     if err:
         raise HTTPException(status_code=503, detail=err)
 
@@ -324,7 +334,7 @@ def get_simulation_diff():
         timestamp=datetime.utcnow().isoformat() + "Z",
         data={
             "simulation_active": True,
-            "pending_changes": simulation_state.change_count(),
+            "pending_changes": simulation_state.change_count(owner_id=owner_id),
             "graph_diff": analysis.get("graph_diff"),
             "desired_elements": analysis.get("desired_elements", []),
         },
@@ -332,9 +342,10 @@ def get_simulation_diff():
 
 
 @router.get("/simulation/risk", response_model=APIResponse[dict])
-def get_simulation_risk():
+def get_simulation_risk(current_user: AuthenticatedUser = Depends(require_analyst)):
     """Return risk comparison between current and desired state."""
-    if not simulation_state.has_changes():
+    owner_id = _simulation_owner(current_user)
+    if not simulation_state.has_changes(owner_id=owner_id):
         posture = cache.get("v1:global_posture") or {}
         score = posture.get("overall_score", 0)
         return APIResponse(
@@ -349,7 +360,7 @@ def get_simulation_risk():
             },
         )
 
-    analysis, err = _build_analysis()
+    analysis, err = _build_analysis(owner_id)
     if err:
         raise HTTPException(status_code=503, detail=err)
 
@@ -359,16 +370,17 @@ def get_simulation_risk():
         timestamp=datetime.utcnow().isoformat() + "Z",
         data={
             "simulation_active": True,
-            "pending_changes": simulation_state.change_count(),
+            "pending_changes": simulation_state.change_count(owner_id=owner_id),
             **analysis.get("risk_comparison", {}),
         },
     )
 
 
 @router.get("/simulation/attack-paths", response_model=APIResponse[dict])
-def get_simulation_attack_paths():
+def get_simulation_attack_paths(current_user: AuthenticatedUser = Depends(require_analyst)):
     """Return attack path comparison between current and desired state."""
-    if not simulation_state.has_changes():
+    owner_id = _simulation_owner(current_user)
+    if not simulation_state.has_changes(owner_id=owner_id):
         current_paths = cache.get("v1:attack-paths") or []
         return APIResponse(
             success=True,
@@ -384,7 +396,7 @@ def get_simulation_attack_paths():
             },
         )
 
-    analysis, err = _build_analysis()
+    analysis, err = _build_analysis(owner_id)
     if err:
         raise HTTPException(status_code=503, detail=err)
 
@@ -394,7 +406,7 @@ def get_simulation_attack_paths():
         timestamp=datetime.utcnow().isoformat() + "Z",
         data={
             "simulation_active": True,
-            "pending_changes": simulation_state.change_count(),
+            "pending_changes": simulation_state.change_count(owner_id=owner_id),
             "current_paths": cache.get("v1:attack-paths") or [],
             **analysis.get("attack_path_comparison", {}),
         },
@@ -402,9 +414,10 @@ def get_simulation_attack_paths():
 
 
 @router.get("/simulation/blast-radius", response_model=APIResponse[dict])
-def get_simulation_blast_radius():
+def get_simulation_blast_radius(current_user: AuthenticatedUser = Depends(require_analyst)):
     """Return blast radius comparison between current and desired state."""
-    if not simulation_state.has_changes():
+    owner_id = _simulation_owner(current_user)
+    if not simulation_state.has_changes(owner_id=owner_id):
         return APIResponse(
             success=True,
             message="No simulation active.",
@@ -412,7 +425,7 @@ def get_simulation_blast_radius():
             data={"simulation_active": False},
         )
 
-    analysis, err = _build_analysis()
+    analysis, err = _build_analysis(owner_id)
     if err:
         raise HTTPException(status_code=503, detail=err)
 
@@ -422,7 +435,7 @@ def get_simulation_blast_radius():
         timestamp=datetime.utcnow().isoformat() + "Z",
         data={
             "simulation_active": True,
-            "pending_changes": simulation_state.change_count(),
+            "pending_changes": simulation_state.change_count(owner_id=owner_id),
             **analysis.get("blast_radius_comparison", {}),
         },
     )

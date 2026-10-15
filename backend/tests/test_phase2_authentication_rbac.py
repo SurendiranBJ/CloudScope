@@ -55,6 +55,18 @@ def create_token(sub="user-123", roles=None, issuer="https://auth.cloudscope.tes
 
 
 class TestAuthenticationJWT:
+    def test_session_profile_uses_verified_jwt_roles(self):
+        token = create_token(sub="analyst-profile", roles=["ANALYST"])
+        response = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+        assert response.status_code == 200
+        profile = response.json()["data"]
+        assert profile["subject"] == "analyst-profile"
+        assert profile["email"] == "analyst-profile@example.com"
+        assert profile["roles"] == ["ANALYST"]
+        assert "simulation:execute" in profile["permissions"]
+        assert "settings:manage" not in profile["permissions"]
+
     def test_valid_jwt(self):
         token = create_token(sub="analyst-1", roles=["ANALYST"])
         claims = decode_and_verify_token(token)

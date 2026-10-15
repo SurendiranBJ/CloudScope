@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { explainFinding, type CopilotMessage } from '../api/copilot';
 import {
   acknowledgeFinding,
+  getFindingStatusHistory,
   getRiskAssessmentFindings,
   getSecurityFindings,
   resolveFinding,
@@ -65,6 +66,11 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
     refetchInterval: 10000,
     enabled: !findingsData || findingsData.length === 0,
   });
+  const { data: findingHistory = [], isLoading: isHistoryLoading, isError: isHistoryError } = useQuery({
+    queryKey: ['findingStatusHistory', selectedFinding?.id],
+    queryFn: () => getFindingStatusHistory(String(selectedFinding?.id)),
+    enabled: Boolean(selectedFinding?.id),
+  });
 
   const findings: Finding[] = (findingsData?.length ? findingsData : risksData) || [];
   const effectiveSearch = (localSearch || search).trim().toLowerCase();
@@ -103,6 +109,7 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
       await refetchFindings();
       await queryClient.invalidateQueries({ queryKey: ['securityFindings'] });
       await queryClient.invalidateQueries({ queryKey: ['riskAssessmentFindings'] });
+      await queryClient.invalidateQueries({ queryKey: ['findingStatusHistory', selectedFinding.id] });
       setSelectedFinding((current) => current ? {
         ...current,
         status: action === 'acknowledge' ? 'ACKNOWLEDGED' : 'RESOLVED',
@@ -421,6 +428,30 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
                   <p role={triageMessage.includes('Could not') ? 'alert' : 'status'} className="text-sm text-enterprise-subtext">{triageMessage}</p>
                   <button type="button" onClick={handleSaveTriage} disabled={triageLoading} className="rounded-lg bg-enterprise-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-60">{triageLoading ? 'Saving…' : 'Save remediation plan'}</button>
                 </div>
+              </section>
+
+              <section aria-labelledby="finding-history-title" className="rounded-xl border border-enterprise-border bg-enterprise-bg p-4">
+                <h3 id="finding-history-title" className="text-sm font-semibold">Status history</h3>
+                {isHistoryLoading ? <p role="status" className="mt-2 text-sm text-enterprise-subtext">Loading history…</p> : null}
+                {isHistoryError ? <p role="alert" className="mt-2 text-sm text-amber-700 dark:text-amber-300">History is temporarily unavailable.</p> : null}
+                {!isHistoryLoading && !isHistoryError && findingHistory.length === 0 ? <p className="mt-2 text-sm text-enterprise-subtext">No status changes have been recorded yet.</p> : null}
+                {findingHistory.length > 0 && (
+                  <ol className="mt-3 space-y-3 border-l border-enterprise-border pl-4">
+                    {findingHistory.map((event) => (
+                      <li key={event.event_id} className="relative">
+                        <span aria-hidden="true" className="absolute -left-[1.3rem] top-1.5 h-2 w-2 rounded-full bg-enterprise-accent" />
+                        <p className="text-sm font-medium">
+                          {event.from_status ? `${event.from_status.replaceAll('_', ' ')} → ` : 'Created as '}
+                          {event.to_status.replaceAll('_', ' ')}
+                        </p>
+                        <p className="mt-0.5 text-xs text-enterprise-subtext">
+                          {event.actor_id || 'System'} · {event.occurred_at ? new Date(event.occurred_at).toLocaleString() : 'Time unavailable'}
+                          {event.reason ? ` · ${event.reason}` : ''}
+                        </p>
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </section>
 
               {selectedFinding.evidence && (
