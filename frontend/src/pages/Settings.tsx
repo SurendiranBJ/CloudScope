@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Settings, RefreshCw, CheckCircle, AlertCircle, Clock } from 'lucide-react';
-import { postScanInterval } from '../api/settings';
+import { Settings, RefreshCw, CheckCircle, AlertCircle, Clock, Trash2 } from 'lucide-react';
+import { clearCloudScopeCache, postScanInterval } from '../api/settings';
 import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 
 export const SettingsPage: React.FC = () => {
@@ -8,6 +8,8 @@ export const SettingsPage: React.FC = () => {
   const [scanInterval, setScanInterval] = useState(String(scheduledInterval || 5));
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  const [cacheState, setCacheState] = useState<'idle' | 'clearing' | 'success' | 'error'>('idle');
+  const [cacheError, setCacheError] = useState('');
 
   useEffect(() => {
     if (scheduledInterval) {
@@ -28,6 +30,19 @@ export const SettingsPage: React.FC = () => {
       setErrorMsg(detail);
       setSaveState('error');
       setTimeout(() => setSaveState('idle'), 5000);
+    }
+  };
+
+  const handleClearCache = async () => {
+    setCacheState('clearing');
+    setCacheError('');
+    try {
+      await clearCloudScopeCache();
+      setCacheState('success');
+      setTimeout(() => setCacheState('idle'), 4000);
+    } catch (err: any) {
+      setCacheError(err?.response?.data?.detail || err?.message || 'Could not clear the application cache.');
+      setCacheState('error');
     }
   };
 
@@ -146,6 +161,32 @@ export const SettingsPage: React.FC = () => {
           </p>
         </div>
       </form>
+
+      <section className="max-w-4xl bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-3">
+        <div>
+          <h2 className="text-xs font-bold text-white uppercase tracking-wider">Cache maintenance</h2>
+          <p className="text-xs text-enterprise-subtext mt-1">
+            Clear CloudScope-managed Redis and in-process cache entries. Durable scan snapshots are not deleted.
+          </p>
+        </div>
+        {cacheState === 'error' && (
+          <div role="alert" className="flex items-start gap-2 p-3 bg-enterprise-critical/10 border border-enterprise-critical/30 rounded-lg text-xs text-enterprise-critical">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{cacheError}</span>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={handleClearCache}
+          disabled={cacheState === 'clearing'}
+          className="px-4 py-2 border border-enterprise-border hover:border-enterprise-accent disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition-colors flex items-center gap-2"
+        >
+          {cacheState === 'clearing' ? <RefreshCw className="w-4 h-4 animate-spin" /> :
+            cacheState === 'success' ? <CheckCircle className="w-4 h-4 text-enterprise-success" /> :
+              <Trash2 className="w-4 h-4" />}
+          <span>{cacheState === 'clearing' ? 'Clearing cache...' : cacheState === 'success' ? 'Cache cleared' : 'Clear cache'}</span>
+        </button>
+      </section>
     </div>
   );
 };

@@ -1,3 +1,4 @@
+from app.utils.time import to_utc_iso, utc_now_iso
 from app.config import settings
 """
 CloudScope Durable Relational Repository.
@@ -542,7 +543,7 @@ def record_finding_state(
 ) -> None:
     """Persist lifecycle state and its transition history in one transaction."""
     try:
-        now_str = datetime.now(timezone.utc).isoformat() + "Z"
+        now_str = utc_now_iso()
         first_seen_str = first_seen or now_str
         last_seen_str = last_seen or now_str
         snapshot_id_str = snapshot_id or "snap-initial"
@@ -681,7 +682,7 @@ def get_all_finding_states() -> Dict[str, Dict[str, Any]]:
 
 def update_finding_triage(finding_id: str, assigned_to: Optional[str], due_date: Optional[str], analyst_notes: Optional[str]) -> Dict[str, Any]:
     """Persist analyst ownership and remediation context for a finding."""
-    now_str = datetime.now(timezone.utc).isoformat() + "Z"
+    now_str = utc_now_iso()
     with get_db_session() as session:
         storage_id = _finding_storage_id(finding_id)
         item = session.query(FindingStateModel).filter_by(finding_id=storage_id, project_id=get_project_id()).first()
@@ -809,7 +810,7 @@ def query_audit_events(
 def cleanup_old_audit_events(retention_days: int = 90) -> int:
     """Prune audit records older than the retention threshold."""
     try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat() + "Z"
+        cutoff = to_utc_iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
         with get_db_session() as session:
             deleted = (
                 session.query(AuditEventModel)

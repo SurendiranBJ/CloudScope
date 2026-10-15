@@ -1,3 +1,4 @@
+from app.utils.time import to_utc_iso, utc_now
 import logging
 import concurrent.futures
 import time
@@ -60,7 +61,7 @@ def collect_recent_alerts() -> list:
 
         for event in all_events:
             event_id = event['EventId']
-            event_time = event.get('EventTime', datetime.utcnow())
+            event_time = event.get('EventTime', utc_now())
             username = event.get('Username', 'Unknown')
             name = event.get('EventName', 'ConfigDrift')
 
@@ -80,7 +81,7 @@ def collect_recent_alerts() -> list:
 
             alerts.append({
                 "id": event_id,
-                "timestamp": event_time.isoformat() + "Z" if hasattr(event_time, 'isoformat') else str(event_time),
+                "timestamp": to_utc_iso(event_time) if hasattr(event_time, "isoformat") else str(event_time),
                 "severity": severity,
                 "resource": resource_name,
                 "description": f"CloudTrail Audit Alert: {name} action executed by {username}.",

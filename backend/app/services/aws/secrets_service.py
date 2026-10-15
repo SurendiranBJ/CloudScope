@@ -1,3 +1,4 @@
+from app.utils.time import utc_now
 import logging
 import concurrent.futures
 import time
@@ -36,7 +37,7 @@ def collect_secrets() -> RegionalCollectionResult:
                         name = sec['Name']
                         arn = sec['ARN']
                         rotation = sec.get('RotationEnabled', False)
-                        last_changed = sec.get('LastChangedDate', datetime.utcnow())
+                        last_changed = sec.get('LastChangedDate', utc_now())
                         last_accessed = sec.get('LastAccessedDate')
                         description = sec.get('Description', '')
 

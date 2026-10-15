@@ -1,13 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Generic, TypeVar, Optional, List, Dict, Any
-from datetime import datetime
+from app.utils.time import utc_now_iso
 
 T = TypeVar('T')
 
 class APIResponse(BaseModel, Generic[T]):
     success: bool
     message: str
-    timestamp: str = datetime.utcnow().isoformat() + "Z"
+    timestamp: str = Field(default_factory=utc_now_iso)
     snapshot_id: Optional[str] = None
     snapshot_published_at: Optional[str] = None
     data: T

@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope Simulation Router.
 
@@ -160,7 +161,7 @@ def get_simulation_state(current_user: AuthenticatedUser = Depends(require_analy
         success=True,
         message=f"Simulation state: {len(changes)} pending change(s). "
                 "SIMULATION ONLY — NOT APPLIED TO AWS.",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={
             "simulation_active": simulation_state.has_changes(owner_id=owner_id),
             "pending_changes": len(changes),
@@ -221,7 +222,7 @@ def add_simulation_change(
         success=True,
         message=f"Simulation change added: {action} '{policy_name}' to {ptype} '{body.principal_id}'. "
                 "SIMULATION ONLY — NOT APPLIED TO AWS.",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data=change.to_dict(),
     )
 
@@ -235,7 +236,7 @@ def remove_simulation_change(change_id: str, current_user: AuthenticatedUser = D
     return APIResponse(
         success=True,
         message=f"Simulation change '{change_id}' removed.",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={"change_id": change_id, "removed": True},
     )
 
@@ -250,7 +251,7 @@ def reset_simulation(current_user: AuthenticatedUser = Depends(require_analyst))
         success=True,
         message=f"Simulation reset: {count} change(s) cleared. "
                 "Application now reflects real AWS current state.",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={"cleared_changes": count, "simulation_active": False},
     )
 
@@ -304,7 +305,7 @@ def preview_simulation_change(
     return APIResponse(
         success=True,
         message="Preview analysis complete. This is a simulation — no AWS changes made.",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={
             **analysis,
             "simulation_note": "This is a simulation. No changes will be applied to AWS.",
@@ -320,7 +321,7 @@ def get_simulation_diff(current_user: AuthenticatedUser = Depends(require_analys
         return APIResponse(
             success=True,
             message="No simulation active.",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utc_now_iso(),
             data={"simulation_active": False, "graph_diff": None},
         )
 
@@ -331,7 +332,7 @@ def get_simulation_diff(current_user: AuthenticatedUser = Depends(require_analys
     return APIResponse(
         success=True,
         message="Graph diff: current vs desired state",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={
             "simulation_active": True,
             "pending_changes": simulation_state.change_count(owner_id=owner_id),
@@ -351,7 +352,7 @@ def get_simulation_risk(current_user: AuthenticatedUser = Depends(require_analys
         return APIResponse(
             success=True,
             message="No simulation active.",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utc_now_iso(),
             data={
                 "simulation_active": False,
                 "current_score": score,
@@ -367,7 +368,7 @@ def get_simulation_risk(current_user: AuthenticatedUser = Depends(require_analys
     return APIResponse(
         success=True,
         message="Risk comparison: current vs desired",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={
             "simulation_active": True,
             "pending_changes": simulation_state.change_count(owner_id=owner_id),
@@ -385,7 +386,7 @@ def get_simulation_attack_paths(current_user: AuthenticatedUser = Depends(requir
         return APIResponse(
             success=True,
             message="No simulation active.",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utc_now_iso(),
             data={
                 "simulation_active": False,
                 "current_paths": current_paths,
@@ -403,7 +404,7 @@ def get_simulation_attack_paths(current_user: AuthenticatedUser = Depends(requir
     return APIResponse(
         success=True,
         message="Attack path comparison: current vs desired",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={
             "simulation_active": True,
             "pending_changes": simulation_state.change_count(owner_id=owner_id),
@@ -421,7 +422,7 @@ def get_simulation_blast_radius(current_user: AuthenticatedUser = Depends(requir
         return APIResponse(
             success=True,
             message="No simulation active.",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utc_now_iso(),
             data={"simulation_active": False},
         )
 
@@ -432,7 +433,7 @@ def get_simulation_blast_radius(current_user: AuthenticatedUser = Depends(requir
     return APIResponse(
         success=True,
         message="Blast radius comparison: current vs desired",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data={
             "simulation_active": True,
             "pending_changes": simulation_state.change_count(owner_id=owner_id),

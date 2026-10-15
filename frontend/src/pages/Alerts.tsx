@@ -24,7 +24,7 @@ export const Alerts: FC = () => {
     refetchInterval: 10000
   });
 
-  const alerts = data || [];
+  const alerts = useMemo(() => data || [], [data]);
 
   const getSeverityBadge = (severity: SecurityAlert['severity']) => {
     switch (severity) {

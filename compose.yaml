@@ -82,7 +82,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       AI_PROVIDER: ${AI_PROVIDER:-gemini}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
       APP_VERSION: development
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/ready || exit 1"]

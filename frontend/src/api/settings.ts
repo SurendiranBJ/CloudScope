@@ -23,6 +23,10 @@ export const postScanInterval = async (minutes: number): Promise<ScanIntervalRes
   return res.data.data;
 };
 
+export const clearCloudScopeCache = async (): Promise<void> => {
+  await apiClient.post<APIResponse<{ cleared: boolean }>>('/settings/clear-cache');
+};
+
 export const getAvailableRegions = async (): Promise<RegionOption[]> => {
   const res = await apiClient.get<APIResponse<RegionOption[]>>('/settings/available-regions');
   return res.data.data;

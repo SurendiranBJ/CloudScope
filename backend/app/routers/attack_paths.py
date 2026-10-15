@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -95,7 +96,7 @@ def get_attack_paths(
     return APIResponse(
         success=True,
         message="Attack Paths threat pathways retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=paginated
@@ -116,7 +117,7 @@ def get_attack_path_by_id(id: str):
     return APIResponse(
         success=True,
         message=f"Attack path details for '{id}' retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=match_path
@@ -161,7 +162,7 @@ def get_attack_path_evidence(id: str):
     return APIResponse(
         success=True,
         message=f"Transition evidence for attack path '{id}' retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=evidence_payload

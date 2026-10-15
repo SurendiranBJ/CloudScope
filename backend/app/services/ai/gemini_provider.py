@@ -89,25 +89,25 @@ class GeminiProvider(AIProvider):
         return self._client
 
     def _build_config(self, model_name: str, include_thinking: bool = True) -> types.GenerateContentConfig:
-        """Create GenerateContentConfig with thinking budget disabled where supported."""
-        if include_thinking and "lite" not in model_name.lower():
-            try:
-                return types.GenerateContentConfig(
-                    temperature=self.temperature,
-                    max_output_tokens=self.max_output_tokens,
-                    response_mime_type="application/json",
-                    response_schema=CopilotAIResponse,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                )
-            except Exception as e:
-                logger.debug("Could not attach ThinkingConfig: %s", e)
+        """Build a model-compatible structured-output config.
 
-        return types.GenerateContentConfig(
-            temperature=self.temperature,
-            max_output_tokens=self.max_output_tokens,
-            response_mime_type="application/json",
-            response_schema=CopilotAIResponse,
-        )
+        Gemini 3+ uses thinking levels and no longer supports sampling settings
+        such as temperature. Gemini 2.5 continues to use thinking budgets.
+        """
+        normalized_model = model_name.lower().removeprefix("models/")
+        config: dict[str, Any] = {
+            "max_output_tokens": self.max_output_tokens,
+            "response_mime_type": "application/json",
+            "response_schema": CopilotAIResponse,
+        }
+        if normalized_model.startswith(("gemini-3", "gemini-4")):
+            if include_thinking and "lite" not in normalized_model:
+                config["thinking_config"] = types.ThinkingConfig(thinking_level="low")
+        else:
+            config["temperature"] = self.temperature
+            if include_thinking and "lite" not in normalized_model:
+                config["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        return types.GenerateContentConfig(**config)
 
     async def generate_security_response(
         self,

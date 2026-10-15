@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from app.config import settings
 import os
 import json
@@ -369,14 +370,14 @@ class ScanManager:
 
     def _set_active_phase(self, phase_name: str) -> None:
         """Atomically advance the active scan phase and update progress heartbeat."""
-        now_str = datetime.utcnow().isoformat() + "Z"
+        now_str = utc_now_iso()
         self._active_phase = phase_name.upper()
         self._active_phase_started_at = now_str
         self._last_progress_at = now_str
 
     def _complete_phase(self, phase_name: str, duration_seconds: float, status: str = "COMPLETED") -> None:
         """Atomically record completed phase duration and update progress heartbeat."""
-        now_str = datetime.utcnow().isoformat() + "Z"
+        now_str = utc_now_iso()
         norm_name = phase_name.upper()
         self._phase_durations[norm_name] = {
             "duration_seconds": max(0.0, round(duration_seconds, 3)),
@@ -481,7 +482,7 @@ class ScanManager:
             self._is_running = True
             self._scan_id = str(uuid.uuid4())
             self._scan_status = "SCANNING"
-            now_iso = datetime.utcnow().isoformat() + "Z"
+            now_iso = utc_now_iso()
             self._scan_started_at = now_iso
             self._scan_started_perf = time.perf_counter()
             self._scan_elapsed_seconds = 0.0
@@ -525,7 +526,7 @@ class ScanManager:
             self._is_running = True
             self._scan_id = str(uuid.uuid4())
             self._scan_status = "SCANNING"
-            now_iso = datetime.utcnow().isoformat() + "Z"
+            now_iso = utc_now_iso()
             self._scan_started_at = now_iso
             self._scan_started_perf = time.perf_counter()
             self._scan_elapsed_seconds = 0.0
@@ -577,7 +578,7 @@ class ScanManager:
                 if lease_valid is None or not lease_valid():
                     raise RuntimeError("Production scan execution requires a valid Redis lock lease")
             self._initialization_stage = "AUTHENTICATING_AWS"
-            self._last_progress_at = datetime.utcnow().isoformat() + "Z"
+            self._last_progress_at = utc_now_iso()
             # 0. AWS STS Authentication Check
             aws_diag = get_aws_diagnostic_info()
             if not aws_diag["authenticated"]:
@@ -619,13 +620,13 @@ class ScanManager:
             # Preserve current snapshot during scan execution; inventory is replaced atomically upon validation
             clear_region_cache()
             self._initialization_stage = "RESOLVING_REGIONS"
-            self._last_progress_at = datetime.utcnow().isoformat() + "Z"
+            self._last_progress_at = utc_now_iso()
             from app.services.aws.region_cache import get_resolved_scan_mode
             scanned_regions = list(get_all_regions())
             resolved_scan_mode = get_resolved_scan_mode()
             logger.info(f"[INFO] Scan mode: {resolved_scan_mode}, regions: {scanned_regions}")
             self._initialization_stage = "STARTING_COLLECTORS"
-            self._last_progress_at = datetime.utcnow().isoformat() + "Z"
+            self._last_progress_at = utc_now_iso()
 
             collector_funcs = {
                 "IAM_Users": iam_service.collect_users,
@@ -734,7 +735,7 @@ class ScanManager:
                         collector_results[name] = []
 
                     self._completed_collectors = min(self._total_collectors, self._completed_collectors + 1)
-                    self._last_progress_at = datetime.utcnow().isoformat() + "Z"
+                    self._last_progress_at = utc_now_iso()
 
                     # Live resource & identity count telemetry
                     items_len = len(collector_results.get(name, []))
@@ -779,7 +780,7 @@ class ScanManager:
                     "scan_id": scan_id,
                     "scan_status": "FAILED",
                     "error": err_msg,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": utc_now_iso(),
                     "service_status": self._service_status,
                     "failed_regions": self._failed_regions,
                     "phase_durations": self._phase_durations,
@@ -1064,7 +1065,7 @@ class ScanManager:
             running_ec2 = [e for e in working_inventory.ec2 if is_running_ec2(e)]
 
             # 9. Record ScanHistory (Accurate Severity Metrics)
-            scan_timestamp = datetime.utcnow().isoformat() + "Z"
+            scan_timestamp = utc_now_iso()
             resources_count = (
                 len(running_ec2) + len(working_inventory.s3) +
                 len(working_inventory.lambdas) + len(working_inventory.secrets) +
@@ -1600,7 +1601,7 @@ class ScanManager:
                 "scan_id": scan_id,
                 "scan_status": "FAILED",
                 "error": str(e),
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": utc_now_iso(),
                 "service_status": self._service_status,
                 "phase_durations": self._phase_durations,
                 "last_completed_scan_at": self._last_completed_scan_at,

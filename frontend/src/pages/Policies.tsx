@@ -91,7 +91,7 @@ export const Policies: React.FC = () => {
     placeholderData: (previousData) => previousData,
   });
 
-  const policies = catalogData?.items ?? [];
+  const policies = useMemo(() => catalogData?.items ?? [], [catalogData?.items]);
   const total = catalogData?.total ?? 0;
   const totalPages = catalogData?.total_pages ?? 1;
 

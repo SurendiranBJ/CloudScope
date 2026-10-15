@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope Immutable SnapshotStore.
 
@@ -106,7 +107,7 @@ class SnapshotStore:
         scan_metadata: Optional[Dict[str, Any]] = None,
     ) -> PublishedSnapshot:
         """Atomically publish a new immutable snapshot under versioned keys with NO TTL."""
-        pub_at = published_at or (datetime.now(timezone.utc).isoformat() + "Z")
+        pub_at = published_at or (utc_now_iso())
         reg_meta = dict(region_metadata or {})
         comp = dict(collection_completeness or {})
         meta = dict(scan_metadata or {})

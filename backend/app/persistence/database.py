@@ -7,10 +7,13 @@ for SQLite (development) and PostgreSQL (production).
 """
 
 import os
+import logging
 from contextlib import contextmanager
 from typing import Generator, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
+
+logger = logging.getLogger("cloudscope.database")
 
 def resolve_database_url(url: Optional[str] = None) -> str:
     """
@@ -155,7 +158,8 @@ def init_db() -> None:
                         conn.execute(text(f"ALTER TABLE cloud_projects ADD COLUMN {col_name} {col_def}"))
                 conn.commit()
     except Exception:
-        pass
+        logger.exception("Relational schema initialization or compatibility migration failed")
+        raise
 
 
 @contextmanager

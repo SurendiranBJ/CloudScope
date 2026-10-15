@@ -65,7 +65,7 @@ Each `RATE_LIMIT_<FEATURE>_MAX` is a request count and `RATE_LIMIT_<FEATURE>_WIN
 | --- | --- | --- |
 | `AI_PROVIDER` | `gemini` | Provider selection; Gemini is the currently supported provider. |
 | `GEMINI_API_KEY` | unset | Server-side credential; optional when AI features are not used. Do not expose to the frontend. |
-| `GEMINI_MODEL` | `gemini-3.5-flash` | Model identifier; confirm availability and terms with the provider. |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Model identifier; confirm availability and terms with the provider. Gemini 3+ uses thinking levels and ignores legacy sampling settings. |
 | `GEMINI_FALLBACK_MODELS` | configured list | Candidate fallback model names. Verify current provider availability. |
 | `AI_MAX_OUTPUT_TOKENS` | `4096` | Maximum generated output budget. |
 | `AI_TEMPERATURE` | `0.2` | Sampling setting for model output. |

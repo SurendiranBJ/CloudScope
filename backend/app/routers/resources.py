@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from fastapi import APIRouter, Depends
 from typing import List
 from app.schemas import APIResponse, CloudResource
@@ -38,7 +39,7 @@ def get_cloud_resources():
     return APIResponse(
         success=True,
         message="Cloud Resources catalog retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=data

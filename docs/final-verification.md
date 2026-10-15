@@ -5,10 +5,10 @@
 
 ## Current local checks
 
-- Backend full suite: `python -m pytest -q` completed with 555 passed and 0 failed in 527.27 seconds. Pytest reported deprecation/framework warnings.
+- Backend full suite: `python -m pytest -q` completed with 564 passed and 0 failed in 395.11 seconds. The earlier `datetime.utcnow()` warnings are gone; remaining warnings come from Google GenAI type aliases and Starlette's test client.
 - Frontend tests: `npm test` completed with 33 passed and 0 failed.
 - Frontend production build and TypeScript check: `npm run build` passed.
-- Frontend lint: `npm run lint` exited successfully with non-blocking warnings (hook dependencies, Fast Refresh exports, and minor lint findings).
+- Frontend lint: `npm run lint` exited successfully with 13 non-blocking Fast Refresh export warnings; unstable hook-dependency, unused-import, and regex-escape warnings were fixed.
 - Backend compile check: `python -m compileall -q backend/app` passed in the implementation pass.
 - Git whitespace check: `git diff --check` passed after Markdown cleanup; Git still reports Windows line-ending normalization notices.
 

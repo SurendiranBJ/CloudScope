@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope Policies Router.
 
@@ -225,7 +226,7 @@ def get_policy_catalog(
     return APIResponse(
         success=True,
         message=f"Policy catalog: {len(result)} of {total} policies returned (page {page}/{total_pages})",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=snapshot_id,
         snapshot_published_at=snapshot_published_at,
         data=data,
@@ -264,7 +265,7 @@ def explain_access(
     return APIResponse(
         success=True,
         message=f"Access explanation for '{principal}' targeting '{resource}'",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data=explanation,
     )
 
@@ -393,7 +394,7 @@ def get_policy_detail(policy_id: str):
     return APIResponse(
         success=True,
         message=f"Policy details for '{pol_name}'",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=entry,

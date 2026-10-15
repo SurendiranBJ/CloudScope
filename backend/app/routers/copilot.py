@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope AI Security Copilot Router.
 
@@ -255,7 +256,7 @@ async def explain_finding(req: ExplainFindingRequest):
         return APIResponse(
             success=True,
             message=f"Explanation for finding '{finding_id}' generated successfully",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utc_now_iso(),
             data=data
         )
     except Exception as e:
@@ -315,7 +316,7 @@ async def explain_attack_path(req: ExplainAttackPathRequest):
         return APIResponse(
             success=True,
             message=f"Explanation for attack path '{attack_path_id}' generated successfully",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utc_now_iso(),
             data=data
         )
     except Exception as e:

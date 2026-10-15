@@ -27,10 +27,10 @@ CloudScope has meaningful AWS collection, graph analysis, finding workflow, acco
 
 ## Verification evidence for this review
 
-- Backend full suite: 555 passed, 0 failed in 527.27 seconds. Pytest emitted deprecation and framework warnings; see the test output for locations.
+- Backend full suite: 564 passed, 0 failed in 395.11 seconds. The prior `datetime.utcnow()` warnings are removed; two external dependency warnings remain.
 - Frontend test suite: 33 passed, 0 failed.
 - Frontend TypeScript/production build: passed.
-- Full frontend lint: exit code 0; Oxlint reports non-blocking warnings, including hook dependency and Fast Refresh warnings.
+- Full frontend lint: exit code 0; Oxlint reports 13 non-blocking Fast Refresh export warnings. Hook dependency warnings were corrected.
 - Python compile and Git whitespace checks passed.
 - No hosted GitHub Actions result, fresh real-AWS scan, production Compose rehearsal, or independent security review was verified for the final change set.
 

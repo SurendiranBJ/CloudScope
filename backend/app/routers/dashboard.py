@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from fastapi import APIRouter, Depends
 from app.schemas import APIResponse, DashboardData
 from app.services.scanner.scan_manager import scan_manager
@@ -63,7 +64,7 @@ def get_dashboard_summary():
         return APIResponse(
             success=True,
             message="Dashboard summary retrieved successfully",
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utc_now_iso(),
             snapshot_id=get_current_snapshot_id(),
             snapshot_published_at=get_current_snapshot_published_at(),
             data=data
@@ -129,7 +130,7 @@ def get_dashboard_summary():
     return APIResponse(
         success=True,
         message="Dashboard status retrieved",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=empty_data

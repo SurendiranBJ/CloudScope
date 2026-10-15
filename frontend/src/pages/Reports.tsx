@@ -124,7 +124,7 @@ export const Reports: React.FC = () => {
   const csvCell = (value: unknown) => {
     let text = String(value ?? '');
     // Prevent spreadsheet formula execution for untrusted exported values.
-    if (/^[\s]*[=+@\-]/.test(text)) text = `'${text}`;
+    if (/^[\s]*[=+@-]/.test(text)) text = `'${text}`;
     return `"${text.replace(/"/g, '""')}"`;
   };
 

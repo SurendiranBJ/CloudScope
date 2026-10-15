@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from fastapi import APIRouter, Depends
 from typing import List
 from datetime import datetime
@@ -25,7 +26,7 @@ def get_graph_elements():
     return APIResponse(
         success=True,
         message="Graph nodes and edges elements retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=data
@@ -45,7 +46,7 @@ def rebuild_graph(current_user=Depends(require_admin)):
     return APIResponse(
         success=True,
         message=result.get("message", "Scan started"),
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=result
@@ -58,7 +59,7 @@ def get_effective_access():
     return APIResponse(
         success=True,
         message="Effective access records retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=records or []

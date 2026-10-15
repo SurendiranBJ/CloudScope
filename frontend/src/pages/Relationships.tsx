@@ -83,7 +83,7 @@ export const Relationships: React.FC = () => {
     enabled: !!selectedEntity,
   });
 
-  const allRels = relData?.relationships ?? [];
+  const allRels = useMemo(() => relData?.relationships ?? [], [relData?.relationships]);
   const hasExistingData = !!relData && allRels.length > 0;
   const showInitialLoading = isLoading && !relData && !hasCompletedSnapshot;
 

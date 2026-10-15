@@ -5,7 +5,6 @@ import {
   getGraphEntityStyle,
   getNodeColors,
   getTargetCardStyle,
-  ENTITY_STYLES,
 } from '../src/constants/graphStyles.ts';
 
 test('normalizeGraphType handles canonical and case variations', () => {

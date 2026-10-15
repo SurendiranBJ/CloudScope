@@ -72,8 +72,8 @@ class Settings(BaseSettings):
     # AI Security Copilot Settings
     AI_PROVIDER: str = "gemini"
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-3.5-flash"
-    GEMINI_FALLBACK_MODELS: list[str] = ["gemini-flash-lite-latest", "gemini-3.8-flash"]
+    GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_FALLBACK_MODELS: list[str] = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
     AI_MAX_OUTPUT_TOKENS: int = 4096
     AI_TEMPERATURE: float = 0.2
     AI_CONTEXT_MAX_CHARS: int = 24000

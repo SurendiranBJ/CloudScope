@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope Canonical Security Finding Service.
 
@@ -155,7 +156,7 @@ class FindingService:
             findings = self.get_all_findings()
             matched = None
             target = new_status.upper()
-            now_iso = datetime.utcnow().isoformat() + "Z"
+            now_iso = utc_now_iso()
 
             for f in findings:
                 if f.id == finding_id:
@@ -283,7 +284,7 @@ class FindingService:
         scan_timestamp: Optional[str] = None
     ) -> List[SecurityFinding]:
         """Extract canonical findings from current scan inventory, attack paths, and runtime activity."""
-        ts = scan_timestamp or (datetime.utcnow().isoformat() + "Z")
+        ts = scan_timestamp or (utc_now_iso())
         findings: List[SecurityFinding] = []
 
         users = getattr(inventory, "users", [])
@@ -834,7 +835,7 @@ class FindingService:
         Preserves original firstSeen timestamp.
         Implements Regional Failure Isolation: Failed regions do NOT resolve existing findings.
         """
-        scan_ts = scan_timestamp or (datetime.utcnow().isoformat() + "Z")
+        scan_ts = scan_timestamp or (utc_now_iso())
         succ_regs = set(successful_regions or [])
         fail_regs = set(failed_regions or [])
 

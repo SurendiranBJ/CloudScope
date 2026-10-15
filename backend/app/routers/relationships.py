@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope Relationships Router.
 
@@ -285,7 +286,7 @@ def get_all_relationships(
     return APIResponse(
         success=True,
         message=f"Relationships: {len(relationships)} records returned",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=snapshot_id,
         snapshot_published_at=snapshot_published_at,
         data={
@@ -374,7 +375,7 @@ def get_entity_relationships(
     return APIResponse(
         success=True,
         message=f"Relationships for {entity_type} '{entity_name}'",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=snapshot_id,
         snapshot_published_at=snapshot_published_at,
         data={

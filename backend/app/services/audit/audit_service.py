@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope Central Audit Logging Service.
 
@@ -39,7 +40,7 @@ class AuditService:
     ) -> str:
         """Sanitize and record an audit event durably."""
         event_id = str(uuid.uuid4())
-        now_iso = datetime.now(timezone.utc).isoformat() + "Z"
+        now_iso = utc_now_iso()
 
         clean_metadata = sanitize_data(metadata or {})
 

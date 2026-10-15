@@ -9,10 +9,10 @@ This is a current status note, not a certification. Older real-account metrics a
 
 | Check | Result | Scope |
 | --- | --- | --- |
-| Backend regression | PASS: 555 passed, 0 failed in 527.27s. | Full `python -m pytest -q`; pytest emitted deprecation/framework warnings. |
+| Backend regression | PASS: 564 passed, 0 failed in 395.11s. | Full `python -m pytest -q`; remaining warnings are from Google GenAI type aliases and Starlette's test client. |
 | Frontend tests | PASS: 33 passed, 0 failed. | `npm test`. |
 | Frontend production build | PASS | `npm run build` including TypeScript project build. |
-| Frontend lint | PASS with warnings | `npm run lint` exits 0; hook dependency, Fast Refresh, and minor lint warnings remain. |
+| Frontend lint | PASS with warnings | `npm run lint` exits 0; 13 non-blocking Fast Refresh export warnings remain. |
 | Diff whitespace check | PASS | `git diff --check`; Git printed line-ending normalization warnings for Windows working files. |
 | Production Compose runtime | NOT VERIFIED | No deployment smoke test or Docker runtime validation was performed in this review. |
 | Hosted CI for release commit | NOT VERIFIED | Workflow definitions and local runs do not establish hosted GitHub Actions outcomes. |

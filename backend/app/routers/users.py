@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from fastapi import APIRouter, Depends
 from typing import List
 from datetime import datetime
@@ -22,7 +23,7 @@ def get_iam_users():
     return APIResponse(
         success=True,
         message="IAM Users collection retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=raw_data

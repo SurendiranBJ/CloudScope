@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from fastapi import APIRouter, Depends
 from typing import List
 from app.schemas import APIResponse, RiskFinding
@@ -56,7 +57,7 @@ def get_risk_assessment_findings():
     return APIResponse(
         success=True,
         message="Risk assessment findings retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=snapshot_id,
         snapshot_published_at=snapshot_published_at,
         data=data
@@ -111,7 +112,7 @@ def get_risk_explanation(entity_id: str):
     return APIResponse(
         success=True,
         message=f"Risk score explanation for '{entity_id}' retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=explanation

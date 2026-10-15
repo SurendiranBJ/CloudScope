@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 from app.config import settings
 """
 CloudScope Unified Scan Coordinator.
@@ -91,7 +92,7 @@ class ScanCoordinator:
 
             # 3. Generate scan_id and mark in-memory state
             scan_id = str(uuid.uuid4())
-            now_iso = datetime.now(timezone.utc).isoformat() + "Z"
+            now_iso = utc_now_iso()
 
             # 4. Record durable state & audit log
             try:
@@ -222,7 +223,7 @@ class ScanCoordinator:
             scan_manager._scan_id = scan_id
             scan_manager._active_project_id = project_id
             scan_manager._last_project_id = project_id
-            scan_manager._scan_started_at = datetime.now(timezone.utc).isoformat() + "Z"
+            scan_manager._scan_started_at = utc_now_iso()
             scan_manager._scan_started_perf = time.perf_counter()
             scan_manager._completed_collectors = 0
             scan_manager._total_collectors = 12
@@ -240,7 +241,7 @@ class ScanCoordinator:
             scan_manager._last_error = str(e)
         finally:
             duration = max(0.0, round(time.time() - start_time, 2))
-            completed_iso = datetime.now(timezone.utc).isoformat() + "Z"
+            completed_iso = utc_now_iso()
 
             # 1. Stop heartbeat
             stop_heartbeat.set()

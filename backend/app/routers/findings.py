@@ -1,3 +1,4 @@
+from app.utils.time import utc_now_iso
 """
 CloudScope Canonical Security Findings Router.
 
@@ -182,7 +183,7 @@ def get_security_findings(
     return APIResponse(
         success=True,
         message="Unified security findings retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=paginated
@@ -220,7 +221,7 @@ def get_finding_by_id(
     return APIResponse(
         success=True,
         message="Finding retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=finding
@@ -246,7 +247,7 @@ def get_finding_history(
     return APIResponse(
         success=True,
         message="Finding status history retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=history,
@@ -302,7 +303,7 @@ def update_finding_triage_details(
     return APIResponse(
         success=True,
         message="Finding remediation plan saved",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=finding,
@@ -350,7 +351,7 @@ def get_finding_evidence(
     return APIResponse(
         success=True,
         message=f"Evidence for finding '{finding_id}' retrieved successfully",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=evidence_payload
@@ -387,7 +388,7 @@ def acknowledge_finding(
     return APIResponse(
         success=True,
         message=f"Finding '{finding_id}' acknowledged",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data=updated
     )
 
@@ -422,7 +423,7 @@ def resolve_finding(
     return APIResponse(
         success=True,
         message=f"Finding '{finding_id}' marked as resolved",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data=updated
     )
 
@@ -457,7 +458,7 @@ def suppress_finding(
     return APIResponse(
         success=True,
         message=f"Finding '{finding_id}' suppressed",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data=updated
     )
 
@@ -492,6 +493,6 @@ def reopen_finding(
     return APIResponse(
         success=True,
         message=f"Finding '{finding_id}' reopened",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=utc_now_iso(),
         data=updated
     )

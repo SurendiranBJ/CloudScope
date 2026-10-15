@@ -12,7 +12,7 @@ This file summarizes the current implementation represented by the working tree.
 - **Simulation safety:** policy changes are analyzed as what-if state only; simulation does not apply IAM changes to AWS.
 - **Graph and attack-path UX:** Cloud Graph relationship labels remain visible; the dashboard separates its title and controls toolbar; Attack Path groups are sorted by severity/risk and sequentially numbered in the filtered view.
 - **Scan lifecycle UX:** elapsed time normalizes backend ISO timestamps with an offset and trailing Z and continues across status polling.
-- **Verification:** the final local backend suite passed (555/555), frontend tests passed (33/33), TypeScript/production build passed, and lint exited 0 with warnings. See docs/final-verification.md for exact scope and remaining CI/deployment gaps.
+- **Verification:** the latest local backend suite passed (564/564), frontend tests passed (33/33), TypeScript/production build passed, and lint exited 0 with non-blocking Fast Refresh warnings. See docs/final-verification.md for exact scope and remaining CI/deployment gaps.
 
 ## Current limitations
 

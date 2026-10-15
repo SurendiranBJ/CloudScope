@@ -50,7 +50,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
 
   const { failedRegions } = useScanLifecycle();
 
-  const resources = data || [];
+  const resources = useMemo(() => data || [], [data]);
 
   // Map types to colored icons
   const typeIcons: Record<CloudResource['type'], any> = {

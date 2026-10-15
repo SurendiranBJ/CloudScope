@@ -72,7 +72,10 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
     enabled: Boolean(selectedFinding?.id),
   });
 
-  const findings: Finding[] = (findingsData?.length ? findingsData : risksData) || [];
+  const findings: Finding[] = useMemo(
+    () => (findingsData?.length ? findingsData : risksData) || [],
+    [findingsData, risksData],
+  );
   const effectiveSearch = (localSearch || search).trim().toLowerCase();
   const isLoadingFindings = isFindingsLoading || (!findingsData && isRisksLoading);
   const hasFindingsLoadError = !findingsData && !risksData && isFindingsError && isRisksError;
