@@ -118,31 +118,40 @@ export const ScanLifecycleProvider: React.FC<ScanLifecycleProviderProps> = ({ ch
 
   // Live timer: animates locally every second from authoritative backend started_at
   const [liveElapsed, setLiveElapsed] = useState<number>(0);
+  const fallbackScanStartRef = useRef<number | null>(null);
+  const backendElapsedRef = useRef(0);
+  backendElapsedRef.current = scanStatus?.elapsed_seconds ?? 0;
 
   useEffect(() => {
     if (!isScanning) {
       setActiveTriggerScanId(null);
-      const backendElapsed = scanStatus?.elapsed_seconds ?? 0;
+      fallbackScanStartRef.current = null;
+      const backendElapsed = backendElapsedRef.current;
       setLiveElapsed(backendElapsed);
       return;
     }
 
-    const clientScanStart = Date.now();
-    const backendStartTs = scanStatus?.started_at ? new Date(scanStatus.started_at).getTime() : clientScanStart;
-    const initialElapsed = Math.floor(scanStatus?.elapsed_seconds ?? 0);
+    const now = Date.now();
+    // Older backend timestamps may contain both an ISO offset and a trailing Z
+    // (for example +00:00Z). Normalize that form before parsing.
+    const startedAt = scanStatus?.started_at?.replace(/([+-]\d{2}:\d{2})Z$/, '$1');
+    const parsedStart = startedAt ? Date.parse(startedAt) : Number.NaN;
+    const backendStartTs = Number.isFinite(parsedStart) ? parsedStart : null;
+    if (fallbackScanStartRef.current === null) fallbackScanStartRef.current = now;
+    const clientScanStart = fallbackScanStartRef.current;
 
     const updateTimer = () => {
-      const now = Date.now();
-      const serverDiff = Math.floor((now - backendStartTs) / 1000);
-      const clientDiff = Math.floor((now - clientScanStart) / 1000);
-      const computed = Math.max(serverDiff, clientDiff, initialElapsed);
+      const currentTime = Date.now();
+      const serverDiff = backendStartTs === null ? 0 : Math.floor((currentTime - backendStartTs) / 1000);
+      const clientDiff = Math.floor((currentTime - clientScanStart) / 1000);
+      const computed = Math.max(serverDiff, clientDiff, Math.floor(backendElapsedRef.current));
       setLiveElapsed(Math.max(1, computed));
     };
 
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [isScanning, scanStatus?.started_at, scanStatus?.elapsed_seconds]);
+  }, [isScanning, scanStatus?.scan_id, scanStatus?.started_at]);
 
   // Snapshot publication detection: refresh active queries ONLY when snapshot ID changes
   const triggerCompletion = useCallback((_status?: ScanStatus) => {

@@ -1,50 +1,20 @@
-# CloudScope Role-Based Access Control (RBAC)
+# Roles and access control
 
-## 1. Role Hierarchy
-CloudScope defines 4 strict enterprise roles with monotonic privilege escalation:
+CloudScope defines four ordered roles. A higher role inherits checks that require a lower minimum role, but endpoint coverage is route-specific; this is not a fine-grained permission matrix.
 
-| Role | Level | Primary Persona | Purpose |
-| :--- | :---: | :--- | :--- |
-| `VIEWER` | 1 | Auditor / Read-Only Consumer | Read-only visibility into dashboards, inventory, graphs, attack paths, alerts, and policies. |
-| `ANALYST` | 2 | Security Analyst / Investigator | All VIEWER privileges plus interactive policy what-if simulations and Copilot AI natural language queries. |
-| `SECURITY_OFFICER` | 3 | SecOps Lead / Compliance Officer | All ANALYST privileges plus finding triage mutations (Acknowledge, Suppress, Resolve) and viewing the audit log. |
-| `ADMINISTRATOR` | 4 | Platform Owner / DevSecOps Admin | Unrestricted operational control: scanner triggers, scan-region configuration, distributed lock inspection, operational health. |
+| Role | Typical use | Current access summary |
+| --- | --- | --- |
+| `VIEWER` | Read-only review | Read dashboard, resources, policies, graph, attack paths, findings, alerts, and reports. |
+| `ANALYST` | Investigation | Viewer access plus simulations and AI Copilot endpoints. |
+| `SECURITY_OFFICER` | Finding workflow | Analyst access plus finding state changes, audit log, and report export where routed. |
+| `ADMINISTRATOR` | Application administration | Security-officer access plus scan triggers, settings, health diagnostics, operations, and project management. |
 
-## 2. Permissions Matrix
+The backend is authoritative: API routers use role dependencies and return 401 when identity is required but absent/invalid, or 403 when the principal lacks the minimum role. Some feature pages may be visible in the frontend even when the API denies access; UI visibility alone does not grant permission. Authentication claims and the external identity provider must be configured by the operator (see [authentication.md](authentication.md)).
 
-| Permission | Description | VIEWER | ANALYST | SECURITY_OFFICER | ADMINISTRATOR |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| `view:read` | Read graphs, resources, findings, risks, and alerts | ✓ | ✓ | ✓ | ✓ |
-| `simulation:execute` | Run non-destructive what-if policy simulations | — | ✓ | ✓ | ✓ |
-| `copilot:query` | Issue natural language analysis queries to AI Copilot | — | ✓ | ✓ | ✓ |
-| `finding:mutate` | Acknowledge, suppress, or resolve security findings | — | — | ✓ | ✓ |
-| `audit:view` | View administrative audit logs | — | — | ✓ | ✓ |
-| `scan:trigger` | Trigger manual or scheduled AWS environment scans | — | — | — | ✓ |
-| `settings:modify` | Change scan mode, regions, and collector rules | — | — | — | ✓ |
-| `operations:manage` | Access system operations overview and distributed lock state | — | — | — | ✓ |
+## AWS project scope
 
-## 3. Backend Enforcement
-Enforced via FastAPI dependency injection:
-- `require_viewer`: Ensures principal has at least `VIEWER` role.
-- `require_analyst`: Ensures principal has at least `ANALYST` role.
-- `require_security_officer`: Ensures principal has at least `SECURITY_OFFICER` role.
-- `require_admin`: Ensures principal has `ADMINISTRATOR` role.
+The current project API scopes project records by the authenticated subject and restricts create/update/archive/role verification to administrators. Project-scoped scan and data paths use the selected project's verified AWS role. This is an implementation foundation, not a completed multi-tenant security certification: scheduled scanning is not project-aware, and isolation across every cache, export, audit, and background path still requires an independent review before serving mutually untrusted tenants.
 
-Unauthorized requests immediately return HTTP 403 Forbidden with structured JSON error details:
-```json
-{
-  "success": false,
-  "detail": "Insufficient permissions. Required role: ADMINISTRATOR. Current role: VIEWER",
-  "error": {
-    "code": "FORBIDDEN",
-    "message": "Insufficient permissions. Required role: ADMINISTRATOR. Current role: VIEWER",
-    "request_id": "req-1727601234-abcd"
-  },
-  "request_id": "req-1727601234-abcd"
-}
-```
+## Local development
 
-## 4. Frontend Route & Component Protection
-- Routes are protected via `<ProtectedRoute minRole="ROLE">`.
-- Attempted access to restricted routes renders `<Forbidden />` with explicit explanation of the required role.
-- In development mode, the Navbar profile dropdown includes a dynamic **Dev Role Switcher** allowing instant switching between all 4 roles to test access boundaries.
+The development role headers are a local testing convenience only. They are not a production identity mechanism. Production configuration must disable `DEV_AUTH_MODE` and require valid JWT/OIDC verification.

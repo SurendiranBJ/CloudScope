@@ -1,51 +1,24 @@
-# CloudScope Final Verification Report
+# Verification Notes
 
-**Verification Date:** 2026-10-09
-**Target:** v1.0.0 Release Candidate
-**Status:** PASS
+**Review date:** 2026-10-15
+**Purpose:** Record checks performed during the current implementation/documentation pass. This is not a production certification.
 
-## 1. End-to-End AWS Scan Validation
+## Current local checks
 
-The E2E AWS scanner was executed against a real AWS environment (`ap-south-1`) to validate the core orchestration, IAM parsing, Graph Construction, Attack Path enumeration, and CloudTrail correlation capabilities.
+- Backend full suite: `python -m pytest -q` completed with 555 passed and 0 failed in 527.27 seconds. Pytest reported deprecation/framework warnings.
+- Frontend tests: `npm test` completed with 33 passed and 0 failed.
+- Frontend production build and TypeScript check: `npm run build` passed.
+- Frontend lint: `npm run lint` exited successfully with non-blocking warnings (hook dependencies, Fast Refresh exports, and minor lint findings).
+- Backend compile check: `python -m compileall -q backend/app` passed in the implementation pass.
+- Git whitespace check: `git diff --check` passed after Markdown cleanup; Git still reports Windows line-ending normalization notices.
 
-**Results:**
-- **Execution:** SUCCESS (Completed in ~164s)
-- **Phase Durations:**
-  - Discovery: 119.9s
-  - IAM Analysis: 18.4s
-  - Graph Construction: 4.2s (Fell back to local NetworkX securely after Neo4j timeout)
-  - Path Analysis: 0.7s (31 paths detected)
-  - CloudTrail Correlation: 10.8s
-  - Finding Synthesis: 2.7s (51 canonical findings)
-- **Snapshot Publication:** Atomic and persistent to SQLite
+## Not verified in this pass
 
-**Crucial Fixes Validated:**
-- The configuration validator successfully rejected generic placeholder values in `.env` for production runs, enforcing fail-closed security.
-- The Neo4j dependency timeout in the CloudTrail correlation phase was handled defensively, allowing the scan pipeline to continue gracefully without hanging.
-- Final API validation confirmed that snapshot results were correctly loaded, read-only permissions were respected, and no AWS write APIs were invoked.
+- Hosted GitHub Actions for the final commit.
+- Production Docker runtime, PostgreSQL migration/upgrade, Redis/Neo4j recovery, backup restore, or rollback.
+- A fresh real AWS scan on the final commit.
+- Security penetration testing, large-account performance, or independent review of project isolation and AWS policy semantics.
 
-## 2. Regression Testing Suite
+## Historical reports
 
-A full backend regression suite (`pytest -v`) was executed after finalizing all pipeline and orchestration fixes to ensure no collateral degradation.
-
-**Results:**
-- **Total Tests:** 502
-- **Passed:** 502
-- **Failed:** 0
-- **Duration:** 407.75s (0:06:47)
-
-**Key Subsystems Verified:**
-- `test_phase2_authentication_rbac.py`: RBAC and OIDC integration verified.
-- `test_phase5_unified_findings.py`: Finding state machine, correlation, and lifecycle verified.
-- `test_phase6_hardening_performance_e2e.py`: Race conditions, scan limits, and rate limits verified.
-- `test_scan_lifecycle.py`: Distributed locking and snapshot atomicity verified.
-
-## 3. Final Conclusion
-
-The system fulfills all P0 requirements defined in the audit:
-- Mock implementations have been replaced with real integrations or deterministic fallbacks.
-- Authentication (`AUTH_REQUIRED=true`) and OIDC are strictly enforced in production templates.
-- Scan phases are robust against external database unavailability (Redis, Neo4j) during localized deployments.
-- The CI/CD release pipeline executes the appropriate steps sequentially.
-
-**CloudScope is verified and ready for the v1.0.0 release.**
+The 2026-10-09 report described a real AWS run and a 502-test pass. Those are historical results for an earlier code state and are not current release evidence. The old real-AWS report also contains inconsistent scan and endpoint statuses; see real-aws-validation.md.

@@ -8,7 +8,7 @@ import type { NodeData, EdgeData } from '../components/NodeDetailsPanel';
 import { 
   Network, Search, Maximize, RefreshCw, 
   AlertTriangle, Info, ChevronRight, Filter, 
-  Target, ChevronLeft, Key, Sparkles, GitCompare, Database,
+  Target, Key, Sparkles, GitCompare, Database,
   Compass
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -42,7 +42,6 @@ export const IdentityGraphPage: FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showLabels, setShowLabels] = useState(true);
-  const [showEdgeLabels, setShowEdgeLabels] = useState(false);
   const [highlightRisky, setHighlightRisky] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [graphMode, setGraphMode] = useState<'current' | 'desired' | 'diff'>('current');
@@ -293,32 +292,33 @@ export const IdentityGraphPage: FC = () => {
       {/* HEADER BAR */}
       {!isFullscreen && (
         <header className="flex flex-wrap items-center justify-between px-6 py-3 border-b border-enterprise-border bg-enterprise-card shrink-0 gap-3 z-30">
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <div>
-              <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
+              <h1 className="text-lg font-bold text-enterprise-text tracking-tight flex items-center gap-2">
                 <Network className="w-5 h-5 text-blue-500" />
-                <span>Identity Graph</span>
+                <span>Cloud Graph</span>
               </h1>
-              <p className="text-[11px] text-gray-400">
-                Analyst-Centric Cloud Authorization Architecture (Users / Groups → Roles → Resources)
+              <p className="text-xs text-enterprise-subtext">
+                Explore how identities connect to cloud assets, then inspect the evidence behind each link.
               </p>
             </div>
 
             {/* THREE GRAPH MODES SELECTOR */}
-            <div className="hidden lg:flex items-center bg-gray-900 border border-gray-700/80 p-0.5 rounded-lg shadow-inner">
+            <div className="flex items-center overflow-x-auto bg-enterprise-bg border border-enterprise-border p-0.5 rounded-lg shadow-inner max-w-full">
               <button
                 onClick={() => {
                   setAnalystMode('identity_overview');
                   setSelectedResourceId(null);
                 }}
+                aria-pressed={analystMode === 'identity_overview'}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all ${
                   analystMode === 'identity_overview'
                     ? 'bg-blue-600 text-white shadow-md'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                    : 'text-enterprise-subtext hover:text-enterprise-text hover:bg-enterprise-card'
                 }`}
               >
                 <Compass className="w-3.5 h-3.5" />
-                <span>Identity Overview</span>
+                <span>Explore</span>
               </button>
 
               <button
@@ -328,26 +328,28 @@ export const IdentityGraphPage: FC = () => {
                     setSelectedResourceId(resourceOptions[0].id);
                   }
                 }}
+                aria-pressed={analystMode === 'resource_detail'}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all ${
                   analystMode === 'resource_detail'
                     ? 'bg-emerald-600 text-white shadow-md'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                    : 'text-enterprise-subtext hover:text-enterprise-text hover:bg-enterprise-card'
                 }`}
               >
                 <Database className="w-3.5 h-3.5" />
-                <span>Resource Detail</span>
+                <span>Asset access</span>
               </button>
 
               <button
                 onClick={() => setAnalystMode('attack_path')}
+                aria-pressed={analystMode === 'attack_path'}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all ${
                   analystMode === 'attack_path'
                     ? 'bg-red-600 text-white shadow-md'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                    : 'text-enterprise-subtext hover:text-enterprise-text hover:bg-enterprise-card'
                 }`}
               >
                 <Target className="w-3.5 h-3.5" />
-                <span>Attack Path</span>
+                <span>Attack paths</span>
               </button>
             </div>
           </div>
@@ -357,45 +359,45 @@ export const IdentityGraphPage: FC = () => {
 
             {/* Simulation State Toggle */}
             {isSimActive && (
-              <div className="flex items-center bg-gray-900 border border-indigo-500/50 p-0.5 rounded-lg text-xs">
+              <div className="flex items-center bg-enterprise-bg border border-indigo-500/50 p-0.5 rounded-lg text-xs">
                 <div className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-400">
                   <Sparkles className="w-3 h-3 text-indigo-400 animate-pulse" />
-                  <span className="hidden sm:inline">Sim</span>
+                  <span className="hidden sm:inline">Simulation</span>
                 </div>
                 <button
                   onClick={() => setGraphMode('current')}
-                  className={`px-2 py-0.5 rounded ${graphMode === 'current' ? 'bg-blue-600 text-white font-bold' : 'text-gray-400 hover:text-white'}`}
+                  className={`px-2 py-0.5 rounded ${graphMode === 'current' ? 'bg-blue-600 text-white font-bold' : 'text-enterprise-subtext hover:text-enterprise-text'}`}
                 >
-                  Current
+                  Live graph
                 </button>
                 <button
                   onClick={() => setGraphMode('desired')}
-                  className={`px-2 py-0.5 rounded ${graphMode === 'desired' ? 'bg-purple-600 text-white font-bold' : 'text-gray-400 hover:text-white'}`}
+                  className={`px-2 py-0.5 rounded ${graphMode === 'desired' ? 'bg-purple-600 text-white font-bold' : 'text-enterprise-subtext hover:text-enterprise-text'}`}
                 >
-                  Desired
+                  Proposed
                 </button>
                 <button
                   onClick={() => setGraphMode('diff')}
-                  className={`flex items-center gap-1 px-2 py-0.5 rounded ${graphMode === 'diff' ? 'bg-emerald-600 text-white font-bold' : 'text-gray-400 hover:text-white'}`}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded ${graphMode === 'diff' ? 'bg-emerald-600 text-white font-bold' : 'text-enterprise-subtext hover:text-enterprise-text'}`}
                 >
                   <GitCompare className="w-3 h-3" />
-                  Diff
+                  Changes
                 </button>
               </div>
             )}
 
             {/* Mode Specific Controls */}
             {analystMode === 'identity_overview' && identityOptions.length > 0 && (
-              <div className="flex items-center gap-1.5 bg-gray-900 border border-blue-500/50 px-2 py-1 rounded-lg">
+              <div className="flex items-center gap-1.5 bg-enterprise-bg border border-blue-500/50 px-2 py-1 rounded-lg">
                 <span className="text-[10px] uppercase font-bold text-blue-400">Identity:</span>
                 <select
                   value={selectedIdentityId || ''}
                   onChange={(e) => setSelectedIdentityId(e.target.value || null)}
-                  className="bg-transparent text-xs text-white focus:outline-none max-w-[180px] font-mono"
+                  className="bg-transparent text-xs text-enterprise-text focus:outline-none max-w-[180px] font-mono"
                 >
-                  <option value="" className="bg-gray-900 text-gray-400">All (Complete Graph)</option>
+                  <option value="" className="bg-enterprise-card text-enterprise-subtext">All accounts</option>
                   {identityOptions.map(i => (
-                    <option key={i.id} value={i.id} className="bg-gray-900 text-white">
+                    <option key={i.id} value={i.id} className="bg-enterprise-card text-enterprise-text">
                       {i.label} ({i.type})
                     </option>
                   ))}
@@ -404,16 +406,16 @@ export const IdentityGraphPage: FC = () => {
             )}
 
             {analystMode === 'resource_detail' && (
-              <div className="flex items-center gap-1.5 bg-gray-900 border border-emerald-500/50 px-2 py-1 rounded-lg">
+              <div className="flex items-center gap-1.5 bg-enterprise-bg border border-emerald-500/50 px-2 py-1 rounded-lg">
                 <span className="text-[10px] uppercase font-bold text-emerald-400">Asset:</span>
                 <select
                   value={selectedResourceId || ''}
                   onChange={(e) => setSelectedResourceId(e.target.value || null)}
-                  className="bg-transparent text-xs text-white focus:outline-none max-w-[180px] font-mono"
+                  className="bg-transparent text-xs text-enterprise-text focus:outline-none max-w-[180px] font-mono"
                 >
-                  <option value="" className="bg-gray-900 text-gray-400">All (Complete Graph)</option>
+                  <option value="" className="bg-enterprise-card text-enterprise-subtext">All assets</option>
                   {resourceOptions.map(r => (
-                    <option key={r.id} value={r.id} className="bg-gray-900 text-white">
+                    <option key={r.id} value={r.id} className="bg-enterprise-card text-enterprise-text">
                       {r.label} ({r.type})
                     </option>
                   ))}
@@ -422,16 +424,16 @@ export const IdentityGraphPage: FC = () => {
             )}
 
             {analystMode === 'attack_path' && (
-              <div className="flex items-center gap-1.5 bg-gray-900 border border-red-500/50 px-2 py-1 rounded-lg">
+              <div className="flex items-center gap-1.5 bg-enterprise-bg border border-red-500/50 px-2 py-1 rounded-lg">
                 <span className="text-[10px] uppercase font-bold text-red-400">Path:</span>
                 <select
                   value={safeAttackPathIndex}
                   onChange={(e) => setActiveAttackPathIndex(Number(e.target.value))}
                   disabled={!attackPaths?.length || attackPathsLoading || attackPathsError}
-                  className="bg-transparent text-xs text-white focus:outline-none max-w-[200px] disabled:opacity-50"
+                  className="bg-transparent text-xs text-enterprise-text focus:outline-none max-w-[200px] disabled:opacity-50"
                 >
                   {attackPaths?.map((p, idx) => (
-                    <option key={idx} value={idx} className="bg-gray-900 text-white">
+                    <option key={idx} value={idx} className="bg-enterprise-card text-enterprise-text">
                       Path {idx + 1}: {p.nodes?.[0]?.name || p.nodes?.[0]?.id || 'Source'} → {p.nodes?.[p.nodes.length - 1]?.name || p.nodes?.[p.nodes.length - 1]?.id || 'Target'}
                     </option>
                   ))}
@@ -445,26 +447,28 @@ export const IdentityGraphPage: FC = () => {
             {/* Policy Diamonds Toggle Button */}
             <button
               onClick={() => setShowPolicies(prev => !prev)}
+              aria-pressed={showPolicies}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                 showPolicies
                   ? 'bg-teal-600 text-white border-teal-500 shadow-md shadow-teal-500/20'
-                  : 'bg-gray-900 hover:bg-gray-800 text-teal-400 border-gray-700'
+                  : 'bg-enterprise-bg hover:bg-enterprise-card text-teal-500 border-enterprise-border'
               }`}
-              title={showPolicies ? "Displaying raw intermediate IAM policy nodes" : "Using clean aggregated effective-access relationships"}
+              title={showPolicies ? "Policy nodes are visible in the graph" : "Policy nodes are hidden; access links are grouped for readability"}
             >
               <Key className="w-3.5 h-3.5 text-teal-400" />
-              <span>{showPolicies ? 'Policies: Diamonds Visible' : 'Policies: Aggregated'}</span>
+              <span>Policy nodes: {showPolicies ? 'Visible' : 'Hidden'}</span>
             </button>
 
             {/* Search Input */}
-            <div className="relative hidden md:flex items-center">
+            <div className="relative flex items-center min-w-0 flex-1 md:flex-none">
               <Search className="w-4 h-4 absolute left-3 text-gray-500" />
               <input 
                 type="text" 
-                placeholder="Search principal, role, asset..." 
+                aria-label="Search identities and assets"
+                placeholder="Search identities and assets"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-gray-900 border border-gray-700 text-xs rounded-lg pl-9 pr-3 py-1.5 focus:outline-none focus:border-blue-500 w-52 text-white placeholder-gray-500"
+                className="bg-enterprise-bg border border-enterprise-border text-xs rounded-lg pl-9 pr-3 py-2 focus:outline-none focus:border-enterprise-accent w-full md:w-56 text-enterprise-text placeholder:text-enterprise-subtext"
               />
             </div>
 
@@ -472,13 +476,13 @@ export const IdentityGraphPage: FC = () => {
             
             <button 
               onClick={handleClearFocus}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-enterprise-bg hover:bg-enterprise-card border border-enterprise-border rounded-lg text-xs font-medium text-enterprise-text transition-colors"
               title="Show complete cloud graph and clear focus dimming"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Show All
             </button>
             
-            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors" title="Toggle Fullscreen">
+            <button onClick={toggleFullscreen} className="flex items-center justify-center p-1.5 bg-enterprise-bg hover:bg-enterprise-card border border-enterprise-border rounded-lg text-sm font-medium text-enterprise-text transition-colors" title="Toggle Fullscreen">
               <Maximize className="w-4 h-4" />
             </button>
           </div>
@@ -544,7 +548,7 @@ export const IdentityGraphPage: FC = () => {
             highlightedNodeIds={activeAttackPathNodes}
             searchQuery={searchQuery}
             showLabels={showLabels}
-            showEdgeLabels={showEdgeLabels}
+            showEdgeLabels={true}
             highlightRisky={highlightRisky}
             showPolicies={showPolicies}
             analystMode={analystMode}
@@ -571,10 +575,12 @@ export const IdentityGraphPage: FC = () => {
           {!isFullscreen && (
             <button
               onClick={() => setIsSidebarOpen(prev => !prev)}
-              className="absolute top-4 right-4 z-10 p-2 bg-[#0F172A]/90 hover:bg-gray-800 text-gray-400 hover:text-white border border-gray-700 rounded-lg shadow-xl backdrop-blur-md transition-colors"
-              title={isSidebarOpen ? "Hide Security Sidebar" : "Show Security Sidebar"}
+              aria-expanded={isSidebarOpen}
+              className="absolute top-4 right-4 z-10 inline-flex items-center gap-2 p-2 bg-enterprise-card/95 hover:bg-enterprise-card text-enterprise-subtext hover:text-enterprise-text border border-enterprise-border rounded-lg shadow-xl backdrop-blur-md transition-colors"
+              title={isSidebarOpen ? "Hide insights and display controls" : "Show insights and display controls"}
             >
-              {isSidebarOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+              {isSidebarOpen ? <ChevronRight className="w-4 h-4" /> : <Filter className="w-4 h-4" />}
+              <span className="text-xs font-medium">{isSidebarOpen ? 'Hide controls' : 'Insights & controls'}</span>
             </button>
           )}
         </div>
@@ -586,7 +592,7 @@ export const IdentityGraphPage: FC = () => {
             <div className="p-5 border-b border-gray-800">
               <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-500" />
-                <span>Recommended Fixes</span>
+                <span>Risk findings</span>
               </h3>
               <div className="space-y-3">
                 {risks?.map((risk: any, i: number) => (
@@ -605,7 +611,7 @@ export const IdentityGraphPage: FC = () => {
                   </div>
                 ))}
                 {(!risks || risks.length === 0) && (
-                  <p className="text-xs text-gray-500 italic">No critical risks detected.</p>
+                  <p className="text-xs text-gray-500 italic">No risk findings are available in this snapshot.</p>
                 )}
               </div>
             </div>
@@ -622,10 +628,10 @@ export const IdentityGraphPage: FC = () => {
                   <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-600" />
                   <span className="text-xs text-gray-300">Show Node Labels</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input type="checkbox" checked={showEdgeLabels} onChange={(e) => setShowEdgeLabels(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-600" />
-                  <span className="text-xs text-gray-300">Show Relationship Labels</span>
-                </label>
+                <div className="flex items-start gap-2 text-xs text-gray-300">
+                  <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded bg-emerald-500/15 text-emerald-400" aria-hidden="true">✓</span>
+                  <span>Relationship labels stay visible so access types such as READ and WRITE remain clear.</span>
+                </div>
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input type="checkbox" checked={highlightRisky} onChange={(e) => setHighlightRisky(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-600" />
                   <span className="text-xs text-gray-300">Highlight Risky Paths</span>
@@ -639,55 +645,55 @@ export const IdentityGraphPage: FC = () => {
       {/* FOOTER STATS BAR */}
       <footer className="flex items-center px-6 py-3 border-t border-enterprise-border bg-enterprise-card shrink-0 text-xs text-enterprise-subtext gap-8 overflow-x-auto z-10">
         <div className="flex flex-col">
-          <span className="text-gray-500 mb-0.5 text-[10px] uppercase font-bold tracking-wider">Total Nodes</span>
-          <span className="text-white font-mono text-sm">{totalNodes}</span>
+          <span className="text-enterprise-subtext mb-0.5 text-[10px] uppercase font-bold tracking-wider">Nodes</span>
+          <span className="text-enterprise-text font-mono text-sm">{totalNodes}</span>
         </div>
         <div className="flex flex-col">
-          <span className="text-gray-500 mb-0.5 text-[10px] uppercase font-bold tracking-wider">Total Relationships</span>
-          <span className="text-white font-mono text-sm">{totalEdges}</span>
+          <span className="text-enterprise-subtext mb-0.5 text-[10px] uppercase font-bold tracking-wider">Relationships</span>
+          <span className="text-enterprise-text font-mono text-sm">{totalEdges}</span>
         </div>
         <div className="w-px h-8 bg-gray-800 mx-2" />
         <div className="flex items-center gap-6 font-medium">
           <div className="flex gap-1.5 items-baseline">
             <span className="text-blue-400">Users:</span>
-            <span className="text-white font-mono">{counts.User}</span>
+            <span className="text-enterprise-text font-mono">{counts.User}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-indigo-400">Groups:</span>
-            <span className="text-white font-mono">{counts.Group}</span>
+            <span className="text-enterprise-text font-mono">{counts.Group}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-purple-400">Roles:</span>
-            <span className="text-white font-mono">{counts.Role}</span>
+            <span className="text-enterprise-text font-mono">{counts.Role}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-amber-400">S3:</span>
-            <span className="text-white font-mono">{counts.S3}</span>
+            <span className="text-enterprise-text font-mono">{counts.S3}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-emerald-400">EC2:</span>
-            <span className="text-white font-mono">{counts.EC2}</span>
+            <span className="text-enterprise-text font-mono">{counts.EC2}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-pink-400">Lambda:</span>
-            <span className="text-white font-mono">{counts.Lambda}</span>
+            <span className="text-enterprise-text font-mono">{counts.Lambda}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-sky-400">RDS:</span>
-            <span className="text-white font-mono">{counts.RDS}</span>
+            <span className="text-enterprise-text font-mono">{counts.RDS}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-violet-400">DynamoDB:</span>
-            <span className="text-white font-mono">{counts.DynamoDB}</span>
+            <span className="text-enterprise-text font-mono">{counts.DynamoDB}</span>
           </div>
           <div className="flex gap-1.5 items-baseline">
             <span className="text-red-400">Secrets:</span>
-            <span className="text-white font-mono">{counts.Secrets}</span>
+            <span className="text-enterprise-text font-mono">{counts.Secrets}</span>
           </div>
         </div>
         <div className="w-px h-8 bg-gray-800 mx-2" />
         <div className="flex flex-col">
-          <span className="text-red-500/70 mb-0.5 text-[10px] uppercase font-bold tracking-wider">Risky Findings</span>
+          <span className="text-enterprise-subtext mb-0.5 text-[10px] uppercase font-bold tracking-wider">Risk findings</span>
           <span className="text-red-400 font-mono text-sm">{risks?.length || 0}</span>
         </div>
       </footer>

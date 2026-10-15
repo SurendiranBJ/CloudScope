@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Building2, Cloud, LoaderCircle, Plus, RefreshCw, ShieldCheck, Pencil, X } from 'lucide-react';
+import { Archive, Building2, Cloud, LoaderCircle, Plus, RefreshCw, ShieldCheck, Pencil, X, BadgeCheck, Copy, Check } from 'lucide-react';
 import { apiClient, type APIResponse } from '../api/client';
 
 interface CloudProject {
@@ -9,6 +9,12 @@ interface CloudProject {
   description: string;
   account_id: string | null;
   role_arn: string | null;
+  external_id: string | null;
+  verification_status: 'NOT_CHECKED' | 'CONNECTED' | 'FAILED';
+  verified_at: string | null;
+  verified_account_id: string | null;
+  verification_error: string | null;
+  connected?: boolean;
   status: string;
   created_at: string;
   updated_at: string;
@@ -27,6 +33,7 @@ export const Projects: React.FC = () => {
   const [description, setDescription] = useState('');
   const [formError, setFormError] = useState('');
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [copiedExternalId, setCopiedExternalId] = useState<string | null>(null);
   const projects = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
   const resetForm = () => {
     setName(''); setAccountId(''); setRoleArn(''); setDescription(''); setFormError(''); setEditingProjectId(null);
@@ -63,6 +70,17 @@ export const Projects: React.FC = () => {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
     onError: (error: any) => setFormError(error?.response?.data?.detail || 'Could not archive project.'),
   });
+  const verifyProject = useMutation({
+    mutationFn: async (projectId: string) => {
+      const response = await apiClient.post<APIResponse<CloudProject>>(`/projects/${projectId}/verify`);
+      return response.data.data;
+    },
+    onSuccess: async (project) => {
+      if (!project.connected) setFormError(project.verification_error || 'AWS role verification failed.');
+      await queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+    onError: (error: any) => setFormError(error?.response?.data?.detail || 'Could not verify this AWS role.'),
+  });
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -80,8 +98,19 @@ export const Projects: React.FC = () => {
     setFormError('');
   };
 
+  const copyExternalId = async (project: CloudProject) => {
+    if (!project.external_id) return;
+    try {
+      await navigator.clipboard.writeText(project.external_id);
+      setCopiedExternalId(project.project_id);
+      window.setTimeout(() => setCopiedExternalId(null), 1800);
+    } catch {
+      setFormError('Clipboard access is unavailable. Select and copy the External ID manually.');
+    }
+  };
+
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-enterprise-bg p-6 lg:p-8 space-y-6">
+    <div className="mx-auto flex-1 min-h-0 w-full max-w-[1440px] overflow-y-auto bg-enterprise-bg p-4 sm:p-6 lg:p-8 space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-enterprise-accent"><Building2 className="h-5 w-5" /><span className="text-xs font-semibold uppercase tracking-wider">CloudScope</span></div>
@@ -103,7 +132,7 @@ export const Projects: React.FC = () => {
             {projects.data?.map((project) => (
               <article key={project.project_id} className="rounded-xl border border-enterprise-border bg-enterprise-card p-5">
                 <div className="flex items-start justify-between gap-4">
-                  <div className="flex min-w-0 items-start gap-3"><div className="rounded-lg bg-enterprise-accent/10 p-2 text-enterprise-accent"><Cloud className="h-5 w-5" /></div><div className="min-w-0"><h3 className="truncate font-semibold text-enterprise-text">{project.name}</h3><p className="mt-1 text-sm text-enterprise-subtext">{project.description || 'No description'}</p></div></div>
+                  <div className="flex min-w-0 items-start gap-3"><div className="rounded-lg bg-enterprise-accent/10 p-2 text-enterprise-accent"><Cloud className="h-5 w-5" /></div><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-semibold text-enterprise-text">{project.name}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${project.verification_status === 'CONNECTED' ? 'bg-emerald-500/10 text-emerald-500' : project.verification_status === 'FAILED' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500'}`}>{project.verification_status === 'CONNECTED' ? 'Connected' : project.verification_status === 'FAILED' ? 'Check failed' : 'Not verified'}</span></div><p className="mt-1 text-sm text-enterprise-subtext">{project.description || 'No description'}</p></div></div>
                   <div className="flex shrink-0 gap-1">
                     <button onClick={() => beginEdit(project)} title={`Edit ${project.name}`} className="rounded-md p-2 text-enterprise-subtext hover:bg-enterprise-accent/10 hover:text-enterprise-accent"><Pencil className="h-4 w-4" /></button>
                     <button onClick={() => archiveProject.mutate(project.project_id)} disabled={archiveProject.isPending} title={`Archive ${project.name}`} className="rounded-md p-2 text-enterprise-subtext hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"><Archive className="h-4 w-4" /></button>
@@ -113,7 +142,9 @@ export const Projects: React.FC = () => {
                   <div><p className="text-[11px] uppercase tracking-wide text-enterprise-subtext">AWS account ID</p><p className="mt-1 font-mono text-sm text-enterprise-text">{project.account_id || 'Not configured'}</p></div>
                   <div><p className="text-[11px] uppercase tracking-wide text-enterprise-subtext">Read role</p><p className="mt-1 truncate font-mono text-xs text-enterprise-text" title={project.role_arn || undefined}>{project.role_arn || 'Not configured'}</p></div>
                 </div>
-                <div className="mt-3 flex items-center gap-2 text-xs text-amber-500"><ShieldCheck className="h-4 w-4" /> Registered — AWS access verification is a separate setup step.</div>
+                {project.role_arn && project.external_id && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-enterprise-bg p-3"><div className="min-w-0"><p className="text-[10px] uppercase tracking-wide text-enterprise-subtext">External ID for role trust policy</p><p className="mt-1 truncate font-mono text-xs text-enterprise-text">{project.external_id}</p></div><button onClick={() => copyExternalId(project)} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-enterprise-border px-2.5 py-1.5 text-xs text-enterprise-text hover:bg-enterprise-card" aria-label="Copy External ID">{copiedExternalId === project.project_id ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}{copiedExternalId === project.project_id ? 'Copied' : 'Copy'}</button></div>}
+                {project.verification_error && <p className="mt-3 text-xs text-red-500">{project.verification_error}</p>}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p className="flex items-center gap-2 text-xs text-enterprise-subtext"><ShieldCheck className="h-4 w-4" />{project.verification_status === 'CONNECTED' ? `Verified account ${project.verified_account_id}` : 'Verify access before using this account.'}</p><button onClick={() => verifyProject.mutate(project.project_id)} disabled={!project.role_arn || verifyProject.isPending} className="inline-flex items-center gap-1.5 rounded-lg border border-enterprise-border px-3 py-1.5 text-xs font-medium text-enterprise-text hover:bg-enterprise-bg disabled:cursor-not-allowed disabled:opacity-50">{verifyProject.isPending && verifyProject.variables === project.project_id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <BadgeCheck className="h-3.5 w-3.5" />}{!project.role_arn ? 'Add role to verify' : verifyProject.isPending && verifyProject.variables === project.project_id ? 'Verifying…' : 'Verify access'}</button></div>
               </article>
             ))}
           </div>

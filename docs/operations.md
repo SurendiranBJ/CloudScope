@@ -1,36 +1,34 @@
-# CloudScope Operations & Reliability Architecture
+# CloudScope Operations
 
-## 1. Overview
-CloudScope is engineered for multi-instance, distributed high availability. It decouples scan orchestration, locking, durable state, and API serving to ensure reliable continuous operations.
+## Current operating model
 
-## 2. Distributed Scanner Lock (`cloudscope:scan:lock`)
-To prevent concurrent duplicate scans across multiple container instances or worker processes:
-- **Mutual Exclusion**: Implemented in `backend/app/services/scanner/distributed_lock.py` using Redis atomic `SET key val NX EX ttl`.
-- **Unique Lease Ownership**: Every lock acquisition generates a cryptographically random UUID token (`token = uuid4()`).
-- **Heartbeat & Lease Renewal**: An active scan spawns a background heartbeat thread every 10 seconds executing an atomic Redis Lua script:
-  ```lua
-  if redis.call('get', KEYS[1]) == ARGV[1] then
-      return redis.call('expire', KEYS[1], ARGV[2])
-  else
-      return 0
-  end
-  ```
-- **Safe Release**: When the scan completes, an atomic Lua script verifies the token matches before releasing the lock, preventing a worker from releasing another worker's lock.
-- **Stale Lock Recovery**: If an instance crashes abruptly without releasing the lock, the 120-second lease TTL automatically expires the lock in Redis, preventing permanent deadlocks.
+The backend runs a startup scan and scheduled scans through the scan coordinator. A Redis-backed owner-token lease prevents overlapping coordinated scans when Redis is reachable. The heartbeat renews the lease periodically and the worker releases it on completion. The scan lock currently serializes scans globally; project-aware scheduled iteration and concurrent per-project workers are not implemented.
 
-## 3. Durable Relational Store
-Redis is treated strictly as an ephemeral cache and distributed lock coordinator. All mission-critical state is written to a durable relational database (SQLite for development, PostgreSQL for production):
-- **`ScanRunModel`**: Complete scan execution record (scan ID, mode, trigger type, resolved/successful/failed regions, collector counts, error summary, start/completion timestamps).
-- **`ScanSnapshotModel`**: Published immutable snapshots (snapshot ID, published timestamp, total resource counts, finding counts by severity).
-- **`FindingStateModel`**: Finding lifecycle states across scans (ACTIVE, ACKNOWLEDGED, RESOLVED, SUPPRESSED, audit trail of who changed it and why).
-- **`AuditEventModel`**: Immutable administrative audit logs with retention management.
+Production mode requires Redis and fails scan locking closed when Redis is unavailable. Local non-production mode may use process-local fallback behavior, which is not suitable for multi-worker coordination.
 
-## 4. Operations Overview Dashboard
-The Operations Center (`/operations` in the UI, `GET /api/v1/operations/overview` on the backend) provides administrators with:
-1. **Real-time Distributed Lock State**: Lock status, owner instance ID, acquisition timestamp, remaining TTL seconds.
-2. **Scanner Engine State**: Active phase, scanning flag, mode, progress.
-3. **Service Dependencies**: Health status of Neo4j, Redis, and Relational Database.
-4. **Build & Process Telemetry**: Git commit SHA, uptime, app version.
-5. **Durable Scan Run History**: Table of last 10 scans persisted across restarts.
-6. **Administrative Audit Trail**: Live log of security actions with sanitized metadata inspection.
-7. **Manual Scan Trigger**: Direct trigger with concurrency protection.
+## Durable state
+
+Relational storage contains project records, scan runs, published snapshots, finding state/history, audit events, and simulation drafts. Redis provides cache and coordination, not the sole durable record. Current schema setup uses create-all and ad hoc migrations; use backups and do not assume automatic schema upgrades are production-safe. A versioned migration workflow remains open.
+
+## Health and support endpoints
+
+- /live is a liveness probe.
+- /ready checks core database, Redis, and Neo4j dependencies.
+- /health provides application metadata.
+- /health/aws performs an AWS identity/connectivity check and is admin-protected.
+- /health/dependencies and /operations expose service/scan diagnostics according to route authorization.
+- /metrics exposes Prometheus metrics; restrict network access at the deployment layer until a dedicated access policy is in place.
+
+Confirm route-level behavior against the deployed version before exposing diagnostic endpoints publicly.
+
+## Routine operations
+
+1. Check service health and the latest scan result.
+2. Confirm scan status reaches a terminal success/partial/failure result and a snapshot ID is published.
+3. Review failed regions/collectors before treating missing resources as absent.
+4. Confirm selected project and account identity before investigations or exports.
+5. Inspect audit events for scan, finding, simulation, and administrative changes.
+6. Keep database and Neo4j backups protected and test restoration.
+7. Alert on stale scans, lock contention, persistence failures, degraded dependencies, and high error rates.
+
+Operations dashboard presence does not itself provide alert delivery, backup validation, or incident response.

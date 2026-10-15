@@ -40,10 +40,23 @@ class ScanCoordinator:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         created_by: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Request a new security scan execution. Returns immediately with STARTED or ALREADY_RUNNING."""
         if created_by:
             actor_id = created_by
+        if project_id is None:
+            from app.services.project_context import get_project_id
+            project_id = get_project_id()
+        if project_id:
+            from app.persistence.database import get_db_session
+            from app.persistence.models import CloudProjectModel
+            with get_db_session() as session:
+                project = session.query(CloudProjectModel).filter_by(project_id=project_id, status="ACTIVE").first()
+                if project is None:
+                    return {"status": "UNAVAILABLE", "scan_id": None, "message": "Selected project is unavailable"}
+                if project.verification_status != "CONNECTED" or not project.role_arn:
+                    return {"status": "UNAVAILABLE", "scan_id": None, "message": "Verify the project's AWS role before scanning"}
 
         with self._lock:
             # 1. Local process check
@@ -86,6 +99,7 @@ class ScanCoordinator:
                     scan_id=scan_id,
                     started_at=now_iso,
                     scan_mode="global",
+                    project_id=project_id,
                     created_by=actor_id,
                     trigger_type=trigger_type,
                     total_collectors=12,
@@ -121,7 +135,7 @@ class ScanCoordinator:
             # 5. Launch execution thread with lease renewal heartbeat
             scan_thread = threading.Thread(
                 target=self._run_scan_worker,
-                args=(scan_id, owner_token, actor_id, actor_role),
+                args=(scan_id, owner_token, actor_id, actor_role, project_id),
                 daemon=True,
                 name=f"ScanWorker-{scan_id[:8]}"
             )
@@ -137,6 +151,30 @@ class ScanCoordinator:
         """Aggregate current scan status from scan_manager and current snapshot."""
         mgr_status = scan_manager.get_status()
         from app.services.scanner.current_snapshot import get_current_snapshot_id
+        from app.services.project_context import get_project_id
+        selected_project_id = get_project_id()
+        active_project_id = getattr(scan_manager, "_active_project_id", None)
+        last_project_id = getattr(scan_manager, "_last_project_id", None)
+        if selected_project_id and last_project_id != selected_project_id:
+            return {
+                "started_at": None,
+                "elapsed_seconds": 0,
+                "completed_collectors": 0,
+                "total_collectors": 0,
+                "collector_status": {},
+                "regional_status": {},
+                "failed_regions": [],
+                "successful_regions": [],
+                "resolved_regions": [],
+                "last_result": None,
+                "is_scanning": False,
+                "scan_id": None,
+                "scan_status": "IDLE",
+                "active_phase": None,
+                "last_error": None,
+                "current_scan_id": None,
+                "current_snapshot_id": get_current_snapshot_id(),
+            }
         return {
             **mgr_status,
             "is_scanning": mgr_status.get("is_scanning", False),
@@ -151,6 +189,7 @@ class ScanCoordinator:
         owner_token: str,
         actor_id: str,
         actor_role: str,
+        project_id: Optional[str] = None,
     ) -> None:
         """Worker thread executing scan pipeline while continuously maintaining heartbeat."""
         stop_heartbeat = threading.Event()
@@ -170,6 +209,8 @@ class ScanCoordinator:
         start_time = time.time()
         result_status = "FAILED"
         err_summary = None
+        from app.services.project_context import set_project_id, reset_project_id
+        project_context_token = set_project_id(project_id)
 
         try:
             logger.info(f"[COORDINATOR] Worker starting scan pipeline execution (scan_id={scan_id})")
@@ -179,6 +220,8 @@ class ScanCoordinator:
             )
             # Set scan manager attributes for the scan run
             scan_manager._scan_id = scan_id
+            scan_manager._active_project_id = project_id
+            scan_manager._last_project_id = project_id
             scan_manager._scan_started_at = datetime.now(timezone.utc).isoformat() + "Z"
             scan_manager._scan_started_perf = time.perf_counter()
             scan_manager._completed_collectors = 0
@@ -228,6 +271,7 @@ class ScanCoordinator:
 
             # Clean up worker state
             scan_manager._scan_lease_valid = None
+            scan_manager._active_project_id = None
 
             # 5. Record completion audit event
             try:
@@ -248,6 +292,7 @@ class ScanCoordinator:
                 logger.warning(f"[COORDINATOR] Failed to record completion audit event: {audit_err}")
 
             logger.info(f"[COORDINATOR] Worker finished scan {scan_id} with status={result_status} in {duration}s")
+            reset_project_id(project_context_token)
 
 
 scan_coordinator = ScanCoordinator()

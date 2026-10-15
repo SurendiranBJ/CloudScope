@@ -1,73 +1,37 @@
-# CloudScope Security Release Checklist
+# Security Release Checklist
 
-## 1. Authentication
-- [x] **PASS**: missing bearer token rejected when required
-- [x] **PASS**: invalid token rejected
-- [x] **PASS**: expired token rejected
-- [x] **PASS**: invalid signature rejected
-- [x] **PASS**: issuer validated
-- [x] **PASS**: audience validated
-- [x] **PASS**: JWKS HTTPS enforced when used
-- [x] **PASS**: DEV_AUTH_MODE cannot operate in production
+This checklist is a pre-release work aid. A checked item requires evidence for the exact candidate build; no blanket PASS is implied by this document.
 
-## 2. RBAC (Role-Based Access Control)
-### Server-side Authorization
-- [x] **PASS**: VIEWER role enforcement verified
-- [x] **PASS**: ANALYST role enforcement verified
-- [x] **PASS**: SECURITY_OFFICER role enforcement verified
-- [x] **PASS**: ADMINISTRATOR role enforcement verified
-- [x] **PASS**: Frontend visibility is NOT a security boundary (all boundaries enforced server-side)
+## Authentication and authorization
 
-### Protected Operations
-- [x] **PASS**: scan trigger (unauthorized triggers removed from all routers, admin-only allowed)
-- [x] **PASS**: graph rebuild
-- [x] **PASS**: simulation
-- [x] **PASS**: findings mutation
-- [x] **PASS**: alert mutation
-- [x] **PASS**: audit access
-- [x] **PASS**: reports
-- [x] **PASS**: operational endpoints
+- [ ] Production identity-provider issuer, audience, signing keys, role claims, and login/session lifecycle tested end to end.
+- [ ] Development header authentication disabled in deployed configuration.
+- [ ] Every sensitive/mutating route has server-side authorization and rate limits appropriate to its cost.
+- [ ] Project ownership is validated for reads, writes, exports, AI context, and background jobs.
+- [ ] Cross-owner and cross-project access tests pass against production-like PostgreSQL and Redis.
 
-## 3. Scanner Coordination & Lock
-- [x] **PASS**: Redis distributed lock
-- [x] **PASS**: owner token
-- [x] **PASS**: lease expiration
-- [x] **PASS**: heartbeat
-- [x] **PASS**: owner-only release
-- [x] **PASS**: fail-closed Redis failure
-- [x] **PASS**: Two backend workers must never legitimately publish the same scan simultaneously
-- [x] **PASS**: SQL authoritative state must be durable before the new snapshot becomes current
-- [x] **PASS**: Failed persistence must not result in "published successfully" (atomic check in SnapshotStore)
-- [x] **PASS**: Redis must not be the only durable snapshot source
-- [x] **PASS**: Restart recovery
+## AWS and analysis safety
 
-## 4. API Security
-- [x] **PASS**: CORS configuration hardened
-- [x] **PASS**: Security headers implemented
-- [x] **PASS**: Rate limiting active on critical endpoints
-- [x] **PASS**: Request IDs for tracing and audit
-- [x] **PASS**: Error responses sanitized (no stack traces or internal exception details)
-- [x] **PASS**: Metrics access restricted/protected
-- [x] **PASS**: Health endpoints properly scoped
-- [x] **PASS**: Information leakage prevented
-- [x] **PASS**: Debug output disabled in production
-- [x] **PASS**: No exposed secrets (AWS credentials, JWT secrets, Gemini keys, database passwords)
+- [ ] Scanner principal has only approved read permissions.
+- [ ] Project role trust uses the generated ExternalId and approved principals.
+- [ ] Temporary credential expiration/refresh is tested during long scans and worker restart.
+- [ ] Incomplete collection, unsupported IAM semantics, and path truncation are visible as uncertain/incomplete.
+- [ ] Simulation confirmed not to issue AWS mutation calls.
+- [ ] AI provider context, consent, retention, residency, and redaction policy reviewed.
 
-## 5. Docker Security
-- [x] **PASS**: Containers run as non-root users (`cloudscope` in backend, `nginx` in frontend via `nginxinc/nginx-unprivileged:alpine`)
-- [x] **PASS**: No insecure default passwords
-- [x] **PASS**: No unnecessary public ports
-- [x] **PASS**: Internal infrastructure isolated (Neo4j and Redis on `cloudscope-internal` network)
-- [x] **PASS**: Health checks configured for all containers
-- [x] **PASS**: Restart policies implemented (`unless-stopped`)
-- [x] **PASS**: Read-only AWS credential mount in local profile mode (`:ro`)
+## Persistence and recovery
 
-## 6. CI/CD Security (GitHub Actions)
-- [x] **PASS**: Excessive permissions removed (`permissions: contents: read` enforced globally)
-- [x] **PASS**: Secret exposure mitigated
-- [x] **PASS**: Dependency audit included (`npm audit --audit-level=high`)
-- [x] **PASS**: Secret scanning enabled
-- [x] **PASS**: Unsafe shell interpolation checked
-- [x] **PASS**: Unnecessary token permissions removed
+- [ ] Versioned SQL migrations tested from all supported schema versions.
+- [ ] Snapshot, finding, audit, project, and simulation state backups restored successfully.
+- [ ] Redis outage, worker restart, lock recovery, and scan failure rehearsed.
+- [ ] PostgreSQL and Neo4j production configuration reviewed.
 
-All P0/P1 issues are resolved and verified. Production configuration is internally safe.
+## Release and operations
+
+- [ ] Full backend and frontend suites pass on the exact release SHA.
+- [ ] Hosted CI for the exact SHA is green.
+- [ ] Production Compose/container smoke test passes.
+- [ ] Monitoring, alert delivery, incident contacts, retention, and rollback documented.
+- [ ] Independent security review completed.
+
+Current open gaps are tracked in docs/industry-readiness.md and docs/release-readiness.md.

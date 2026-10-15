@@ -1,44 +1,23 @@
-# CloudScope Observability & Health Architecture
+# Observability and Health
 
-## 1. Overview
-CloudScope implements the standard cloud-native observability pillars: health probes (Kubernetes liveness and readiness), diagnostic endpoints, Prometheus metrics, structured JSON logging, and correlation tracking.
+CloudScope includes basic health probes, structured request logs, request IDs, Prometheus metrics, and operations endpoints. These components are diagnostic building blocks, not a complete monitoring or alerting service.
 
-## 2. Health & Readiness Probes
+## Health endpoints
 
-### `GET /live`
-- **Purpose**: Kubernetes liveness probe.
-- **Semantics**: Pure memory-only check. Returns HTTP 200 `{"status": "ALIVE"}` immediately.
-- **Contract**: Never contacts external databases or AWS APIs. A failure indicates an unresponsive event loop or unhandled deadlock requiring container restart.
+- GET /live: process liveness check; does not validate AWS availability.
+- GET /ready: checks relational database, Redis, and Neo4j connectivity.
+- GET /health: application/build metadata.
+- GET /health/aws: AWS identity/connectivity diagnostic; admin protected.
+- GET /health/dependencies: dependency diagnostics. Confirm route authorization before exposure.
 
-### `GET /ready`
-- **Purpose**: Kubernetes readiness probe / load-balancer target healthcheck.
-- **Semantics**: Checks local dependencies required for serving traffic:
-  - Neo4j database connectivity
-  - Redis cache connectivity
-  - Durable relational database connectivity
-- **Decoupled from AWS Availability**: Does **not** block on AWS STS or regional availability. Temporary AWS API throttling or outage does not cause healthy CloudScope instances to be marked unready.
+Readiness is intentionally distinct from AWS availability; a regional AWS outage should not necessarily restart an otherwise healthy API process. However, scan operations still require functioning AWS credentials and APIs.
 
-### `GET /health/aws`
-- **Purpose**: Diagnostic diagnostic probe for AWS credentials and regional connectivity.
-- **Semantics**: Executes a fast `sts:GetCallerIdentity` call and returns identity ARN, account ID, and latency.
+## Metrics and logs
 
-### `GET /health/dependencies`
-- **Purpose**: Detailed diagnostic report on backend subsystem status.
+Prometheus metrics are served at /metrics. Restrict access through network policy/reverse proxy until an explicit access policy is configured. Review metric labels for cardinality before long-term production retention.
 
-### `GET /health`
-- **Purpose**: General metadata probe returning Git commit hash, app version, build version, and startup time.
+Structured logs and the X-Request-ID response header support request correlation. Sanitization is best effort; never intentionally log credentials, tokens, or secret values.
 
-## 3. Prometheus Metrics (`GET /metrics`)
-Exposes standard Prometheus exposition format telemetry:
-- `cloudscope_http_requests_total{method, endpoint, status_code}`: Request counter.
-- `cloudscope_http_request_duration_seconds{method, endpoint}`: Latency histogram.
-- `cloudscope_scan_total{mode, status}`: Scan execution counter.
-- `cloudscope_scan_duration_seconds{mode}`: Scan duration histogram.
-- `cloudscope_rate_limit_exceeded_total{endpoint}`: Throttling counter.
-- `cloudscope_copilot_requests_total{status}`: AI Copilot request counter.
-- `cloudscope_copilot_latency_seconds`: AI Copilot latency histogram.
+## Production work still required
 
-## 4. Structured JSON Logging & Correlation IDs (`X-Request-ID`)
-- **Correlation ID Middleware**: Every incoming request is inspected for `X-Request-ID`. If absent, an ultra-unique `req-<timestamp>-<uuid>` is generated.
-- **Context Propagation**: The correlation ID is placed in a Python `contextvars.ContextVar` and automatically injected into every log statement emitted during the request lifecycle.
-- **Response Attachment**: The correlation ID is attached to the response header `X-Request-ID` and included in every structured error response body.
+Set up alert delivery for stale scans, scan failures/partial regions, Redis/database/Neo4j degradation, persistence errors, lock contention, and API error rates. Define retention, dashboards, escalation, ownership, and incident procedures. Test alerts and recovery during a deployment rehearsal.

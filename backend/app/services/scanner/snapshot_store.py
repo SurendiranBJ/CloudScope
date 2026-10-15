@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from app.cache import cache
 from app.config import settings
+from app.services.project_context import get_project_id
 
 logger = logging.getLogger("scanner")
 
@@ -29,6 +30,7 @@ logger = logging.getLogger("scanner")
 class PublishedSnapshot:
     """Immutable representation of a published security snapshot."""
     snapshot_id: str
+    project_id: Optional[str]
     published_at: str
     status: str
     region_metadata: Dict[str, Any] = field(default_factory=dict)
@@ -51,6 +53,7 @@ class PublishedSnapshot:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "snapshot_id": self.snapshot_id,
+            "project_id": self.project_id,
             "published_at": self.published_at,
             "status": self.status,
             "region_metadata": copy.deepcopy(self.region_metadata),
@@ -118,6 +121,7 @@ class SnapshotStore:
 
         snap = PublishedSnapshot(
             snapshot_id=snapshot_id,
+            project_id=get_project_id(),
             published_at=pub_at,
             status=status,
             region_metadata=reg_meta,
@@ -249,7 +253,7 @@ class SnapshotStore:
             if sql_pointer and sql_pointer.get("snapshot_id"):
                 sql_id = sql_pointer["snapshot_id"]
                 with self._lock:
-                    if self._current_snapshot and self._current_snapshot.snapshot_id == sql_id:
+                    if self._current_snapshot and self._current_snapshot.snapshot_id == sql_id and self._current_snapshot.project_id == get_project_id():
                         return self._current_snapshot
                 from app.persistence.repository import load_authoritative_snapshot
                 sql_data = load_authoritative_snapshot(snapshot_id=sql_id)
@@ -260,12 +264,18 @@ class SnapshotStore:
                         self._history[snapshot.snapshot_id] = snapshot
                     return snapshot
                 return None
+            if get_project_id() is not None:
+                # A selected project with no authoritative pointer has no
+                # snapshot. Never reuse the legacy/global in-memory snapshot.
+                return None
             if settings.is_production:
                 # A valid SQL database with no pointer means there is no
                 # published snapshot; never resurrect one from a stale cache.
                 return None
         except Exception as e:
             logger.error(f"[SNAPSHOT_STORE] SQL pointer lookup failed: {e}")
+            if get_project_id() is not None:
+                return None
             # Do not accept a Redis/local pointer when the authoritative SQL
             # pointer cannot be read in production.
             if settings.is_production:
@@ -320,7 +330,9 @@ class SnapshotStore:
         """Retrieve a specific versioned snapshot by ID."""
         with self._lock:
             if snapshot_id in self._history:
-                return self._history[snapshot_id]
+                cached = self._history[snapshot_id]
+                if cached.project_id == get_project_id():
+                    return cached
 
         snap_dict = cache.get(f"v1:snapshot:{snapshot_id}")
         if isinstance(snap_dict, dict):
@@ -368,6 +380,7 @@ class SnapshotStore:
     def _dict_to_snapshot(self, d: dict) -> PublishedSnapshot:
         return PublishedSnapshot(
             snapshot_id=d.get("snapshot_id", ""),
+            project_id=d.get("project_id"),
             published_at=d.get("published_at", ""),
             status=d.get("status", "SUCCESS"),
             region_metadata=d.get("region_metadata", {}),

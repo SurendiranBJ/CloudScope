@@ -1,36 +1,13 @@
-# CloudScope Authentication Architecture
+# Authentication
 
-## 1. Overview
-CloudScope enforces enterprise-grade identity authentication via JSON Web Tokens (JWT) adhering to the OpenID Connect (OIDC) and OAuth 2.0 specifications. Every incoming API request to protected resources must provide an `Authorization: Bearer <token>` header, except for public liveness probes.
+CloudScope accepts bearer JWTs when authentication is required. The backend validates the signature and, when configured, the issuer and audience. OIDC settings are `OIDC_JWKS_URL`, `OIDC_ISSUER_URL`, and `OIDC_AUDIENCE`; see [configuration-reference.md](configuration-reference.md).
 
-## 2. JWT Verification & Validation
-Token validation is handled in `backend/app/security/auth.py` and verifies:
-- **Signature Integrity**: Cryptographically validated using either symmetric HMAC secrets (`HS256`, `HS384`, `HS512`) or asymmetric RSA / ECDSA keypairs (`RS256`, `ES256`) via OIDC JSON Web Key Sets (JWKS).
-- **Expiration (`exp`)**: Tokens past their expiration timestamp are rejected immediately with HTTP 401.
-- **Not Before / Issued At (`nbf`, `iat`)**: Future-dated tokens are rejected with a 30-second leeway window.
-- **Issuer (`iss`)**: Validated against `OIDC_ISSUER` when configured.
-- **Audience (`aud`)**: Validated against `OIDC_AUDIENCE` when configured.
+## Local development
 
-## 3. Principal Identity & Claims Normalization
-The primary subject identifier (`sub`) is extracted as the immutable unique user identity. Roles and permissions are mapped from standard claims:
-- `roles` or `realm_access.roles` (Keycloak / standard OIDC)
-- `groups` (Okta / Azure AD)
-- `scope` / `scp` (OAuth 2.0 scopes)
+For an isolated local environment only, `DEV_AUTH_MODE=true` enables development identity headers (`X-Dev-Role` and `X-Dev-Subject`; `X-Dev-User` is accepted as a compatibility alias). The Compose development configuration may also disable required authentication. This can grant broad development access, so never expose such a configuration to an untrusted network or use it in production. Production startup validation rejects development auth and requires OIDC/JWT settings.
 
-```python
-# AuthenticatedUser model
-@dataclass
-class AuthenticatedUser:
-    id: str
-    email: Optional[str]
-    roles: List[Role]
-    permissions: Set[Permission]
-    token_claims: Dict[str, Any]
-```
+## Production responsibilities
 
-## 4. Development Authentication Mode (`DEV_AUTH_MODE`)
-For local workstation development, testing, and isolated evaluation environments:
-- When `DEV_AUTH_MODE=true`, the backend accepts `X-Dev-Role` and `X-Dev-User` HTTP headers in place of a full identity provider token.
-- Valid roles for `X-Dev-Role`: `VIEWER`, `ANALYST`, `SECURITY_OFFICER`, `ADMINISTRATOR`.
-- Whenever `DEV_AUTH_MODE` is enabled, the backend logs prominent security warning banners on startup.
-- In production (`DEV_AUTH_MODE=false`), dev headers are strictly ignored and all requests require cryptographically signed JWTs.
+CloudScope does not provide a hosted identity-provider onboarding flow. Configure the IdP, token issuance, role claims, MFA, session expiry, and account lifecycle in the deployment environment. Confirm the IdP's claims map to the four supported roles: `VIEWER`, `ANALYST`, `SECURITY_OFFICER`, and `ADMINISTRATOR`. Backend dependencies enforce roles; frontend route visibility is not an authorization boundary.
+
+Project access is additionally scoped by the authenticated principal in project endpoints. Review [rbac.md](rbac.md) and [security.md](security.md) before deployment; do not treat this prototype's application checks as a substitute for a tenant-isolation review.

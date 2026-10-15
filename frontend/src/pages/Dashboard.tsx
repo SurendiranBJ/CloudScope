@@ -212,15 +212,14 @@ export const Dashboard: React.FC = () => {
     <div className="flex-1 min-h-0 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
       
       {/* Executive Header & Quick Actions */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-enterprise-border/60">
-        <div>
-          <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-4 pb-4 border-b border-enterprise-border/60">
+        <div className="flex items-start gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-enterprise-accent/15 border border-enterprise-accent/30 flex items-center justify-center glow-blue text-enterprise-accent">
               <Cloud className="w-5 h-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold text-white tracking-tight">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-bold text-white tracking-tight leading-tight">
                   CloudScope Security Control Center
                 </h1>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
@@ -232,24 +231,24 @@ export const Dashboard: React.FC = () => {
                 Unified cloud security posture management, multi-hop identity graph intelligence, and lateral attack vector defense.
               </p>
             </div>
-          </div>
         </div>
         
-        {/* Region Selector, Status, Quick Actions & Theme Toggle */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          {healthData && (
-            <RegionSelector
-              currentMode={healthData.scan_mode || 'single'}
-              currentRegion={healthData.selected_region || null}
-              onRegionChanged={handleScanClick}
-            />
-          )}
-          <ScannedRegionBadge />
-          <LastScannedBadge />
-          <ScanTrigger />
+        {/* Keep scan controls and actions in a dedicated toolbar so they wrap cleanly. */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {healthData && (
+              <RegionSelector
+                currentMode={healthData.scan_mode || 'single'}
+                currentRegion={healthData.selected_region || null}
+                onRegionChanged={handleScanClick}
+              />
+            )}
+            <ScannedRegionBadge />
+            <LastScannedBadge />
+          </div>
 
-          {/* Quick Action Buttons */}
-          <div className="flex items-center gap-2 pl-2 border-l border-enterprise-border/80">
+          <div className="flex flex-wrap items-center gap-2">
+            <ScanTrigger />
             <button
               onClick={() => navigate('/reports')}
               className="px-3 py-1.5 rounded-lg bg-gray-800/80 hover:bg-gray-700/80 border border-enterprise-border text-xs font-medium text-gray-200 hover:text-white transition-all flex items-center gap-1.5 shadow-sm"

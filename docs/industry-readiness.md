@@ -1,32 +1,35 @@
-# Industry Readiness Work: Six Foundations
+# Industry Readiness Status
 
-This checklist records code-backed work delivered for the current readiness milestone. A checked foundation means the capability exists in the repository; it does not imply certification, full AWS semantic coverage, or production validation.
+**Reviewed:** 2026-10-15
+**Branch:** sura
+**Assessment:** Useful security-analysis prototype; not production-certified.
 
-## Delivered foundations
+This status describes the implementation and evidence available in this review. An implemented capability has not thereby passed independent security review, production-scale load testing, or a customer deployment rehearsal.
 
-| Area | Current foundation |
+## Implemented foundations
+
+| Area | Current implementation |
 | --- | --- |
-| Finding confidence and workflow | Finding statuses are read from durable lifecycle state, and status changes are committed with append-only history before updated findings are exposed. Finding details show the transition timeline. |
-| Explainable graph | Cloud Graph supports full inventory views and attack-path tracing. Attack paths and findings carry scan provenance and structured evidence; the UI offers evidence-grounded AI explanations. |
-| Safer remediation | Remediation remains advisory. IAM change simulation produces impact previews without applying changes to AWS, and pending simulation drafts are isolated by authenticated issuer and subject. |
-| Access control | The frontend can request a session profile whose identity and roles are derived by the backend after token validation. Simulation state is isolated per principal. API authorization remains authoritative. |
-| Reliability | Snapshot publication persists before exposing the new snapshot. Cache clearing only deletes CloudScope-owned `v1:` Redis keys, and blast-radius errors or traversal truncation are represented as unknown/partial rather than low risk. |
-| Release gates | CI's frontend dependency audit now fails the job on high-severity findings instead of ignoring audit failures. Existing test, lint, and production-build jobs remain in place. |
+| AWS account projects | Owner-scoped project records, role verification with a generated per-project ExternalId, and manual scans through the selected verified role. |
+| Project data scope | The UI sends the selected project with data requests. The API validates ownership, pins the selected snapshot, and avoids fallback to an unrelated global snapshot. Snapshots, scan runs, finding state/history, audit events, cache keys, and simulation drafts have project scope. |
+| Durable simulation | What-if policy changes persist in SQL and are scoped to analyst identity and selected project. Simulation does not write to AWS. |
+| Scan and snapshot lifecycle | Scan coordination uses Redis-backed lock leases where available; scan and snapshot metadata are persisted relationally; current snapshot reads are pinned per request. |
+| Findings and evidence | Finding lifecycle state and history are persisted. Graph paths and findings expose evidence/provenance so static capability can be distinguished from observed activity. |
+| User interface | Dashboard, Cloud Graph, Projects, Security Findings, Attack Paths, Policies, Resources, Alerts, Reports, and Settings are available. Attack Path groups are sorted by severity/risk and numbered in displayed order. |
+| Optional AI explanations | The UI can request evidence-context explanations from the configured Gemini provider. Model output remains advisory and probabilistic. |
 
-## Production gaps still open
+## Open work before production
 
-- CloudScope still scans one configured AWS environment. It does not yet provide a project/account registry, AWS Organizations onboarding, per-account role assumption, or tenant isolation for snapshots, findings, scans, and audit data.
-- Simulation drafts are principal-isolated but remain in process memory; they are not shared across backend workers or durable across restarts.
-- The policy evaluator covers a documented subset of AWS authorization semantics. Its output must remain evidence-scoped and must not be represented as complete AWS IAM equivalence.
-- AI explanations send selected scan context to the configured external model provider. Customer-configurable data residency, retention, and provider policies need to be established before broad enterprise deployment.
-- OIDC/JWT role enforcement exists, but CloudScope does not itself provide enterprise SSO configuration, MFA enrollment, or customer-managed identity lifecycle.
-- Production readiness still needs deployment-specific validation: PostgreSQL migration management, multi-worker/restart testing, backup restore drills, penetration testing, operational alerting, and a reviewed incident/support process.
-- The local frontend linter currently reports warnings. Those should be resolved and the CI job made warning-free before treating lint as a release-quality gate.
+1. Scheduled scans are not project-aware. The scheduler does not iterate verified account projects.
+2. Complete the tenant-boundary review across data endpoints, background jobs, operational routes, exports, and error paths. Add adversarial cross-owner/project tests with production database/cache configuration.
+3. Validate AWS temporary credential expiration and refresh during long scans and across worker restarts. Temporary credentials are cached in process memory; multi-worker deployment behavior requires explicit validation.
+4. Adopt versioned database migrations. Current initialization uses create-all and ad hoc column migrations.
+5. Test PostgreSQL, Redis, Neo4j, backup/restore, restart recovery, failover, and rollback using the target deployment.
+6. Document supported IAM policy semantics and unsupported layers/condition keys. Profile large accounts and expose path truncation/completeness.
+7. Add production alerting, incident procedures, retention/data residency controls, penetration testing, dependency/container review, and an independent security review.
+8. Establish customer policy for AI context sent to the external provider, including consent, retention, and residency.
+9. Verify hosted CI and deployment smoke-test evidence for the exact release commit.
 
-## Next milestone
+## Milestone summary
 
-### AWS account projects and tenant-aware persistence
-
-**Project registry foundation delivered:** CloudScope now has a Projects screen and durable AWS account project records. Create/list/update/archive operations are restricted to administrators where they mutate data; reads and every project lookup are scoped to the authenticated issuer and subject. Account IDs and IAM role ARNs are validated, duplicate active accounts are rejected per owner, and archive preserves the registry record. This registry does not store AWS credentials.
-
-**Still required before this milestone is complete:** project role assumption and connection verification; selecting a project for scans; carrying `project_id` through scan runs, snapshots, finding state/history, audit records, and caches; scoping every resource API and background job; and cross-project isolation tests. Current scan inventory and published snapshot remain single-environment/global. Do not treat this registry foundation as tenant isolation or enable shared customer hosting until every read/write boundary is project-scoped and verified.
+Project registration, role verification, selected-project request scope, scoped persistence/cache keys, and durable simulation drafts are implemented and have focused regression coverage. This completes the code foundation for project-scoped manual analysis. Project-aware scheduling and deployment-specific isolation validation remain open, so the wider multi-account production milestone is not complete.

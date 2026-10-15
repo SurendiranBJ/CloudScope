@@ -178,7 +178,7 @@ def add_simulation_change(
     """Add a pending simulation change (ATTACH_POLICY or DETACH_POLICY).
 
     This does NOT modify AWS. This does NOT modify Neo4j.
-    Changes are stored in application memory only.
+    Changes are stored durably and scoped to the authenticated analyst and selected project.
     """
     action = body.action.upper()
     if action not in {"ATTACH_POLICY", "DETACH_POLICY"}:

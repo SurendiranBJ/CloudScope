@@ -33,6 +33,20 @@ class CacheManager:
             logger.warning("Redis is not accessible. Falling back to local in-memory caching.")
             self.redis_client = None
 
+    @staticmethod
+    def _scoped_key(key: str) -> str:
+        try:
+            from app.services.project_context import get_project_id
+            project_id = get_project_id()
+            if not project_id:
+                from app.services.scanner.scan_manager import scan_manager
+                project_id = getattr(scan_manager, "_active_project_id", None)
+        except Exception:
+            project_id = None
+        if project_id and key.startswith(CACHE_KEY_PREFIX):
+            return f"{CACHE_KEY_PREFIX}project:{project_id}:{key[len(CACHE_KEY_PREFIX):]}"
+        return key
+
     @property
     def is_redis(self) -> bool:
         return self.check_redis()
@@ -48,6 +62,7 @@ class CacheManager:
             return False
 
     def get(self, key: str) -> dict | list | None:
+        key = self._scoped_key(key)
         if self.redis_client:
             try:
                 val = self.redis_client.get(key)
@@ -71,6 +86,7 @@ class CacheManager:
             return val
 
     def set(self, key: str, value: any, ttl_seconds: int | None = None):
+        key = self._scoped_key(key)
         if self.redis_client:
             try:
                 if ttl_seconds and ttl_seconds > 0:
@@ -94,6 +110,7 @@ class CacheManager:
         When ttl_seconds is None or <= 0, keys are stored persistently without expiration.
         In local fallback, updates dictionary under thread lock.
         """
+        mapping = {self._scoped_key(k): v for k, v in mapping.items()}
         if self.redis_client:
             try:
                 pipe = self.redis_client.pipeline()
@@ -116,6 +133,7 @@ class CacheManager:
                     self._local_expiry[key] = expiry
 
     def invalidate(self, key: str):
+        key = self._scoped_key(key)
         if self.redis_client:
             try:
                 self.redis_client.delete(key)

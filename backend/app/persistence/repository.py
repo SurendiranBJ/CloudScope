@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import uuid
+import hashlib
 from datetime import datetime, timezone, timedelta
 from dataclasses import asdict, is_dataclass
 from enum import Enum
@@ -25,6 +26,7 @@ from app.persistence.models import (
     FindingStateHistoryModel,
     AuditEventModel,
 )
+from app.services.project_context import get_project_id, get_project_scope_key
 
 logger = logging.getLogger("cloudscope.persistence")
 
@@ -69,6 +71,14 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, default=_json_default, sort_keys=True, separators=(",", ":"))
 
 
+def _finding_storage_id(finding_id: str) -> str:
+    project_id = get_project_id()
+    if not project_id:
+        return finding_id
+    digest = hashlib.sha256(finding_id.encode("utf-8")).hexdigest()
+    return f"p{project_id[:8]}:{digest}"
+
+
 # ==============================================================================
 # SCAN RUN REPOSITORY
 # ==============================================================================
@@ -81,6 +91,7 @@ def record_scan_run_start(
     trigger_type: str = "MANUAL",
     total_collectors: int = 12,
     active_phase: str = "INITIALIZING",
+    project_id: Optional[str] = None,
 ) -> None:
     """Insert initial ScanRun record into durable store. Raises DatabasePersistenceError on failure."""
     try:
@@ -89,6 +100,7 @@ def record_scan_run_start(
             if not existing:
                 run = ScanRunModel(
                     scan_id=scan_id,
+                    project_id=project_id if project_id is not None else get_project_id(),
                     status="SCANNING",
                     started_at=started_at,
                     scan_mode=scan_mode,
@@ -131,6 +143,8 @@ def record_scan_run_finish(
                 session.add(run)
 
             run.status = status
+            if run.project_id is None:
+                run.project_id = get_project_id()
             run.completed_at = completed_at
             run.duration_seconds = duration_seconds
             # Never fabricate a snapshot ID for failed scans! Only persist if actually published
@@ -155,8 +169,13 @@ def get_recent_scan_runs(limit: int = 10, offset: int = 0) -> List[Dict[str, Any
     """
     try:
         with get_db_session() as session:
+            q = session.query(ScanRunModel)
+            if get_project_id() is None:
+                q = q.filter(ScanRunModel.project_id.is_(None))
+            else:
+                q = q.filter_by(project_id=get_project_id())
             runs = (
-                session.query(ScanRunModel)
+                q
                 .order_by(desc(ScanRunModel.started_at), desc(ScanRunModel.scan_id))
                 .offset(max(0, offset))
                 .limit(min(max(1, limit), 200))
@@ -249,6 +268,7 @@ def save_authoritative_snapshot(
     regions: Optional[Dict[str, Any]] = None,
     resource_counts: Optional[Dict[str, Any]] = None,
     finding_counts: Optional[Dict[str, Any]] = None,
+    project_id: Optional[str] = None,
 ) -> bool:
     """
     Atomically persist the complete authoritative snapshot payload into SQL
@@ -258,18 +278,25 @@ def save_authoritative_snapshot(
         reg_meta = region_metadata or regions or {}
         res_cnt = resource_counts or {"total": len(resources or [])}
         find_cnt = finding_counts or {"total": len(findings or [])}
+        scope_id = project_id if project_id is not None else get_project_id()
+        scope_key = scope_id or "global"
 
         with get_db_session() as session:
             # 1. Reset is_current flag on previous snapshots
-            session.query(ScanSnapshotModel).filter(ScanSnapshotModel.is_current == 1).update({"is_current": 0})
+            current_query = session.query(ScanSnapshotModel).filter(ScanSnapshotModel.is_current == 1)
+            current_query = current_query.filter(ScanSnapshotModel.project_id.is_(None)) if scope_id is None else current_query.filter_by(project_id=scope_id)
+            current_query.update({"is_current": 0})
 
             # 2. Upsert full snapshot row
-            snap = session.query(ScanSnapshotModel).filter_by(snapshot_id=snapshot_id).first()
+            snap_query = session.query(ScanSnapshotModel).filter_by(snapshot_id=snapshot_id)
+            snap_query = snap_query.filter(ScanSnapshotModel.project_id.is_(None)) if scope_id is None else snap_query.filter_by(project_id=scope_id)
+            snap = snap_query.first()
             if not snap:
-                snap = ScanSnapshotModel(snapshot_id=snapshot_id)
+                snap = ScanSnapshotModel(snapshot_id=snapshot_id, project_id=scope_id)
                 session.add(snap)
 
             snap.scan_id = scan_id
+            snap.project_id = scope_id
             snap.published_at = published_at
             snap.status = status
             snap.duration_seconds = duration_seconds
@@ -297,9 +324,9 @@ def save_authoritative_snapshot(
             snap.is_current = 1
 
             # 3. Transactionally advance the singleton current snapshot pointer
-            ptr = session.query(CurrentSnapshotPointerModel).filter_by(id=1).first()
+            ptr = session.query(CurrentSnapshotPointerModel).filter_by(scope_key=scope_key).first()
             if not ptr:
-                ptr = CurrentSnapshotPointerModel(id=1, snapshot_id=snapshot_id, published_at=published_at)
+                ptr = CurrentSnapshotPointerModel(id=1 if scope_key == "global" else None, scope_key=scope_key, snapshot_id=snapshot_id, published_at=published_at)
                 session.add(ptr)
             else:
                 ptr.snapshot_id = snapshot_id
@@ -314,15 +341,19 @@ def save_authoritative_snapshot(
         return False
 
 
-def get_authoritative_current_snapshot_pointer() -> Optional[Dict[str, str]]:
+def get_authoritative_current_snapshot_pointer(project_id: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Query SQL for the authoritative current snapshot pointer."""
     try:
         with get_db_session() as session:
-            ptr = session.query(CurrentSnapshotPointerModel).filter_by(id=1).first()
+            scope_id = project_id if project_id is not None else get_project_id()
+            scope_key = scope_id or "global"
+            ptr = session.query(CurrentSnapshotPointerModel).filter_by(scope_key=scope_key).first()
             if ptr:
                 return {"snapshot_id": ptr.snapshot_id, "published_at": ptr.published_at}
             # Fallback to is_current=1
-            snap = session.query(ScanSnapshotModel).filter_by(is_current=1).first()
+            q = session.query(ScanSnapshotModel).filter_by(is_current=1)
+            q = q.filter(ScanSnapshotModel.project_id.is_(None)) if scope_id is None else q.filter_by(project_id=scope_id)
+            snap = q.first()
             if snap:
                 return {"snapshot_id": snap.snapshot_id, "published_at": snap.published_at}
             return None
@@ -338,13 +369,15 @@ def load_authoritative_snapshot(snapshot_id: Optional[str] = None) -> Optional[D
     """
     try:
         with get_db_session() as session:
+            scope_id = get_project_id()
             target_id = snapshot_id
             if not target_id:
-                ptr = session.query(CurrentSnapshotPointerModel).filter_by(id=1).first()
+                ptr = session.query(CurrentSnapshotPointerModel).filter_by(scope_key=scope_id or "global").first()
                 if ptr:
                     target_id = ptr.snapshot_id
 
             query = session.query(ScanSnapshotModel)
+            query = query.filter(ScanSnapshotModel.project_id.is_(None)) if scope_id is None else query.filter_by(project_id=scope_id)
             if target_id:
                 snap = query.filter_by(snapshot_id=target_id).first()
             else:
@@ -355,6 +388,7 @@ def load_authoritative_snapshot(snapshot_id: Optional[str] = None) -> Optional[D
 
             return {
                 "snapshot_id": snap.snapshot_id,
+                "project_id": snap.project_id,
                 "scan_id": snap.scan_id,
                 "published_at": snap.published_at,
                 "status": snap.status,
@@ -463,8 +497,13 @@ def cleanup_old_snapshots(retention_count: int = 10, preserve_snapshot_id: Optio
     """Prune historical snapshot records exceeding retention count."""
     try:
         with get_db_session() as session:
+            query = session.query(ScanSnapshotModel)
+            if get_project_id() is None:
+                query = query.filter(ScanSnapshotModel.project_id.is_(None))
+            else:
+                query = query.filter_by(project_id=get_project_id())
             all_snaps = (
-                session.query(ScanSnapshotModel)
+                query
                 .order_by(desc(ScanSnapshotModel.published_at))
                 .all()
             )
@@ -507,13 +546,16 @@ def record_finding_state(
         first_seen_str = first_seen or now_str
         last_seen_str = last_seen or now_str
         snapshot_id_str = snapshot_id or "snap-initial"
+        storage_id = _finding_storage_id(finding_id)
         with get_db_session() as session:
-            item = session.query(FindingStateModel).filter_by(finding_id=finding_id).first()
+            item = session.query(FindingStateModel).filter_by(finding_id=storage_id, project_id=get_project_id()).first()
             previous_status = item.status if item else None
             normalized_status = str(status).upper()
             if not item:
                 item = FindingStateModel(
-                    finding_id=finding_id,
+                    finding_id=storage_id,
+                    source_finding_id=finding_id,
+                    project_id=get_project_id(),
                     status=normalized_status,
                     first_seen=first_seen_str,
                     last_seen=last_seen_str,
@@ -540,7 +582,9 @@ def record_finding_state(
             if previous_status is None or previous_status.upper() != normalized_status:
                 session.add(FindingStateHistoryModel(
                     event_id=str(uuid.uuid4()),
-                    finding_id=finding_id,
+                    finding_id=storage_id,
+                    source_finding_id=finding_id,
+                    project_id=get_project_id(),
                     from_status=previous_status,
                     to_status=normalized_status,
                     occurred_at=now_str,
@@ -559,7 +603,7 @@ def get_finding_state_history(finding_id: str) -> List[Dict[str, Any]]:
         with get_db_session() as session:
             events = (
                 session.query(FindingStateHistoryModel)
-                .filter_by(finding_id=finding_id)
+                .filter_by(finding_id=_finding_storage_id(finding_id), project_id=get_project_id())
                 .order_by(desc(FindingStateHistoryModel.occurred_at), desc(FindingStateHistoryModel.event_id))
                 .limit(500)
                 .all()
@@ -567,7 +611,7 @@ def get_finding_state_history(finding_id: str) -> List[Dict[str, Any]]:
             return [
                 {
                     "event_id": event.event_id,
-                    "finding_id": event.finding_id,
+                    "finding_id": event.source_finding_id or event.finding_id,
                     "from_status": event.from_status,
                     "to_status": event.to_status,
                     "occurred_at": event.occurred_at,
@@ -586,11 +630,11 @@ def get_finding_state(finding_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve durable lifecycle state for a specific finding."""
     try:
         with get_db_session() as session:
-            item = session.query(FindingStateModel).filter_by(finding_id=finding_id).first()
+            item = session.query(FindingStateModel).filter_by(finding_id=_finding_storage_id(finding_id), project_id=get_project_id()).first()
             if not item:
                 return None
             return {
-                "finding_id": item.finding_id,
+                "finding_id": item.source_finding_id or item.finding_id,
                 "status": item.status,
                 "first_seen": item.first_seen,
                 "last_seen": item.last_seen,
@@ -612,10 +656,10 @@ def get_all_finding_states() -> Dict[str, Dict[str, Any]]:
     """Retrieve all finding lifecycle states indexed by finding_id."""
     try:
         with get_db_session() as session:
-            items = session.query(FindingStateModel).all()
+            items = session.query(FindingStateModel).filter_by(project_id=get_project_id()).all()
             return {
-                item.finding_id: {
-                    "finding_id": item.finding_id,
+                (item.source_finding_id or item.finding_id): {
+                    "finding_id": item.source_finding_id or item.finding_id,
                     "status": item.status,
                     "first_seen": item.first_seen,
                     "last_seen": item.last_seen,
@@ -639,11 +683,12 @@ def update_finding_triage(finding_id: str, assigned_to: Optional[str], due_date:
     """Persist analyst ownership and remediation context for a finding."""
     now_str = datetime.now(timezone.utc).isoformat() + "Z"
     with get_db_session() as session:
-        item = session.query(FindingStateModel).filter_by(finding_id=finding_id).first()
+        storage_id = _finding_storage_id(finding_id)
+        item = session.query(FindingStateModel).filter_by(finding_id=storage_id, project_id=get_project_id()).first()
         if item is None:
             item = FindingStateModel(
-                finding_id=finding_id, status="OPEN", first_seen=now_str, last_seen=now_str,
-                updated_at=now_str, snapshot_id="snap-initial",
+                finding_id=storage_id, source_finding_id=finding_id, status="OPEN", first_seen=now_str, last_seen=now_str,
+                updated_at=now_str, snapshot_id="snap-initial", project_id=get_project_id(),
             )
             session.add(item)
         item.assigned_to = assigned_to
@@ -678,6 +723,7 @@ def record_audit_event(
         with get_db_session() as session:
             ev = AuditEventModel(
                 event_id=event_id,
+                project_id=get_project_id(),
                 timestamp=timestamp,
                 actor_id=actor_id,
                 actor_role=actor_role,
@@ -713,6 +759,10 @@ def query_audit_events(
     try:
         with get_db_session() as session:
             q = session.query(AuditEventModel)
+            if get_project_id() is None:
+                q = q.filter(AuditEventModel.project_id.is_(None))
+            else:
+                q = q.filter_by(project_id=get_project_id())
             if eff_actor:
                 q = q.filter(AuditEventModel.actor_id == eff_actor)
             if action:

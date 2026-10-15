@@ -27,6 +27,11 @@ class CloudProjectModel(Base):
     description = Column(Text, nullable=False, default="")
     account_id = Column(String(12), nullable=True, index=True)
     role_arn = Column(String(2048), nullable=True)
+    external_id = Column(String(64), nullable=True)
+    verification_status = Column(String(16), nullable=False, default="NOT_CHECKED")
+    verified_at = Column(String(64), nullable=True)
+    verified_account_id = Column(String(12), nullable=True)
+    verification_error = Column(String(256), nullable=True)
     status = Column(String(16), nullable=False, default="ACTIVE")
     created_at = Column(String(64), nullable=False)
     updated_at = Column(String(64), nullable=False)
@@ -37,6 +42,7 @@ class ScanRunModel(Base):
     __tablename__ = "scan_runs"
 
     scan_id = Column(String(64), primary_key=True, index=True)
+    project_id = Column(String(36), nullable=True, index=True)
     snapshot_id = Column(String(64), index=True, nullable=True)
     status = Column(String(32), nullable=False, default="PENDING")
     started_at = Column(String(64), nullable=False)
@@ -58,6 +64,7 @@ class ScanSnapshotModel(Base):
     __tablename__ = "scan_snapshots"
 
     snapshot_id = Column(String(64), primary_key=True, index=True)
+    project_id = Column(String(36), nullable=True, index=True)
     scan_id = Column(String(64), index=True, nullable=False)
     published_at = Column(String(64), nullable=False)
     status = Column(String(32), nullable=False, default="SUCCESS")
@@ -91,6 +98,7 @@ class CurrentSnapshotPointerModel(Base):
     __tablename__ = "current_snapshot_pointer"
 
     id = Column(Integer, primary_key=True)  # Singleton record (ID=1)
+    scope_key = Column(String(64), nullable=False, default="global")
     snapshot_id = Column(String(64), nullable=False)
     published_at = Column(String(64), nullable=False)
 
@@ -100,6 +108,8 @@ class FindingStateModel(Base):
     __tablename__ = "finding_states"
 
     finding_id = Column(String(128), primary_key=True, index=True)
+    source_finding_id = Column(String(256), nullable=True, index=True)
+    project_id = Column(String(36), nullable=True, index=True)
     status = Column(String(32), nullable=False, default="OPEN")  # OPEN, ACKNOWLEDGED, RESOLVED, SUPPRESSED
     first_seen = Column(String(64), nullable=False)
     last_seen = Column(String(64), nullable=False)
@@ -119,7 +129,9 @@ class FindingStateHistoryModel(Base):
     __tablename__ = "finding_state_history"
 
     event_id = Column(String(64), primary_key=True, index=True)
+    project_id = Column(String(36), nullable=True, index=True)
     finding_id = Column(String(128), nullable=False, index=True)
+    source_finding_id = Column(String(256), nullable=True, index=True)
     from_status = Column(String(32), nullable=True)
     to_status = Column(String(32), nullable=False)
     occurred_at = Column(String(64), nullable=False, index=True)
@@ -132,6 +144,7 @@ class AuditEventModel(Base):
     __tablename__ = "audit_events"
 
     event_id = Column(String(64), primary_key=True, index=True)
+    project_id = Column(String(36), nullable=True, index=True)
     timestamp = Column(String(64), nullable=False, index=True)
     actor_id = Column(String(128), nullable=False, index=True)
     actor_role = Column(String(64), nullable=False)
@@ -144,3 +157,18 @@ class AuditEventModel(Base):
     ip_address = Column(String(64), nullable=True)
     user_agent = Column(String(256), nullable=True)
     metadata_json = Column(Text, default="{}")
+
+
+class SimulationChangeModel(Base):
+    """Durable analyst-owned simulation drafts, isolated by project."""
+
+    __tablename__ = "simulation_changes"
+    change_id = Column(String(36), primary_key=True)
+    owner_id = Column(String(768), nullable=False, index=True)
+    project_id = Column(String(36), nullable=True, index=True)
+    action = Column(String(32), nullable=False)
+    principal_type = Column(String(16), nullable=False)
+    principal_id = Column(String(256), nullable=False)
+    policy_arn = Column(String(2048), nullable=False)
+    policy_name = Column(String(256), nullable=False)
+    timestamp = Column(String(64), nullable=False)

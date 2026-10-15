@@ -1,50 +1,31 @@
-# CloudScope Master Security Architecture
+# CloudScope Security Overview
 
-## 1. Executive Summary
-CloudScope is an enterprise-grade cloud security posture and identity analysis platform designed from the ground up for strict operational security, defense-in-depth, and compliance readiness.
+## Security model
 
-## 2. Core Security Pillars
+CloudScope is a security analysis prototype that should be deployed only after the operator configures identity, network boundaries, database credentials, AWS permissions, and data retention. It is not a managed security service or a compliance certification.
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Security Architecture                         │
-├───────────────────┬───────────────────┬─────────────────────────────────┤
-│   Authentication  │   Authorization   │      Operational Hardening      │
-│   (OIDC / JWT)    │   (Monotonic RBAC)│  (Distributed Lock, Probes, CI) │
-├───────────────────┼───────────────────┼─────────────────────────────────┤
-│   Rate Limiting   │   Audit Logging   │      Secret Sanitization        │
-│  (Sliding Window) │ (Tamper-Evident)  │     (Zero Leakage Guarantee)    │
-└───────────────────┴───────────────────┴─────────────────────────────────┘
-```
+## Authentication and roles
 
-### 1. Authentication
-Cryptographic verification of JWTs signed by enterprise identity providers (Keycloak, Okta, Azure AD, Auth0) or local HMAC secrets. Validates expiration, signature, issuer, and audience. Subject (`sub`) provides an immutable principal identifier.
+Protected APIs use backend JWT/OIDC validation and role dependencies when authentication is required. DEV_AUTH_MODE is for local development only. Frontend role visibility is user experience; backend authorization is the actual control. Production IdP provisioning, claim mapping, session lifecycle, and MFA policy are deployment responsibilities.
 
-### 2. Role-Based Access Control (RBAC)
-Strict 4-tier monotonic role system:
-- `VIEWER`: Read-only access to inventory, graph, attack paths, and risk assessment.
-- `ANALYST`: Non-destructive what-if policy simulations and AI Copilot queries.
-- `SECURITY_OFFICER`: Finding lifecycle triage (acknowledge/resolve) and audit logs.
-- `ADMINISTRATOR`: Operational oversight, scan triggers, region configuration, lock management.
+## AWS access
 
-### 3. Rate Limiting & Throttling
-Sliding window rate limiter backed by Redis with in-memory fallback:
-- Bounded capacity per authenticated user ID (or IP address for public probes).
-- Rejections return HTTP 429 Too Many Requests with standard `Retry-After: <seconds>` headers.
+Use a dedicated read-only AWS principal. Project role verification uses an ExternalId and selected project role for manual scans. CloudScope code is not a substitute for IAM restrictions. Scheduled scans are not yet project-aware.
 
-### 4. Distributed Scan Coordination & Mutual Exclusion
-Distributed lock `cloudscope:scan:lock` ensures only one instance can perform an AWS scan at any given moment:
-- Redis atomic `SET NX EX` with unique UUID ownership token.
-- Background heartbeat lease renewal every 10 seconds.
-- Lua script verification on release to prevent stale lock hijacking.
-- 120-second lease TTL ensures dead instances do not hold locks forever.
+## Data isolation and storage
 
-### 5. Durable State & Redis Decoupling
-Redis is used solely as an ephemeral cache and lock coordinator. All scan run records, snapshots, and finding states are written to a durable relational database (SQLite/PostgreSQL) ensuring zero data loss across container restarts.
+Project ownership and project context scope account data and durable simulation drafts. Snapshots, scan runs, findings, audit events, and cache keys include project scope. This implementation has focused tests but has not been independently reviewed across every endpoint/background job or validated at production scale. Do not enable shared customer hosting based only on these controls.
 
-### 6. Administrative Audit Trail
-All administrative and operational actions (`SCAN_TRIGGERED`, `FINDING_MUTATED`, `SIMULATION_EXECUTED`, `COPILOT_REQUESTED`, `SETTINGS_UPDATED`) are durably recorded with automatic secret sanitization and a 90-day retention policy.
+SQL holds durable app state; Redis coordinates and caches; Neo4j holds graph data. Protect all stores and backups. Schema upgrades, cross-worker recovery, and restore behavior need deployment rehearsal.
 
-### 7. Centralized Sanitization & Zero AWS Write Guarantee
-- Scanner IAM permissions are strictly read-only (`Get*`, `List*`, `Describe*`).
-- Automated regex and key redaction prevents credentials, private keys, and API tokens from entering logs, audit records, or AI context.
+## AI and secrets
+
+Optional AI explanations transmit selected scan context to the configured Gemini provider. Obtain approval for provider data handling and customer consent. The sanitizer is best effort; never put secrets in application fields or logs.
+
+## Known security limitations
+
+- The IAM evaluator does not model every AWS authorization layer or condition key.
+- CloudTrail coverage depends on collection configuration, region availability, and event limits.
+- External model output is probabilistic.
+- Metrics and diagnostic routes need deployment-level network review.
+- Penetration testing, independent tenant isolation review, and incident-response validation remain open.

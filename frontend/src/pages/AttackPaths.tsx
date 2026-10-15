@@ -85,7 +85,7 @@ export const AttackPaths: FC = () => {
     refetchInterval: 10000
   });
 
-  const rawAttackPaths = data || [];
+  const rawAttackPaths = useMemo(() => data || [], [data]);
 
   const handleHighlightInFullGraph = (selectedPath: AttackPath) => {
     const pathNodeIds = selectedPath.nodes.map(n => n.id || n.name).filter(Boolean);
@@ -278,7 +278,19 @@ export const AttackPaths: FC = () => {
       }
     });
 
-    return Object.values(groupMap);
+    const severityRank: Record<ConsolidatedAttackPathGroup['severity'], number> = {
+      critical: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
+    return Object.values(groupMap).sort((a, b) =>
+      severityRank[b.severity] - severityRank[a.severity]
+      || b.maxRiskScore - a.maxRiskScore
+      || (a.sources[0]?.name || '').localeCompare(b.sources[0]?.name || '')
+      || (a.targets[0]?.name || a.downstreamAssets?.[0]?.name || '').localeCompare(b.targets[0]?.name || b.downstreamAssets?.[0]?.name || '')
+      || a.groupId.localeCompare(b.groupId)
+    );
   }, [rawAttackPaths]);
 
   // Filtered Consolidated Groups
@@ -1068,7 +1080,7 @@ export const AttackPaths: FC = () => {
             </p>
           </div>
         ) : (
-          filteredGroups.map((group) => {
+          filteredGroups.map((group, groupIndex) => {
             const isSelected = selectedGroup && selectedGroup.groupId === group.groupId;
             const correlationStatus = group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY')?.correlationStatus ||
               group.originalPaths.find(p => p.correlationStatus === 'CORRELATED_ACTIVITY' || (p as any).correlation_status === 'CORRELATED_ACTIVITY')?.correlationStatus ||
@@ -1173,7 +1185,9 @@ export const AttackPaths: FC = () => {
                           <span>{group.targets.length} Reachable Target{group.targets.length > 1 ? 's' : ''}</span>
                         </span>
                       )}
-                      <h3 className="text-base font-bold text-white ml-1">{group.name}</h3>
+                      <h3 className="text-base font-bold text-white ml-1">
+                        Attack Path {groupIndex + 1}: {group.name.replace(/^Attack Path\s+\d+\s*:\s*/i, '')}
+                      </h3>
                     </div>
                     <p className="text-xs text-enterprise-subtext leading-relaxed">{group.description}</p>
                   </div>

@@ -71,7 +71,7 @@ def _name_from_arn(arn: str) -> str:
 
 
 class SimulationStateManager:
-    """Thread-safe in-memory store for pending simulation changes.
+    """Store pending simulation changes, with durable persistence enabled for the API singleton.
 
     SAFETY GUARANTEES:
     - Never calls any AWS IAM mutation API.
@@ -84,6 +84,34 @@ class SimulationStateManager:
         self._change_owners: Dict[str, str] = {}
         self._owner_change_counts: Dict[str, int] = {}
         self._lock = Lock()
+        self._persistent = False
+
+    def _persistent_rows(self, owner_id: str):
+        from app.persistence.database import get_db_session
+        from app.persistence.models import SimulationChangeModel
+        from app.services.project_context import get_project_id
+        with get_db_session() as db:
+            rows = db.query(SimulationChangeModel).filter(
+                SimulationChangeModel.owner_id == owner_id,
+                SimulationChangeModel.project_id == get_project_id(),
+            ).order_by(SimulationChangeModel.timestamp, SimulationChangeModel.change_id).all()
+            return [{
+                "change_id": row.change_id, "action": row.action,
+                "principal_type": row.principal_type, "principal_id": row.principal_id,
+                "policy_arn": row.policy_arn, "policy_name": row.policy_name,
+                "timestamp": row.timestamp,
+            } for row in rows]
+
+    def _persist_change(self, change: SimulationChange, owner_id: str) -> None:
+        from app.persistence.database import get_db_session
+        from app.persistence.models import SimulationChangeModel
+        from app.services.project_context import get_project_id
+        project_id = get_project_id()
+        with get_db_session() as db:
+            count = db.query(SimulationChangeModel).filter_by(owner_id=owner_id, project_id=project_id).count()
+            if count >= MAX_CHANGES_PER_ANALYST:
+                raise ValueError(f"A simulation can contain at most {MAX_CHANGES_PER_ANALYST} pending changes.")
+            db.add(SimulationChangeModel(**change.to_dict(), owner_id=owner_id, project_id=project_id))
 
     # ------------------------------------------------------------------
     # Mutation helpers
@@ -105,6 +133,13 @@ class SimulationStateManager:
             policy_arn=policy_arn,
             policy_name=policy_name,
         )
+        if self._persistent:
+            self._persist_change(change, owner_id)
+            logger.info(
+                f"[SIMULATION] ATTACH_POLICY queued: {principal_type} '{principal_id}' "
+                f"← {change.policy_name} ({policy_arn}) [change_id={change.change_id}]"
+            )
+            return change
         with self._lock:
             if self._owner_change_counts.get(owner_id, 0) >= MAX_CHANGES_PER_ANALYST:
                 raise ValueError(f"A simulation can contain at most {MAX_CHANGES_PER_ANALYST} pending changes.")
@@ -133,6 +168,13 @@ class SimulationStateManager:
             policy_arn=policy_arn,
             policy_name=policy_name,
         )
+        if self._persistent:
+            self._persist_change(change, owner_id)
+            logger.info(
+                f"[SIMULATION] DETACH_POLICY queued: {principal_type} '{principal_id}' "
+                f"× {change.policy_name} ({policy_arn}) [change_id={change.change_id}]"
+            )
+            return change
         with self._lock:
             if self._owner_change_counts.get(owner_id, 0) >= MAX_CHANGES_PER_ANALYST:
                 raise ValueError(f"A simulation can contain at most {MAX_CHANGES_PER_ANALYST} pending changes.")
@@ -147,6 +189,18 @@ class SimulationStateManager:
 
     def remove_change(self, change_id: str, owner_id: str = "default") -> bool:
         """Remove a pending simulation change by ID. Returns True if found."""
+        if self._persistent:
+            from app.persistence.database import get_db_session
+            from app.persistence.models import SimulationChangeModel
+            from app.services.project_context import get_project_id
+            with get_db_session() as db:
+                row = db.query(SimulationChangeModel).filter_by(
+                    change_id=change_id, owner_id=owner_id, project_id=get_project_id()
+                ).one_or_none()
+                if row is None:
+                    return False
+                db.delete(row)
+            return True
         with self._lock:
             if change_id in self._changes and self._change_owners.get(change_id, "default") == owner_id:
                 removed = self._changes.pop(change_id)
@@ -163,6 +217,13 @@ class SimulationStateManager:
 
     def reset(self, owner_id: str = "default"):
         """Clear only the current analyst's pending simulation changes."""
+        if self._persistent:
+            from app.persistence.database import get_db_session
+            from app.persistence.models import SimulationChangeModel
+            from app.services.project_context import get_project_id
+            with get_db_session() as db:
+                db.query(SimulationChangeModel).filter_by(owner_id=owner_id, project_id=get_project_id()).delete(synchronize_session=False)
+            return
         with self._lock:
             owned_ids = [change_id for change_id, owner in self._change_owners.items() if owner == owner_id]
             for change_id in owned_ids:
@@ -178,6 +239,8 @@ class SimulationStateManager:
 
     def get_changes(self, owner_id: str = "default") -> List[dict]:
         """Return a snapshot of all pending changes as dicts."""
+        if self._persistent:
+            return self._persistent_rows(owner_id)
         with self._lock:
             return [
                 change.to_dict()
@@ -186,10 +249,14 @@ class SimulationStateManager:
             ]
 
     def has_changes(self, owner_id: str = "default") -> bool:
+        if self._persistent:
+            return bool(self._persistent_rows(owner_id))
         with self._lock:
             return any(owner == owner_id for owner in self._change_owners.values())
 
     def change_count(self, owner_id: str = "default") -> int:
+        if self._persistent:
+            return len(self._persistent_rows(owner_id))
         with self._lock:
             return sum(owner == owner_id for owner in self._change_owners.values())
 
@@ -212,12 +279,15 @@ class SimulationStateManager:
         """
         from app.services.scanner.inventory import AWSInventory
 
-        with self._lock:
-            changes_snapshot = [
-                change
-                for change_id, change in self._changes.items()
-                if self._change_owners.get(change_id, "default") == owner_id
-            ]
+        if self._persistent:
+            changes_snapshot = [SimulationChange(row["action"], row["principal_type"], row["principal_id"], row["policy_arn"], row["policy_name"]) for row in self._persistent_rows(owner_id)]
+        else:
+            with self._lock:
+                changes_snapshot = [
+                    change
+                    for change_id, change in self._changes.items()
+                    if self._change_owners.get(change_id, "default") == owner_id
+                ]
 
         # Deep-copy all lists so we never mutate the real scan data
         desired = AWSInventory()
@@ -304,3 +374,4 @@ def _apply_policy_change(
 
 # Module-level singleton — shared across all API routes
 simulation_state = SimulationStateManager()
+simulation_state._persistent = True

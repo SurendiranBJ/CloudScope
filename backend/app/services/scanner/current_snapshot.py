@@ -15,6 +15,7 @@ from contextvars import ContextVar, Token
 from app.cache import cache
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.snapshot_store import snapshot_store
+from app.services.project_context import get_project_id
 
 _UNPINNED = object()
 _request_snapshot: ContextVar[Any] = ContextVar("cloudscope_request_snapshot", default=_UNPINNED)
@@ -46,6 +47,8 @@ def get_current_snapshot_id() -> Optional[str]:
     snap = _get_snapshot()
     if snap and snap.snapshot_id:
         return snap.snapshot_id
+    if get_project_id():
+        return None
 
     cached_curr_id = cache.get("v1:current_snapshot_id")
     if cached_curr_id:
@@ -78,6 +81,8 @@ def get_current_snapshot_published_at() -> Optional[str]:
     snap = _get_snapshot()
     if snap and snap.published_at:
         return snap.published_at
+    if get_project_id():
+        return None
 
     cached_at = cache.get("v1:last_published_at")
     if cached_at:
@@ -103,6 +108,8 @@ def get_current_snapshot_published_at() -> Optional[str]:
 
 def has_published_snapshot() -> bool:
     """Return True if at least one verified published snapshot exists."""
+    if get_project_id():
+        return _get_snapshot() is not None
     if snapshot_store.has_snapshot():
         return True
     if cache.get("v1:current_snapshot_id") or cache.get("v1:last_published_scan_id"):
@@ -118,6 +125,8 @@ def get_current_snapshot_metadata() -> Dict[str, Any]:
     snap = _get_snapshot()
     if snap and snap.scan_metadata:
         meta = dict(snap.scan_metadata)
+    elif get_project_id():
+        meta = {}
     else:
         cached_meta = cache.get("v1:scan_metadata")
         meta = dict(cached_meta) if isinstance(cached_meta, dict) else {}
@@ -129,7 +138,7 @@ def get_current_snapshot_metadata() -> Dict[str, Any]:
     meta["snapshot_published_at"] = pub_at
     meta["has_published_snapshot"] = bool(snap_id)
 
-    status = scan_manager.get_status()
+    status = {} if get_project_id() else scan_manager.get_status()
     meta["scan_mode"] = meta.get("scan_mode") or status.get("scan_mode") or "global"
     meta["resolved_regions"] = meta.get("resolved_regions") or status.get("resolved_regions") or []
     meta["failed_regions"] = meta.get("failed_regions") or status.get("failed_regions") or []
@@ -147,6 +156,8 @@ def get_current_users() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.users)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:users")
     if isinstance(cached, list):
@@ -167,6 +178,8 @@ def get_current_roles() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.roles)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:roles")
     if isinstance(cached, list):
@@ -187,6 +200,8 @@ def get_current_groups() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.groups)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:groups")
     if isinstance(cached, list):
@@ -207,6 +222,8 @@ def get_current_policies() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.policies)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:policies")
     if isinstance(cached, list):
@@ -227,6 +244,8 @@ def get_current_resources() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.resources)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:resources")
     if isinstance(cached, list):
@@ -247,6 +266,8 @@ def get_current_alerts() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.alerts)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:alerts")
     if isinstance(cached, list):
@@ -267,6 +288,8 @@ def get_current_findings() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.findings)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:findings")
     if isinstance(cached, list):
@@ -287,6 +310,8 @@ def get_current_risks() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.risks)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:risks")
     if isinstance(cached, list):
@@ -329,6 +354,8 @@ def get_current_correlated_risks() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.correlated_risks)
+    if get_project_id():
+        return []
     cached = cache.get("v1:correlated_risks")
     return list(cached) if isinstance(cached, list) else []
 
@@ -338,6 +365,8 @@ def get_current_attack_paths() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.attack_paths)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:attack-paths")
     if isinstance(cached, list):
@@ -355,6 +384,8 @@ def get_current_graph() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.graph)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:graph")
     if isinstance(cached, list):
@@ -372,6 +403,8 @@ def get_current_effective_access() -> List[dict]:
     snap = _get_snapshot()
     if snap is not None:
         return list(snap.effective_access)
+    if get_project_id():
+        return []
 
     cached = cache.get("v1:effective_access")
     if isinstance(cached, list):
@@ -389,6 +422,8 @@ def get_current_dashboard() -> Dict[str, Any]:
     snap = _get_snapshot()
     if snap is not None and snap.dashboard:
         return dict(snap.dashboard)
+    if get_project_id():
+        return {}
 
     cached = cache.get("v1:dashboard")
     if isinstance(cached, dict):

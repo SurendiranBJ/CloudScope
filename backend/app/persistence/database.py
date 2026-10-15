@@ -79,6 +79,8 @@ Base = declarative_base()
 
 def init_db() -> None:
     """Create all relational tables if they do not already exist and migrate columns."""
+    # Ensure every durable model is registered before create_all (including simulation drafts).
+    import app.persistence.models  # noqa: F401
     Base.metadata.create_all(bind=engine)
     try:
         from sqlalchemy import inspect, text
@@ -102,18 +104,55 @@ def init_db() -> None:
                 ("dashboard_json", "TEXT DEFAULT '{}'"),
                 ("scan_metadata_json", "TEXT DEFAULT '{}'"),
                 ("is_current", "INTEGER DEFAULT 0"),
+                ("project_id", "VARCHAR(36)"),
             ]
             with engine.connect() as conn:
                 for col_name, col_def in new_cols:
                     if col_name not in existing_cols:
                         conn.execute(text(f"ALTER TABLE scan_snapshots ADD COLUMN {col_name} {col_def}"))
                 conn.commit()
+        scoped_columns = {
+            "scan_runs": [("project_id", "VARCHAR(36)")],
+            "current_snapshot_pointer": [("scope_key", "VARCHAR(64) NOT NULL DEFAULT 'global'")],
+            "audit_events": [("project_id", "VARCHAR(36)")],
+        }
+        table_names = set(inspector.get_table_names())
+        for table_name, columns in scoped_columns.items():
+            if table_name not in table_names:
+                continue
+            existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+            with engine.connect() as conn:
+                for col_name, col_def in columns:
+                    if col_name not in existing_cols:
+                        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}"))
+                conn.commit()
         if "finding_states" in inspector.get_table_names():
             existing_cols = {c["name"] for c in inspector.get_columns("finding_states")}
             with engine.connect() as conn:
-                for col_name, col_def in (("assigned_to", "VARCHAR(128)"), ("due_date", "VARCHAR(10)"), ("analyst_notes", "TEXT")):
+                for col_name, col_def in (("assigned_to", "VARCHAR(128)"), ("due_date", "VARCHAR(10)"), ("analyst_notes", "TEXT"), ("project_id", "VARCHAR(36)"), ("source_finding_id", "VARCHAR(256)")):
                     if col_name not in existing_cols:
                         conn.execute(text(f"ALTER TABLE finding_states ADD COLUMN {col_name} {col_def}"))
+                conn.commit()
+        if "finding_state_history" in inspector.get_table_names():
+            existing_cols = {c["name"] for c in inspector.get_columns("finding_state_history")}
+            with engine.connect() as conn:
+                for col_name, col_def in (("project_id", "VARCHAR(36)"), ("source_finding_id", "VARCHAR(256)")):
+                    if col_name not in existing_cols:
+                        conn.execute(text(f"ALTER TABLE finding_state_history ADD COLUMN {col_name} {col_def}"))
+                conn.commit()
+        if "cloud_projects" in inspector.get_table_names():
+            existing_cols = {c["name"] for c in inspector.get_columns("cloud_projects")}
+            new_cols = [
+                ("external_id", "VARCHAR(64)"),
+                ("verification_status", "VARCHAR(16) NOT NULL DEFAULT 'NOT_CHECKED'"),
+                ("verified_at", "VARCHAR(64)"),
+                ("verified_account_id", "VARCHAR(12)"),
+                ("verification_error", "VARCHAR(256)"),
+            ]
+            with engine.connect() as conn:
+                for col_name, col_def in new_cols:
+                    if col_name not in existing_cols:
+                        conn.execute(text(f"ALTER TABLE cloud_projects ADD COLUMN {col_name} {col_def}"))
                 conn.commit()
     except Exception:
         pass

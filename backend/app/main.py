@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter, Request, HTTPException, status
+from fastapi import FastAPI, APIRouter, Depends, Request, HTTPException, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -143,13 +143,9 @@ async def published_snapshot_middleware(request: Request, call_next):
     """Keep all security-data reads in one request on one published version."""
     if not request.url.path.startswith("/api/v1/"):
         return await call_next(request)
-
-    from app.services.scanner.current_snapshot import pin_request_snapshot, reset_request_snapshot
-    token = pin_request_snapshot()
-    try:
-        return await call_next(request)
-    finally:
-        reset_request_snapshot(token)
+    # API v1 project scope is validated by a FastAPI dependency first; that
+    # dependency then pins the correct project snapshot for the request.
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +232,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # ---------------------------------------------------------------------------
 # API Routers Mount
 # ---------------------------------------------------------------------------
-api_v1_router = APIRouter(prefix="/api/v1")
+from app.security.project_scope import project_scope
+
+api_v1_router = APIRouter(prefix="/api/v1", dependencies=[Depends(project_scope)])
 
 from app.routers import (
     dashboard,
