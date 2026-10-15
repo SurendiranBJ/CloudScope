@@ -18,6 +18,7 @@ const Alerts = lazy(async () => ({ default: (await import('./pages/Alerts')).Ale
 const Reports = lazy(async () => ({ default: (await import('./pages/Reports')).Reports }));
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/Settings')).SettingsPage }));
 const Policies = lazy(async () => ({ default: (await import('./pages/Policies')).Policies }));
+const Projects = lazy(async () => ({ default: (await import('./pages/Projects')).Projects }));
 
 const queryClient = new QueryClient();
 
@@ -57,6 +58,7 @@ function App() {
                       <Route path="/reports" element={<Reports />} />
                       <Route path="/settings" element={<SettingsPage />} />
                       <Route path="/policies" element={<Policies />} />
+                      <Route path="/projects" element={<Projects />} />
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                   </ErrorBoundary>

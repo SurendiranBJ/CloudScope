@@ -25,4 +25,8 @@ This checklist records code-backed work delivered for the current readiness mile
 
 ## Next milestone
 
-Build AWS account projects and tenant-aware persistence first. Do not enable shared customer hosting until account ownership is enforced at every read/write boundary and verified with cross-tenant isolation tests.
+### AWS account projects and tenant-aware persistence
+
+**Project registry foundation delivered:** CloudScope now has a Projects screen and durable AWS account project records. Create/list/update/archive operations are restricted to administrators where they mutate data; reads and every project lookup are scoped to the authenticated issuer and subject. Account IDs and IAM role ARNs are validated, duplicate active accounts are rejected per owner, and archive preserves the registry record. This registry does not store AWS credentials.
+
+**Still required before this milestone is complete:** project role assumption and connection verification; selecting a project for scans; carrying `project_id` through scan runs, snapshots, finding state/history, audit records, and caches; scoping every resource API and background job; and cross-project isolation tests. Current scan inventory and published snapshot remain single-environment/global. Do not treat this registry foundation as tenant isolation or enable shared customer hosting until every read/write boundary is project-scoped and verified.

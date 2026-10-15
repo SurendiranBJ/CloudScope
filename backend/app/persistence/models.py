@@ -4,8 +4,33 @@ CloudScope Relational Persistence Models.
 Stores ScanRuns, ScanSnapshots, FindingStates, and AuditEvents durably.
 """
 
-from sqlalchemy import Column, String, Float, Integer, Text, DateTime
+from sqlalchemy import Column, String, Float, Integer, Text, DateTime, UniqueConstraint, Index, text
 from app.persistence.database import Base
+
+
+class CloudProjectModel(Base):
+    """A customer's registered AWS account; ownership is anchored to verified issuer + subject."""
+
+    __tablename__ = "cloud_projects"
+    __table_args__ = (
+        UniqueConstraint("owner_issuer", "owner_subject", "project_id", name="uq_project_owner_id"),
+        Index(
+            "uq_active_project_owner_account", "owner_issuer", "owner_subject", "account_id",
+            unique=True, sqlite_where=text("status = 'ACTIVE'"), postgresql_where=text("status = 'ACTIVE'"),
+        ),
+    )
+
+    project_id = Column(String(36), primary_key=True, index=True)
+    owner_issuer = Column(String(512), nullable=False, index=True)
+    owner_subject = Column(String(256), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    account_id = Column(String(12), nullable=True, index=True)
+    role_arn = Column(String(2048), nullable=True)
+    status = Column(String(16), nullable=False, default="ACTIVE")
+    created_at = Column(String(64), nullable=False)
+    updated_at = Column(String(64), nullable=False)
+    created_by = Column(String(256), nullable=False)
 
 
 class ScanRunModel(Base):

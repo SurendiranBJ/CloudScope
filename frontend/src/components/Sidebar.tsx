@@ -13,6 +13,7 @@ import {
   Lock,
   ShieldCheck,
   Network,
+  FolderKanban,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -22,6 +23,7 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => {
   const menuItems = [
+    { name: 'Projects', path: '/projects', icon: FolderKanban },
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
     { name: 'Cloud Resources', path: '/resources', icon: Cloud },
     { name: 'Attack Paths', path: '/attack-paths', icon: GitMerge },

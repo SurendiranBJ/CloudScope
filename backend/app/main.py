@@ -3,6 +3,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter, Request, HTTPException, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -195,15 +196,18 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     req_id = getattr(request.state, "request_id", None) or get_current_request_id()
+    # Pydantic includes exception objects (for example ValueError) in `ctx`;
+    # normalize those before handing the payload to Starlette's JSON encoder.
+    errors = jsonable_encoder(exc.errors(), custom_encoder={ValueError: str, TypeError: str})
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={
             "success": False,
-            "detail": exc.errors(),
+            "detail": errors,
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": "Invalid request parameter or payload",
-                "details": exc.errors()
+                "details": errors
             },
             "request_id": req_id
         },
@@ -254,7 +258,8 @@ from app.routers import (
     audit,
     operations,
     health,
-    session
+    session,
+    projects
 )
 
 # Mount Routers under /api/v1
@@ -278,6 +283,7 @@ api_v1_router.include_router(audit.router)
 api_v1_router.include_router(operations.router)
 api_v1_router.include_router(health.router)
 api_v1_router.include_router(session.router)
+api_v1_router.include_router(projects.router)
 
 app.include_router(api_v1_router)
 
