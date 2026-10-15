@@ -43,7 +43,7 @@ class IAMPolicy(BaseModel):
 class CloudResource(BaseModel):
     id: Optional[str] = ""
     name: str
-    type: str  # 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy' | 'DynamoDB'
+    type: str  # IAM identities/policies, supported AWS resources, including ECS, ECR, and CodeCommit
     region: str
     status: str
     owner: str
@@ -65,7 +65,7 @@ class SecurityAlert(BaseModel):
 class AttackPathNode(BaseModel):
     id: str
     name: str
-    type: str  # 'User' | 'Role' | 'EC2' | 'S3' | 'Lambda' | 'Secrets' | 'Policy'
+    type: str  # IAM identities/policies and supported AWS resources
     arn: Optional[str] = None
     riskScore: Optional[int] = None
 

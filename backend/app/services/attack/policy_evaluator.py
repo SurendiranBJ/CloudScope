@@ -20,6 +20,8 @@ from app.services.risk.risk_constants import (
 
 logger = logging.getLogger("scanner")
 
+ARN_ID_RESOURCE_TYPES = {"EC2", "ECS", "SQS", "SNS", "KMS", "EKS", "StepFunctions"}
+
 
 class PolicyDecision(str, Enum):
     """Explicit IAM evaluation decision states."""
@@ -195,6 +197,8 @@ def match_resource_specific_action(action: str, res_type: str) -> bool:
     elif t == "EC2":
         if a in ("ec2:*", "ec2:*instance*"):
             return True
+        if any(fnmatchcase(candidate, a) for candidate in ("ssm:sendcommand", "ssm:startsession")):
+            return True
         if a.startswith("ec2-instance-connect:"):
             return True
         if a.startswith("ec2:"):
@@ -271,6 +275,32 @@ def match_resource_specific_action(action: str, res_type: str) -> bool:
             return True
         return False
 
+    elif t == "ECS":
+        if a == "ecs:*" or a.startswith("ecs:"):
+            return a not in {"ecs:listclusters", "ecs:describeclusters", "ecs:listservices", "ecs:describeservices"}
+        return False
+
+    elif t == "ECR":
+        if a == "ecr:*" or a.startswith("ecr:"):
+            return a not in {"ecr:getauthorizationtoken", "ecr:describeimages", "ecr:describe-registries"}
+        return False
+
+    elif t == "CODECOMMIT":
+        if a == "codecommit:*" or a.startswith("codecommit:"):
+            return a != "codecommit:listrepositories"
+        return False
+
+    elif t in {"SQS", "SNS", "KMS", "EKS", "STEPFUNCTIONS"}:
+        service_prefix = {"SQS": "sqs", "SNS": "sns", "KMS": "kms", "EKS": "eks", "STEPFUNCTIONS": "states"}[t]
+        if a == f"{service_prefix}:*" or a.startswith(f"{service_prefix}:"):
+            account_list_actions = {
+                "sqs:listqueues", "sns:listtopics", "sns:listsubscriptions",
+                "kms:listkeys", "kms:listaliases", "eks:listclusters",
+                "states:liststatemachines",
+            }
+            return a not in account_list_actions
+        return False
+
     return False
 
 
@@ -281,15 +311,23 @@ def find_statement_matched_action(
     service_prefix: str
 ) -> Optional[str]:
     """Find the specific action that matches the resource type, or None if no match."""
+    matches = find_statement_matched_actions(actions, not_actions, res_type, service_prefix)
+    return matches[0] if matches else None
+
+
+def find_statement_matched_actions(
+    actions: List[str],
+    not_actions: List[str],
+    res_type: str,
+    service_prefix: str
+) -> List[str]:
+    """Return all action patterns in a statement that apply to a resource type."""
     if not_actions:
         if any(na.lower().strip() in (f"{service_prefix}:*", "*", "*:*") for na in not_actions):
-            return None
-        return f"{service_prefix}:*"
+            return []
+        return [f"{service_prefix}:*"]
 
-    for action in actions:
-        if match_resource_specific_action(action, res_type):
-            return action
-    return None
+    return [action for action in actions if match_resource_specific_action(action, res_type)]
 
 
 def classify_resource_relationship(res_type: str, action: str) -> str:
@@ -791,6 +829,7 @@ def evaluate_policy_allows_resources(
     inventory_resources: List[Dict[str, Any]],
     principal: Optional[Dict[str, Any]] = None,
     account_id: str = "",
+    resource_policy_eval: bool = False,
 ) -> List[Dict[str, Any]]:
     """Determine which specific inventory resources a policy document grants access to.
 
@@ -807,7 +846,15 @@ def evaluate_policy_allows_resources(
         "RDS": "rds",
         "DynamoDB": "dynamodb",
         "EC2": "ec2",
-        "Lambda": "lambda"
+        "Lambda": "lambda",
+        "ECS": "ecs",
+        "ECR": "ecr",
+        "CodeCommit": "codecommit",
+        "SQS": "sqs",
+        "SNS": "sns",
+        "KMS": "kms",
+        "EKS": "eks",
+        "StepFunctions": "states",
     }
 
     matched_resources: List[Dict[str, Any]] = []
@@ -845,6 +892,9 @@ def evaluate_policy_allows_resources(
                     break
 
             if resource_matches:
+                if effect == "Allow" and res_type == "KMS" and not resource_policy_eval:
+                    if not _kms_key_policy_delegates_action(res, [matched_act], account_id):
+                        continue
                 # Evaluate Condition block
                 cond = stmt.get("Condition")
                 if cond:
@@ -886,6 +936,7 @@ def evaluate_policy_allows_resources_with_provenance(
     """
     if "policy_doc" in kwargs:
         document = kwargs["policy_doc"]
+    resource_policy_eval = bool(kwargs.get("resource_policy_eval", False))
     is_dict_call = False
     if "known_resources" in kwargs:
         kr = kwargs["known_resources"]
@@ -919,6 +970,14 @@ def evaluate_policy_allows_resources_with_provenance(
         "DynamoDB": "dynamodb",
         "EC2": "ec2",
         "Lambda": "lambda",
+        "ECS": "ecs",
+        "ECR": "ecr",
+        "CodeCommit": "codecommit",
+        "SQS": "sqs",
+        "SNS": "sns",
+        "KMS": "kms",
+        "EKS": "eks",
+        "StepFunctions": "states",
     }
 
     for res in resources:
@@ -930,7 +989,7 @@ def evaluate_policy_allows_resources_with_provenance(
         if not service_prefix:
             continue
 
-        res_ident = res.get("id") if res_type == "EC2" else (res.get("name") or res.get("id") or "")
+        res_ident = res.get("id") if res_type in ARN_ID_RESOURCE_TYPES else (res.get("name") or res.get("id") or "")
         res_arn = res.get("arn") or f"arn:aws:{service_prefix}:::{res_ident}"
         res_key = str(res_ident)
 
@@ -938,6 +997,8 @@ def evaluate_policy_allows_resources_with_provenance(
         is_denied = False
         allow_stmt_evidence: Optional[Dict[str, Any]] = None
         deny_stmt_evidence: Optional[Dict[str, Any]] = None
+        allowed_action_patterns: List[str] = []
+        allowed_statement_sids: List[str] = []
 
         for stmt in statements:
             effect = stmt.get("Effect", "")
@@ -948,8 +1009,8 @@ def evaluate_policy_allows_resources_with_provenance(
             sid = stmt.get("Sid") or "Statement"
 
             # Check if this statement applies to this resource's service & resource-specific actions
-            matched_act = find_statement_matched_action(actions, not_actions, res_type, service_prefix)
-            if not matched_act:
+            matched_acts = find_statement_matched_actions(actions, not_actions, res_type, service_prefix)
+            if not matched_acts:
                 continue
 
             # Check if this statement applies to this resource's ARN
@@ -963,7 +1024,14 @@ def evaluate_policy_allows_resources_with_provenance(
 
             if resource_matches:
                 # Use the exact matched action for this resource
-                matched_action = matched_act
+                matched_action = matched_acts[0]
+
+                # KMS identity policies only take effect when the key policy
+                # delegates that action to the owning account. Exact-principal
+                # key-policy grants are evaluated separately below.
+                if effect == "Allow" and res_type == "KMS" and not resource_policy_eval:
+                    if not _kms_key_policy_delegates_action(res, matched_acts, account_id):
+                        continue
 
                 # Evaluate Condition block
                 condition_status = "NONE"
@@ -993,6 +1061,8 @@ def evaluate_policy_allows_resources_with_provenance(
                     break  # Explicit Deny wins immediately
                 elif effect == "Allow":
                     is_allowed = True
+                    allowed_action_patterns.extend(matched_acts)
+                    allowed_statement_sids.append(sid)
                     allow_stmt_evidence = {
                         "edge_type": "ALLOWS",
                         "source": "IAM",
@@ -1030,12 +1100,101 @@ def evaluate_policy_allows_resources_with_provenance(
             sid_val = allow_stmt_evidence.get("statement_sid", "Statement")
             allow_stmt_evidence["why"] = f"Statement '{sid_val}' in policy '{policy_name}' allows '{act_val}' on {res_type} '{res_ident}'"
             provenance_map[res_key] = allow_stmt_evidence
+            allow_stmt_evidence["actions"] = sorted(set(allowed_action_patterns), key=str.lower)
+            allow_stmt_evidence["statement_sids"] = sorted(set(allowed_statement_sids))
+            allow_stmt_evidence["access_categories"] = sorted({classify_action_category(action) for action in allowed_action_patterns})
 
     if is_dict_call:
         allowed_arns = [r["arn"] for r in matched_resources]
         return allowed_arns, list(provenance_map.values()), list(deny_map.values())
 
     return matched_resources, provenance_map, deny_map
+
+
+def evaluate_resource_policy_grants(
+    resource: Dict[str, Any], principals: List[Dict[str, Any]], account_id: str = ""
+) -> List[Dict[str, Any]]:
+    """Evaluate collected resource policies for exact in-scan IAM principals.
+
+    Wildcard, service, account-root, NotPrincipal, and cross-account grants are
+    deliberately not expanded into synthetic identities. Those require separate
+    external-principal/account-policy evidence to avoid overstating reachability.
+    """
+    details = resource.get("details") or {}
+    policy_input = details.get("resource_policy")
+    statements = parse_policy_document(policy_input)
+    if not statements or details.get("resource_policy_status") not in {None, "COLLECTED"}:
+        return []
+
+    grants: List[Dict[str, Any]] = []
+    for principal in principals:
+        arn = str(principal.get("arn") or "")
+        if not arn:
+            continue
+        arn_parts = arn.split(":", 5)
+        if account_id and len(arn_parts) > 4 and arn_parts[4] and arn_parts[4] != account_id:
+            continue
+        matching = []
+        for stmt in statements:
+            configured_principal = stmt.get("Principal")
+            if isinstance(configured_principal, dict):
+                aws_principals = configured_principal.get("AWS", [])
+            else:
+                aws_principals = configured_principal
+            if isinstance(aws_principals, str):
+                aws_principals = [aws_principals]
+            if not isinstance(aws_principals, list) or arn not in {str(item) for item in aws_principals}:
+                continue
+            matching.append({
+                "Sid": stmt.get("Sid", ""), "Effect": stmt.get("Effect", "Deny"),
+                "Action": stmt.get("Action", []), "NotAction": stmt.get("NotAction", []),
+                "Resource": stmt.get("Resource", []), "NotResource": stmt.get("NotResource", []),
+                "Condition": stmt.get("Condition", {}),
+            })
+        if not matching:
+            continue
+
+        scoped_policy = {"Version": "2012-10-17", "Statement": matching}
+        matched, provenance, denied = evaluate_policy_allows_resources_with_provenance(
+            policy_name=f"Resource policy on {resource.get('name') or resource.get('id')}",
+            policy_arn=resource.get("arn", ""), document=scoped_policy,
+            resources=[resource], principal=principal, account_id=account_id,
+            resource_policy_eval=True,
+        )
+        if not matched:
+            continue
+        identity = resource.get("id") if resource.get("type") in ARN_ID_RESOURCE_TYPES else (resource.get("name") or resource.get("id"))
+        evidence = provenance.get(str(identity), {})
+        grants.append({
+            "principal": principal, "resource": resource, "action": evidence.get("action", ""),
+            "evidence": evidence, "denies": denied,
+            "policy_name": f"Resource policy on {resource.get('name') or resource.get('id')}",
+        })
+    return grants
+
+
+def _kms_key_policy_delegates_action(resource: Dict[str, Any], identity_actions: List[str], account_id: str) -> bool:
+    """Require a KMS key policy grant to the account root before trusting IAM grants."""
+    if not account_id:
+        return False
+    statements = parse_policy_document((resource.get("details") or {}).get("resource_policy"))
+    root_arn = f"arn:aws:iam::{account_id}:root".lower()
+    for stmt in statements:
+        if stmt.get("Effect") != "Allow" or stmt.get("Condition"):
+            continue
+        configured = stmt.get("Principal")
+        aws_principals = configured.get("AWS", []) if isinstance(configured, dict) else configured
+        if isinstance(aws_principals, str):
+            aws_principals = [aws_principals]
+        if not isinstance(aws_principals, list) or root_arn not in {str(item).lower() for item in aws_principals}:
+            continue
+        key_actions = stmt.get("Action", [])
+        if isinstance(key_actions, str):
+            key_actions = [key_actions]
+        for key_action in key_actions:
+            if any(match_action(str(key_action), str(identity_action)) for identity_action in identity_actions):
+                return True
+    return False
 
 
 def check_resource_explicitly_denied(
@@ -1062,6 +1221,14 @@ def check_resource_explicitly_denied(
         "DynamoDB": "dynamodb",
         "EC2": "ec2",
         "Lambda": "lambda",
+        "ECS": "ecs",
+        "ECR": "ecr",
+        "CodeCommit": "codecommit",
+        "SQS": "sqs",
+        "SNS": "sns",
+        "KMS": "kms",
+        "EKS": "eks",
+        "StepFunctions": "states",
     }
     service_prefix = service_prefix_map.get(res_type)
     if not service_prefix:
@@ -2132,6 +2299,8 @@ def classify_action_category(action: str) -> str:
         return "ACCESS"
     if act in ("*", "*:*") or "administratoraccess" in act.lower():
         return "FULL ADMIN"
+    if act.lower().endswith(":*"):
+        return "SERVICE ADMIN"
     act_lower = act.lower()
     if act_lower.startswith("sts:assumerole") or ":assumerole" in act_lower:
         return "ASSUME_ROLE"
@@ -2145,9 +2314,9 @@ def classify_action_category(action: str) -> str:
         return "DELETE"
     if any(verb.startswith(p) for p in ("invoke", "run", "start", "execute", "trigger")):
         return "EXECUTE"
-    if any(verb.startswith(p) for p in ("put", "create", "update", "modify", "post", "batchwrite", "attach", "set", "write")):
+    if any(verb.startswith(p) for p in ("put", "create", "update", "modify", "post", "batchwrite", "attach", "set", "write", "gitpush")):
         return "WRITE"
-    if any(verb.startswith(p) for p in ("get", "list", "describe", "view", "batchget", "read", "lookup", "head", "download")):
+    if any(verb.startswith(p) for p in ("get", "list", "describe", "view", "batchget", "read", "lookup", "head", "download", "gitpull", "gitclone")):
         return "READ"
     return "ACCESS"
 

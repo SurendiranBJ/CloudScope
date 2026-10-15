@@ -62,6 +62,7 @@ const getActionCategory = (actions: string[], targetType?: string): string => {
     if (targetType === 'Lambda') return 'CAN_MANAGE / INVOKE';
     return 'FULL ADMIN';
   }
+  if (acts.some(a => a.endsWith(':*'))) return 'SERVICE ADMIN';
   if (acts.some(a => a.startsWith('sts:assumerole') || a.includes(':assumerole'))) {
     return 'ASSUME_ROLE';
   }
@@ -84,7 +85,7 @@ const getActionCategory = (actions: string[], targetType?: string): string => {
 
   const hasWrite = acts.some(a => {
     const v = a.split(':').pop() || a;
-    return /^(put|create|update|modify|post|batchwrite|attach|set|write)/.test(v);
+    return /^(put|create|update|modify|post|batchwrite|attach|set|write|gitpush)/.test(v);
   });
   const hasDelete = acts.some(a => {
     const v = a.split(':').pop() || a;
@@ -92,11 +93,11 @@ const getActionCategory = (actions: string[], targetType?: string): string => {
   });
   const hasRead = acts.some(a => {
     const v = a.split(':').pop() || a;
-    return /^(get|list|describe|view|batchget|read|lookup|head|download)/.test(v);
+    return /^(get|list|describe|view|batchget|read|lookup|head|download|gitpull|gitclone)/.test(v);
   });
   const hasExec = acts.some(a => {
     const v = a.split(':').pop() || a;
-    return /^(invoke|run|start|execute|trigger)/.test(v);
+    return /^(invoke|run|start|execute|trigger|sendcommand|sendsshpublickey)/.test(v);
   });
 
   if (hasWrite && hasRead) return 'READ / WRITE';
@@ -357,9 +358,9 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
               edgeAggregator.set(aggKey, entry);
             }
 
-            if (allowEdge.action) entry.actions.add(allowEdge.action);
+            (allowEdge.actions || (allowEdge.action ? [allowEdge.action] : [])).forEach((action: string) => entry.actions.add(action));
             if (allowEdge.policy_name) entry.policy_names.add(allowEdge.policy_name);
-            if (allowEdge.statement_sid) entry.statement_sids.add(allowEdge.statement_sid);
+            (allowEdge.statement_sids || (allowEdge.statement_sid ? [allowEdge.statement_sid] : [])).forEach((sid: string) => entry.statement_sids.add(sid));
             if (allowEdge.isActivity) entry.isActivity = true;
           });
         });

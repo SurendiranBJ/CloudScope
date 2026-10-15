@@ -19,7 +19,8 @@ from app.services.aws import (
     access_analyzer_service,
     cloudtrail_service,
     rds_service,
-    dynamodb_service
+    dynamodb_service,
+    extended_resources_service
 )
 from app.services.aws.session import get_aws_diagnostic_info, get_account_id
 from app.services.aws.region_cache import clear_region_cache, get_all_regions
@@ -194,13 +195,13 @@ def _generate_recommendation(item: dict) -> str:
 
 CRITICAL_COLLECTORS = {
     "IAM_Users", "IAM_Groups", "IAM_Roles", "IAM_Policies",
-    "S3", "EC2", "Lambda", "Secrets", "RDS", "DynamoDB"
+    "S3", "EC2", "Lambda", "Secrets", "RDS", "DynamoDB", "ECS", "ECR", "CodeCommit"
 }
 
 ALL_COLLECTOR_NAMES = [
     "IAM_Users", "IAM_Groups", "IAM_Roles", "IAM_Policies",
     "EC2", "S3", "Lambda", "Secrets", "RDS", "DynamoDB",
-    "AccessAnalyzer", "CloudTrail"
+    "ECS", "ECR", "CodeCommit", "ExtendedAWS", "AccessAnalyzer", "CloudTrail"
 ]
 
 
@@ -230,7 +231,7 @@ class ScanManager:
         self._last_progress_at: str | None = None
 
         self._completed_collectors: int = 0
-        self._total_collectors: int = 12
+        self._total_collectors: int = len(ALL_COLLECTOR_NAMES)
         self._collector_status: Dict[str, str] = {
             "IAM_Users": "PENDING",
             "IAM_Groups": "PENDING",
@@ -242,6 +243,10 @@ class ScanManager:
             "Secrets": "PENDING",
             "RDS": "PENDING",
             "DynamoDB": "PENDING",
+            "ECS": "PENDING",
+            "ECR": "PENDING",
+            "CodeCommit": "PENDING",
+            "ExtendedAWS": "PENDING",
             "AccessAnalyzer": "PENDING",
             "CloudTrail": "PENDING"
         }
@@ -639,6 +644,10 @@ class ScanManager:
                 "Secrets": secrets_service.collect_secrets,
                 "RDS": rds_service.collect_rds_instances,
                 "DynamoDB": dynamodb_service.collect_dynamodb_tables,
+                "ECS": extended_resources_service.collect_ecs_tasks,
+                "ECR": extended_resources_service.collect_ecr_repositories,
+                "CodeCommit": extended_resources_service.collect_codecommit_repositories,
+                "ExtendedAWS": extended_resources_service.collect_messaging_and_workflow_resources,
                 "AccessAnalyzer": access_analyzer_service.collect_access_analyzer_findings,
                 "CloudTrail": cloudtrail_service.collect_recent_alerts,
             }
@@ -749,7 +758,7 @@ class ScanManager:
                         self._policies_discovered = items_len
                     self._resources_discovered = sum(
                         len(collector_results.get(c, []))
-                        for c in ["EC2", "S3", "Lambda", "Secrets", "RDS", "DynamoDB"]
+                        for c in ["EC2", "S3", "Lambda", "Secrets", "RDS", "DynamoDB", "ECS", "ECR", "CodeCommit"]
                     )
 
             self._failed_regions = sorted(list(scan_failed_regions))
@@ -806,6 +815,22 @@ class ScanManager:
             working_inventory.secrets = collector_results.get("Secrets", [])
             working_inventory.rds = collector_results.get("RDS", [])
             working_inventory.dynamodb = collector_results.get("DynamoDB", [])
+            working_inventory.ecs = collector_results.get("ECS", [])
+            working_inventory.ecr = collector_results.get("ECR", [])
+            working_inventory.codecommit = collector_results.get("CodeCommit", [])
+            extended_inventory = collector_results.get("ExtendedAWS", {})
+            for service_type, attr_name in (("SQS", "sqs"), ("SNS", "sns"), ("KMS", "kms"), ("EKS", "eks"), ("StepFunctions", "stepfunctions")):
+                regional_result = extended_inventory.get(service_type) if isinstance(extended_inventory, dict) else None
+                setattr(working_inventory, attr_name, list(getattr(regional_result, "items", [])))
+                if regional_result:
+                    for region_name, region_status in regional_result.regional_status.items():
+                        self._service_status[f"{service_type}:{region_name}"] = region_status
+                    self._service_status[service_type] = (
+                        "SUCCESS_WITH_DATA" if regional_result.items else
+                        "FAILED" if regional_result.failed_regions and not regional_result.successful_regions else
+                        "SUCCESS_EMPTY"
+                    )
+            self._regional_status.update(self._service_status)
             working_inventory.findings = collector_results.get("AccessAnalyzer", [])
             working_inventory.alerts = collector_results.get("CloudTrail", [])
 
@@ -958,6 +983,11 @@ class ScanManager:
                 ddb['riskScore'] = eval_res['score']
                 ddb['riskAssessment'] = eval_res
 
+            for resource in working_inventory.ecs + working_inventory.ecr + working_inventory.codecommit + working_inventory.sqs + working_inventory.sns + working_inventory.kms + working_inventory.eks + working_inventory.stepfunctions:
+                eval_res = risk_engine.get_resource_risk_assessment(resource)
+                resource['riskScore'] = eval_res['score']
+                resource['riskAssessment'] = eval_res
+
             # Update policies discovered count
             self._policies_discovered = len(working_inventory.policies)
 
@@ -972,7 +1002,7 @@ class ScanManager:
             try:
                 graph_builder.build_graph_in_neo4j(
                     working_inventory,
-                    successful_regions=reconcilable_regions if reconcilable_regions else None
+                    successful_regions=reconcilable_regions
                 )
                 neo4j_success = True
             except Exception as db_err:
@@ -1042,7 +1072,8 @@ class ScanManager:
                 working_inventory.users + working_inventory.roles +
                 working_inventory.s3 + working_inventory.ec2 +
                 working_inventory.secrets + working_inventory.rds +
-                working_inventory.dynamodb
+                working_inventory.dynamodb + working_inventory.ecs +
+                working_inventory.ecr + working_inventory.codecommit + working_inventory.sqs + working_inventory.sns + working_inventory.kms + working_inventory.eks + working_inventory.stepfunctions
             )
 
             critical_items = [x for x in all_scored_items if x.get('riskScore', 0) >= 80]
@@ -1069,7 +1100,8 @@ class ScanManager:
             resources_count = (
                 len(running_ec2) + len(working_inventory.s3) +
                 len(working_inventory.lambdas) + len(working_inventory.secrets) +
-                len(working_inventory.rds) + len(working_inventory.dynamodb)
+                len(working_inventory.rds) + len(working_inventory.dynamodb) +
+                len(working_inventory.ecs) + len(working_inventory.ecr) + len(working_inventory.codecommit) + len(working_inventory.sqs) + len(working_inventory.sns) + len(working_inventory.kms) + len(working_inventory.eks) + len(working_inventory.stepfunctions)
             )
 
             try:
@@ -1281,7 +1313,15 @@ class ScanManager:
                 {"type": "Lambda Functions", "count": len(working_inventory.lambdas)},
                 {"type": "Secrets", "count": len(working_inventory.secrets)},
                 {"type": "RDS Databases", "count": len(working_inventory.rds)},
-                {"type": "DynamoDB Tables", "count": len(working_inventory.dynamodb)}
+                {"type": "DynamoDB Tables", "count": len(working_inventory.dynamodb)},
+                {"type": "ECS Tasks", "count": len(working_inventory.ecs)},
+                {"type": "ECR Repositories", "count": len(working_inventory.ecr)},
+                {"type": "CodeCommit Repositories", "count": len(working_inventory.codecommit)},
+                {"type": "SQS Queues", "count": len(working_inventory.sqs)},
+                {"type": "SNS Topics", "count": len(working_inventory.sns)},
+                {"type": "Customer Managed KMS Keys", "count": len(working_inventory.kms)},
+                {"type": "EKS Clusters", "count": len(working_inventory.eks)},
+                {"type": "Step Functions State Machines", "count": len(working_inventory.stepfunctions)}
             ]
             res_breakdown = [r for r in res_breakdown if r["count"] > 0]
 
@@ -1435,6 +1475,7 @@ class ScanManager:
                 all_res = (
                     working_inventory.s3 + working_inventory.secrets + working_inventory.rds +
                     working_inventory.dynamodb + running_ec2 + working_inventory.lambdas
+                    + working_inventory.ecs + working_inventory.ecr + working_inventory.codecommit + working_inventory.sqs + working_inventory.sns + working_inventory.kms + working_inventory.eks + working_inventory.stepfunctions
                 )
                 effective_access_records = compute_effective_access(working_inventory, _policy_doc_map, all_res)
             except Exception as eff_err:
@@ -1453,6 +1494,7 @@ class ScanManager:
                     running_ec2 + working_inventory.s3 +
                     working_inventory.lambdas + working_inventory.secrets +
                     working_inventory.rds + working_inventory.dynamodb
+                    + working_inventory.ecs + working_inventory.ecr + working_inventory.codecommit + working_inventory.sqs + working_inventory.sns + working_inventory.kms + working_inventory.eks + working_inventory.stepfunctions
                 ),
                 "v1:alerts": working_inventory.alerts,
                 "v1:correlated_risks": correlated_findings,

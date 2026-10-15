@@ -15,7 +15,8 @@ logger = logging.getLogger("scanner")
 
 # Resource types that policies can ALLOW
 ALLOWED_POLICY_RESOURCE_TYPES: Set[str] = {
-    "S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB"
+    "S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB", "ECS", "ECR", "CodeCommit",
+    "SQS", "SNS", "KMS", "EKS", "StepFunctions"
 }
 
 # Explicit set of valid (source_type, relationship_type, target_type) tuples
@@ -38,6 +39,9 @@ VALID_SEMANTIC_EDGES: Set[Tuple[str, str, str]] = {
     ("EC2", "ATTACHED_TO", "Role"),
     ("EC2", "EXECUTES_WITH", "Role"),
     ("Lambda", "EXECUTES_WITH", "Role"),
+    ("ECS", "EXECUTES_WITH", "Role"),
+    ("StepFunctions", "EXECUTES_WITH", "Role"),
+    ("ECS", "USES_IMAGE", "ECR"),
     
     # IAM Database Authentication
     ("Policy", "DB_CONNECT", "AuroraDBUser"),
@@ -66,6 +70,10 @@ for _res in ALLOWED_POLICY_RESOURCE_TYPES:
     # Preserve explicit deny evidence in the graph. DENIES is never a traversable
     # authorization transition; it exists so consumers can explain why access is blocked.
     VALID_SEMANTIC_EDGES.add(("Policy", "DENIES", _res))
+    # Resource-based policies can grant an exact in-scan IAM principal direct
+    # access. Wildcard/external principals are not expanded into graph nodes.
+    VALID_SEMANTIC_EDGES.add(("User", "ALLOWS", _res))
+    VALID_SEMANTIC_EDGES.add(("Role", "ALLOWS", _res))
 
 
 def validate_edge(source_type: str, rel_type: str, target_type: str) -> Tuple[bool, Optional[str]]:

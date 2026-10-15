@@ -40,6 +40,14 @@ def collect_secrets() -> RegionalCollectionResult:
                         last_changed = sec.get('LastChangedDate', utc_now())
                         last_accessed = sec.get('LastAccessedDate')
                         description = sec.get('Description', '')
+                        resource_policy = None
+                        resource_policy_status = "NO_POLICY"
+                        try:
+                            resource_policy = client.get_resource_policy(SecretId=arn).get("ResourcePolicy")
+                            resource_policy_status = "COLLECTED" if resource_policy else "NO_POLICY"
+                        except Exception as policy_error:
+                            code = getattr(policy_error, "response", {}).get("Error", {}).get("Code", "")
+                            resource_policy_status = "NO_POLICY" if code == "ResourceNotFoundException" else "ACCESS_DENIED" if code in {"AccessDeniedException", "AccessDenied"} else "ERROR"
 
                         owner = account_id
                         tags = sec.get('Tags', [])
@@ -61,7 +69,9 @@ def collect_secrets() -> RegionalCollectionResult:
                                 "rotation_enabled": rotation,
                                 "last_changed": last_changed.isoformat() if hasattr(last_changed, 'isoformat') else str(last_changed),
                                 "last_accessed": last_accessed.isoformat() if last_accessed and hasattr(last_accessed, 'isoformat') else "Never",
-                                "description": description
+                                "description": description,
+                                "resource_policy": resource_policy,
+                                "resource_policy_status": resource_policy_status
                             }
                         })
                 elapsed = time.time() - start

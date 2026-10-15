@@ -209,6 +209,43 @@ def get_resource_risk_assessment(res: Dict[str, Any]) -> Dict[str, Any]:
                 "reason": "DynamoDB Point-in-Time Recovery (PITR) is not enabled for disaster recovery."
             })
 
+    elif rtype == "ECS":
+        if details.get("enable_execute_command"):
+            score += 20
+            factors.append({
+                "code": "ECS_EXEC_COMMAND_ENABLED",
+                "points": 20,
+                "reason": "ECS Exec is enabled for this running task; principals with ecs:ExecuteCommand may reach the task runtime and its task-role credentials."
+            })
+
+    elif rtype == "ECR":
+        if str(details.get("image_tag_mutability", "")).upper() == "MUTABLE":
+            score += 10
+            factors.append({
+                "code": "ECR_MUTABLE_TAGS",
+                "points": 10,
+                "reason": "Container image tags are mutable, which can make image references less predictable during deployment."
+            })
+
+    if rtype in {"Lambda", "Secrets", "ECR", "SQS", "SNS", "KMS"}:
+        resource_policy = details.get("resource_policy")
+        for statement in parse_policy_document(resource_policy):
+            configured = statement.get("Principal")
+            aws_principal = configured.get("AWS", []) if isinstance(configured, dict) else configured
+            if isinstance(aws_principal, str):
+                aws_principal = [aws_principal]
+            is_public = isinstance(aws_principal, list) and "*" in aws_principal
+            if statement.get("Effect") != "Allow" or not is_public or statement.get("Condition"):
+                continue
+            pts = 60 if rtype == "KMS" else 45
+            score += pts
+            factors.append({
+                "code": "PUBLIC_RESOURCE_POLICY",
+                "points": pts,
+                "reason": f"{rtype} resource policy has an unconditional Allow for Principal '*'."
+            })
+            break
+
     final_score = min(100, max(0, score))
     return {
         "score": final_score,

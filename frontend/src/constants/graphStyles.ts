@@ -15,6 +15,13 @@ export type CanonicalGraphType =
   | 'Lambda'
   | 'RDS'
   | 'DynamoDB'
+  | 'ECS'
+  | 'ECR'
+  | 'CodeCommit'
+  | 'SQS'
+  | 'SNS'
+  | 'EKS'
+  | 'StepFunctions'
   | 'Secrets'
   | 'KMS'
   | 'APIGateway'
@@ -53,6 +60,13 @@ export const normalizeGraphType = (type?: string): CanonicalGraphType => {
   if (clean === 'lambda' || clean === 'function' || clean === 'lambdafunction' || clean === 'aws:lambda' || clean.includes('lambda')) return 'Lambda';
   if (clean === 'rds' || clean === 'aurora' || clean === 'auroradbuser' || clean === 'database' || clean === 'rdbms' || clean === 'aws:rds' || clean.includes('rds') || clean.includes('aurora')) return 'RDS';
   if (clean === 'dynamodb' || clean === 'dynamo' || clean === 'table' || clean === 'dynamodbtable' || clean === 'aws:dynamodb' || clean.includes('dynamo')) return 'DynamoDB';
+  if (clean === 'ecs' || clean.includes('ecs')) return 'ECS';
+  if (clean === 'ecr' || clean.includes('ecr')) return 'ECR';
+  if (clean === 'codecommit' || clean.includes('codecommit')) return 'CodeCommit';
+  if (clean === 'sqs' || clean.includes('sqs')) return 'SQS';
+  if (clean === 'sns' || clean.includes('sns')) return 'SNS';
+  if (clean === 'eks' || clean.includes('eks')) return 'EKS';
+  if (clean === 'stepfunctions' || clean.includes('stepfunctions') || clean === 'states') return 'StepFunctions';
   if (clean === 'secret' || clean === 'secrets' || clean === 'secretsmanager' || clean === 'aws:secret' || clean === 'aws:secrets' || clean.includes('secret')) return 'Secrets';
   if (clean === 'kms' || clean === 'kmskey' || clean === 'key' || clean === 'aws:kms') return 'KMS';
   if (clean === 'apigateway' || clean === 'api' || clean === 'api_gateway' || clean === 'aws:apigateway') return 'APIGateway';
@@ -183,6 +197,48 @@ export const ENTITY_STYLES: Record<CanonicalGraphType, EntityStyle> = {
     badgeClass: 'bg-violet-950 text-violet-300 border-violet-500/40',
     textClass: 'text-violet-400'
   },
+  ECS: {
+    type: 'ECS', label: 'ECS', backgroundColor: '#D97706', borderColor: '#F59E0B',
+    shape: 'round-rectangle', width: '44px', height: '44px',
+    cardBgBorder: 'bg-amber-950/40 border-amber-500/60 text-amber-100 hover:border-amber-400',
+    dotBg: '#D97706', badgeClass: 'bg-amber-950 text-amber-300 border-amber-500/40', textClass: 'text-amber-400'
+  },
+  ECR: {
+    type: 'ECR', label: 'ECR', backgroundColor: '#0EA5E9', borderColor: '#38BDF8',
+    shape: 'round-rectangle', width: '44px', height: '44px',
+    cardBgBorder: 'bg-sky-950/40 border-sky-500/60 text-sky-100 hover:border-sky-400',
+    dotBg: '#0EA5E9', badgeClass: 'bg-sky-950 text-sky-300 border-sky-500/40', textClass: 'text-sky-400'
+  },
+  CodeCommit: {
+    type: 'CodeCommit', label: 'CodeCommit', backgroundColor: '#A855F7', borderColor: '#C084FC',
+    shape: 'round-rectangle', width: '44px', height: '44px',
+    cardBgBorder: 'bg-purple-950/40 border-purple-500/60 text-purple-100 hover:border-purple-400',
+    dotBg: '#A855F7', badgeClass: 'bg-purple-950 text-purple-300 border-purple-500/40', textClass: 'text-purple-400'
+  },
+  SQS: {
+    type: 'SQS', label: 'SQS', backgroundColor: '#F59E0B', borderColor: '#FBBF24',
+    shape: 'round-rectangle', width: '44px', height: '44px',
+    cardBgBorder: 'bg-amber-950/40 border-amber-500/60 text-amber-100 hover:border-amber-400',
+    dotBg: '#F59E0B', badgeClass: 'bg-amber-950 text-amber-300 border-amber-500/40', textClass: 'text-amber-400'
+  },
+  SNS: {
+    type: 'SNS', label: 'SNS', backgroundColor: '#F97316', borderColor: '#FB923C',
+    shape: 'round-rectangle', width: '44px', height: '44px',
+    cardBgBorder: 'bg-orange-950/40 border-orange-500/60 text-orange-100 hover:border-orange-400',
+    dotBg: '#F97316', badgeClass: 'bg-orange-950 text-orange-300 border-orange-500/40', textClass: 'text-orange-400'
+  },
+  EKS: {
+    type: 'EKS', label: 'EKS', backgroundColor: '#6366F1', borderColor: '#818CF8',
+    shape: 'round-rectangle', width: '44px', height: '44px',
+    cardBgBorder: 'bg-indigo-950/40 border-indigo-500/60 text-indigo-100 hover:border-indigo-400',
+    dotBg: '#6366F1', badgeClass: 'bg-indigo-950 text-indigo-300 border-indigo-500/40', textClass: 'text-indigo-400'
+  },
+  StepFunctions: {
+    type: 'StepFunctions', label: 'Step Functions', backgroundColor: '#14B8A6', borderColor: '#2DD4BF',
+    shape: 'round-rectangle', width: '44px', height: '44px',
+    cardBgBorder: 'bg-teal-950/40 border-teal-500/60 text-teal-100 hover:border-teal-400',
+    dotBg: '#14B8A6', badgeClass: 'bg-teal-950 text-teal-300 border-teal-500/40', textClass: 'text-teal-400'
+  },
   Secrets: {
     type: 'Secrets',
     label: 'Secrets',
@@ -296,6 +352,13 @@ export const CANONICAL_FILTER_COLORS: Record<string, string> = {
   Lambda: ENTITY_STYLES.Lambda.backgroundColor,
   RDS: ENTITY_STYLES.RDS.backgroundColor,
   DynamoDB: ENTITY_STYLES.DynamoDB.backgroundColor,
+  ECS: ENTITY_STYLES.ECS.backgroundColor,
+  ECR: ENTITY_STYLES.ECR.backgroundColor,
+  CodeCommit: ENTITY_STYLES.CodeCommit.backgroundColor,
+  SQS: ENTITY_STYLES.SQS.backgroundColor,
+  SNS: ENTITY_STYLES.SNS.backgroundColor,
+  EKS: ENTITY_STYLES.EKS.backgroundColor,
+  StepFunctions: ENTITY_STYLES.StepFunctions.backgroundColor,
   Secrets: ENTITY_STYLES.Secrets.backgroundColor,
   Secret: ENTITY_STYLES.Secrets.backgroundColor,
   KMS: ENTITY_STYLES.KMS.backgroundColor,

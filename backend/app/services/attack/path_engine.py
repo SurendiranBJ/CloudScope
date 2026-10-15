@@ -10,6 +10,7 @@ and authoritative effective-access blast radius metrics.
 import logging
 import hashlib
 import time
+from fnmatch import fnmatchcase
 import networkx as nx
 from typing import List, Dict, Any, Set, Tuple, Optional
 from app.services.risk.risk_constants import get_severity_label, RISK_MODEL_VERSION
@@ -22,7 +23,60 @@ MAX_ATTACK_PATHS = 200
 # Security-Semantic Path Allowed Transitions
 # Paths traversing relationships outside this table are rejected — graph connectivity is not authorization.
 # Cloud resources can ONLY be reached through Policy ALLOWS or DB_CONNECT (no fake direct Role->Resource edges).
-RESOURCE_TYPES = {"S3", "EC2", "Lambda", "RDS", "DynamoDB", "Secrets", "Secret", "AuroraDBUser"}
+RESOURCE_TYPES = {"S3", "EC2", "Lambda", "RDS", "DynamoDB", "Secrets", "Secret", "AuroraDBUser", "ECS", "ECR", "CodeCommit", "SQS", "SNS", "KMS", "EKS", "StepFunctions"}
+
+# Actions which can plausibly let a principal execute or replace code on a workload
+# and thereby use its attached role. Static inventory cannot prove runtime
+# prerequisites (for example, that SSM is enabled), so these transitions remain
+# explicitly marked as potential pivots with unverified prerequisites.
+WORKLOAD_CONTROL_ACTIONS = {
+    "EC2": {
+        "ssm:SendCommand", "ssm:StartSession",
+        "ec2-instance-connect:SendSSHPublicKey",
+    },
+    "Lambda": {
+        "lambda:UpdateFunctionCode",
+    },
+    "ECS": {"ecs:ExecuteCommand"},
+    "StepFunctions": {"states:StartExecution"},
+}
+
+
+def classify_access_mode(action: Any) -> str:
+    """Return a user-facing access class for an IAM action."""
+    value = str(action or "").strip().lower()
+    if not value:
+        return "access"
+    if value in {"*", "*:*"} or value.endswith(":*"):
+        return "admin"
+    if any(token in value for token in ("sendcommand", "startsession", "sendsshpublickey", "invoke")):
+        return "execute"
+    from app.services.attack.policy_evaluator import classify_action_category
+    category = classify_action_category(value)
+    if category in {"READ", "WRITE", "DELETE", "EXECUTE", "FULL ADMIN", "ADMIN", "ASSUME_ROLE", "DB_CONNECT"}:
+        return {"DELETE": "write", "FULL ADMIN": "admin", "ASSUME_ROLE": "access", "DB_CONNECT": "access"}.get(category, category.lower().replace(" ", "_"))
+    return "access"
+
+
+def _is_verified_workload_pivot(path: List[str], G: nx.DiGraph, workload_index: int) -> bool:
+    """Check the path entered this compute resource through a control-capable IAM allow."""
+    workload = path[workload_index]
+    workload_type = G.nodes[workload].get("type", "")
+    if workload_type == "ECS" and G.nodes[workload].get("details", {}).get("enable_execute_command") is False:
+        return False
+    allowed_actions = WORKLOAD_CONTROL_ACTIONS.get(workload_type, set())
+    if not allowed_actions or workload_index < 2:
+        return False
+    policy_node = path[workload_index - 1]
+    if G.nodes[policy_node].get("type") != "Policy":
+        return False
+    allow_edge = G.get_edge_data(policy_node, workload, default={})
+    actions = allow_edge.get("actions") or [allow_edge.get("action") or ""]
+    if not any(fnmatchcase(candidate.lower(), str(action).strip().lower()) for action in actions for candidate in allowed_actions):
+        return False
+    # The identity must have reached the policy through its attached/assumed
+    # identity chain; do not accept a resource-only path as an authenticated actor.
+    return any(G.nodes[node].get("type") in {"User", "Role"} for node in path[:workload_index - 1])
 
 VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
     ("User", "Group"): {"MEMBER_OF"},
@@ -37,6 +91,8 @@ VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
     ("Role", "AuroraDBUser"): {"DB_CONNECT"},
     ("EC2", "Role"): {"ATTACHED_TO", "EXECUTES_WITH"},
     ("Lambda", "Role"): {"EXECUTES_WITH"},
+    ("ECS", "Role"): {"EXECUTES_WITH"},
+    ("StepFunctions", "Role"): {"EXECUTES_WITH"},
     ("Policy", "AuroraDBUser"): {"DB_CONNECT"},
     ("Policy", "RDS"): {"DB_CONNECT"},
     ("AuroraDBUser", "RDS"): {"BELONGS_TO"},
@@ -45,6 +101,8 @@ VALID_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
 for _res in RESOURCE_TYPES:
     if _res != "AuroraDBUser":
         VALID_TRANSITIONS[("Policy", _res)] = {"ALLOWS"}
+        VALID_TRANSITIONS[("User", _res)] = {"ALLOWS"}
+        VALID_TRANSITIONS[("Role", _res)] = {"ALLOWS"}
 
 # Standardized Target Architectural Categories
 TARGET_CATEGORIES: Dict[str, str] = {
@@ -57,6 +115,14 @@ TARGET_CATEGORIES: Dict[str, str] = {
     "Secret": "CREDENTIAL_RESOURCE",
     "AuroraDBUser": "DATABASE_AUTH",
     "Role": "IDENTITY_TARGET",
+    "ECS": "COMPUTE_RESOURCE",
+    "ECR": "CONTAINER_IMAGE",
+    "CodeCommit": "SOURCE_CODE",
+    "SQS": "MESSAGING_RESOURCE",
+    "SNS": "MESSAGING_RESOURCE",
+    "KMS": "CRYPTOGRAPHIC_RESOURCE",
+    "EKS": "CONTAINER_PLATFORM",
+    "StepFunctions": "WORKFLOW_RESOURCE",
 }
 
 
@@ -66,15 +132,15 @@ def get_target_category(target_type: str) -> str:
 
 
 def _is_valid_lambda_workload_start(node_id: str, G: nx.DiGraph) -> bool:
-    """Determine whether a Lambda function qualifies as a workload attack-path starting point.
+    """Determine whether a Lambda function or ECS task has a configured IAM role.
 
     Design Decision (Workload Identity Analysis):
     A serverless Lambda function is NOT considered an attack starting point simply because it exists.
     It becomes an entry/starting point for workload compromise analysis ONLY when there is explicit
     evidence of credentialed workload execution:
-    1. The Lambda function has an outbound EXECUTES_WITH relationship to an active IAM Role.
+    1. The workload has an outbound EXECUTES_WITH relationship to an IAM Role.
     2. The execution Role exists in the graph and has attached IAM policies (HAS_POLICY).
-    3. The execution Role trust policy (if present) confirms service assumption by lambda.amazonaws.com.
+    3. The execution Role trust policy confirms the corresponding AWS service principal.
 
     This models compromised workload vectors (e.g. function code injection, SSRF, vulnerable dependencies)
     without creating phantom starts for unconfigured or dormant functions.
@@ -88,6 +154,8 @@ def _is_valid_lambda_workload_start(node_id: str, G: nx.DiGraph) -> bool:
             or ""
         )
         if rel == "EXECUTES_WITH" and G.has_node(target_id) and G.nodes[target_id].get("type") == "Role":
+            workload_type = G.nodes[node_id].get("type")
+            trusted_service = {"Lambda": "lambda.amazonaws.com", "ECS": "ecs-tasks.amazonaws.com"}.get(workload_type)
             role_attr = G.nodes[target_id]
             # Check for attached policies on the execution role
             has_policies = any(
@@ -121,8 +189,8 @@ def _is_valid_lambda_workload_start(node_id: str, G: nx.DiGraph) -> bool:
                                     break
                                 if isinstance(princ, dict):
                                     svc = princ.get("Service", "")
-                                    if svc == "*" or "lambda.amazonaws.com" in svc or (
-                                        isinstance(svc, list) and any("lambda.amazonaws.com" in s for s in svc)
+                                    if svc == "*" or (trusted_service and trusted_service in svc) or (
+                                        isinstance(svc, list) and trusted_service and any(trusted_service in s for s in svc)
                                     ):
                                         trusts_lambda = True
                                         break
@@ -187,16 +255,15 @@ def _validate_path_security_semantics(path: List[str], G: nx.DiGraph) -> bool:
             if condition in {"UNRESOLVED", "VIOLATED", "UNSATISFIED", "UNKNOWN"}:
                 return False
 
-        # Workload transitions (EC2/Lambda -> Role via ATTACHED_TO / EXECUTES_WITH)
-        # are valid ONLY when the workload entity (EC2/Lambda) is the starting point of the path.
-        # Once an identity path reaches a resource via ALLOWS, that resource is a terminal target,
-        # not an identity bridge. An invoking user does NOT acquire the execution role's permissions.
+        # A workload's attached role is a pivot only if the path reached the
+        # workload through a specific control-capable IAM action. Mere read or
+        # inventory access does not grant the workload's credentials.
         if rel_label in {"EXECUTES_WITH", "ATTACHED_TO"}:
-            if i > 0:
+            if i > 0 and not _is_verified_workload_pivot(path, G, i):
                 return False
-            # A compute workload simply binding to its own configured execution role / instance profile
-            # in 1 hop is not an attack path; it must reach a target resource or assume another role.
-            if len(path) == 2 and source_type in {"EC2", "Lambda"}:
+            if i == 0 and len(path) == 2:
+                # A workload role binding alone is not a finding; the path must
+                # continue to an actual role/resource target.
                 return False
 
     return True
@@ -236,7 +303,7 @@ def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) 
         # Reaching resources via AssumeRole
         if target_type in ['EC2', 'Lambda']:
             return "compute_resource_access"
-        if target_type in ['Secrets', 'Secret', 'RDS', 'DynamoDB', 'AuroraDBUser']:
+        if target_type in ['Secrets', 'Secret', 'RDS', 'DynamoDB', 'AuroraDBUser', 'ECR', 'CodeCommit', 'KMS']:
             return "sensitive_resource_access"
         if target_type == 'S3':
             target_details = target_node.get('details', {})
@@ -247,10 +314,10 @@ def classify_path_type(path: List[str], G: nx.DiGraph, ordered_rels: List[str]) 
             return "privilege_escalation"
         return "lateral_movement"
 
-    if target_type in ['EC2', 'Lambda']:
+    if target_type in ['EC2', 'Lambda', 'ECS']:
         return "compute_resource_access"
 
-    if target_type in ['Secrets', 'Secret', 'RDS', 'DynamoDB', 'AuroraDBUser']:
+    if target_type in ['Secrets', 'Secret', 'RDS', 'DynamoDB', 'AuroraDBUser', 'ECR', 'CodeCommit', 'KMS']:
         return "sensitive_resource_access"
 
     if target_type == 'S3':
@@ -288,8 +355,10 @@ def calculate_path_risk_score(path: List[str], G: nx.DiGraph, ordered_rels: List
         target_sensitivity_bonus += 30
     elif t_type == 'S3':
         target_sensitivity_bonus += 25
-    elif t_type in ['EC2', 'Lambda']:
+    elif t_type in ['EC2', 'Lambda', 'ECS']:
         target_sensitivity_bonus += 20
+    elif t_type in ['ECR', 'CodeCommit', 'KMS']:
+        target_sensitivity_bonus += 25
     elif t_type == 'Role' and target_risk >= 60:
         target_sensitivity_bonus += 30
 
@@ -747,7 +816,7 @@ def find_attack_paths(
         n for n, attr in G.nodes(data=True)
         if (
             attr.get('type') in ['User', 'EC2']
-            or (attr.get('type') == 'Lambda' and _is_valid_lambda_workload_start(n, G))
+            or (attr.get('type') in {'Lambda', 'ECS'} and _is_valid_lambda_workload_start(n, G))
         )
         and attr.get('is_canonical') is not False
     ]
@@ -825,7 +894,10 @@ def find_attack_paths(
             all_res = (
                 getattr(inventory, "s3", []) + getattr(inventory, "secrets", []) +
                 getattr(inventory, "rds", []) + getattr(inventory, "dynamodb", []) +
-                getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", [])
+                getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", []) +
+                getattr(inventory, "ecs", []) + getattr(inventory, "ecr", []) + getattr(inventory, "codecommit", []) +
+                getattr(inventory, "sqs", []) + getattr(inventory, "sns", []) + getattr(inventory, "kms", []) +
+                getattr(inventory, "eks", []) + getattr(inventory, "stepfunctions", [])
             )
             precomputed_records = compute_effective_access(inventory, policy_doc_map, all_res)
         except Exception as e:
@@ -901,6 +973,8 @@ def find_attack_paths(
             mitre.append("T1078.004 - Cloud Administration via Instance Profile")
         if source_type == 'Lambda' and 'EXECUTES_WITH' in ordered_relationships:
             mitre.append("T1078.004 - Cloud Administration via Lambda Execution Role")
+        if source_type == 'ECS' and 'EXECUTES_WITH' in ordered_relationships:
+            mitre.append("T1078.004 - Cloud Administration via ECS Task Role")
         if 'CAN_ASSUME' in ordered_relationships:
             mitre.append("T1548.003 - Subvert Trust Controls: AssumeRole")
         if 'ASSUMED_ROLE' in ordered_relationships:
@@ -942,13 +1016,14 @@ def find_attack_paths(
             recommendations.append(f"Enable automatic secret rotation and restrict access to '{target_label}'")
         if target_attr.get('type') == 'EC2':
             recommendations.append(f"Restrict EC2 management permissions and enforce IMDSv2 on '{target_label}'")
-        if target_attr.get('type') == 'Lambda':
-            recommendations.append(f"Restrict invoke permissions and apply least privilege to '{target_label}' execution role")
+        if target_attr.get('type') in {'Lambda', 'ECS'}:
+            recommendations.append(f"Restrict workload control permissions and apply least privilege to '{target_label}' execution role")
         if target_attr.get('type') in ['RDS', 'DynamoDB', 'AuroraDBUser']:
             recommendations.append(f"Restrict database access policies and enable encryption at rest for '{target_label}'")
 
         # Step-by-step transition evidence
         transition_evidence: List[Dict[str, Any]] = []
+        workload_pivot_detected = False
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
             rel_label = ordered_relationships[i]
@@ -961,7 +1036,17 @@ def find_attack_paths(
             v_t = v_node.get('type', 'Resource')
 
             prov = edge_data.get('provenance') or {}
+            action = edge_data.get("action") or prov.get("action", "")
+            actions = edge_data.get("actions") or prov.get("actions") or ([action] if action else [])
+            action_modes = sorted({classify_access_mode(item) for item in actions}) if rel_label == "ALLOWS" else []
+            access_mode = "/".join(action_modes) if action_modes else "access"
             why = edge_data.get('why') or prov.get('why')
+            if rel_label in {"ATTACHED_TO", "EXECUTES_WITH"} and i > 0 and _is_verified_workload_pivot(path, G, i):
+                workload_pivot_detected = True
+                why = (
+                    f"Potential workload pivot: the path grants control action '{G.get_edge_data(path[i - 1], path[i], default={}).get('action', '')}' "
+                    f"on '{u_lbl}', which is configured with role '{v_lbl}'. Runtime prerequisites (such as SSM being enabled or function update deployment succeeding) are not verified by static inventory."
+                )
             if not why:
                 if rel_label == 'MEMBER_OF':
                     why = f"IAM user '{u_lbl}' is a member of group '{v_lbl}'"
@@ -994,16 +1079,61 @@ def find_attack_paths(
                 "to_type": v_t,
                 "relationship": rel_label,
                 "required_permission": edge_data.get("action") or prov.get("action", ""),
+                "access_mode": access_mode,
+                "action_category": access_mode.upper(),
+                "actions": actions,
+                "workload_pivot_capability": (
+                    "execute" if rel_label == "ALLOWS" and _is_verified_workload_pivot(path, G, i + 1)
+                    else None
+                ),
                 "why": why,
                 "policy_name": edge_data.get('policy_name') or prov.get('policy_name', ''),
                 "statement_sid": edge_data.get('statement_sid') or prov.get('statement_sid', ''),
                 "action": edge_data.get('action') or prov.get('action', ''),
                 "resource_arn": edge_data.get('resource_arn') or prov.get('resource_arn', ''),
                 "decision": edge_data.get('decision') or prov.get('decision', 'ALLOWED'),
+                "authorization_source": edge_data.get('source') or prov.get('source', 'IAM'),
+                "organization_policy_status": edge_data.get('organization_policy_status') or prov.get('organization_policy_status', 'NOT_APPLICABLE'),
                 "condition_status": edge_data.get('condition_status') or prov.get('condition_status', 'NONE'),
                 "region": edge_data.get('region') or prov.get('region') or v_node.get('region', ''),
                 "evidence": edge_data.get('evidence') or prov.get('evidence', {})
             })
+
+        # Confidence describes the evidence supporting the modeled path, not the
+        # likelihood that an attacker has already executed it. Static inventory
+        # cannot prove runtime prerequisites for workload-control pivots.
+        unresolved_conditions = any(
+            str(step.get("condition_status", "")).upper() in {"UNRESOLVED", "CONDITIONAL", "UNKNOWN"}
+            for step in transition_evidence
+        )
+        observed_activity = any(step.get("relationship") == "ASSUMED_ROLE" for step in transition_evidence)
+        unknown_provenance = any(
+            not (G.get_edge_data(path[i], path[i + 1], default={}).get("source")
+                 or (G.get_edge_data(path[i], path[i + 1], default={}).get("provenance") or {}).get("source"))
+            for i in range(len(path) - 1)
+        )
+        organization_policy_unverified = any(
+            (G.get_edge_data(path[i], path[i + 1], default={}).get("organization_policy_status") == "NOT_COLLECTED")
+            for i in range(len(path) - 1)
+        )
+        if workload_pivot_detected:
+            path_eval["confidence"] = min(path_eval["confidence"], 55)
+            confidence_basis = "POTENTIAL_RUNTIME_PIVOT"
+        elif unresolved_conditions:
+            path_eval["confidence"] = min(path_eval["confidence"], 60)
+            confidence_basis = "CONDITIONAL_POLICY_EVIDENCE"
+        elif unknown_provenance:
+            path_eval["confidence"] = min(path_eval["confidence"], 70)
+            confidence_basis = "INCOMPLETE_EDGE_PROVENANCE"
+        elif organization_policy_unverified:
+            path_eval["confidence"] = min(path_eval["confidence"], 75)
+            confidence_basis = "RESOURCE_POLICY_SCP_UNVERIFIED"
+        elif observed_activity:
+            path_eval["confidence"] = 100
+            confidence_basis = "OBSERVED_CLOUDTRAIL_ACTIVITY"
+        else:
+            path_eval["confidence"] = min(path_eval["confidence"], 90)
+            confidence_basis = "STATIC_IAM_AND_CONFIGURATION_EVIDENCE"
 
         # Check PassRole escalation candidate
         is_passrole, passrole_ev = check_passrole_escalation(source, target, G, inventory)
@@ -1082,6 +1212,7 @@ def find_attack_paths(
             "risk_score": path_eval["score"],
             "severity": path_eval["severity"],
             "confidence": path_eval["confidence"],
+            "confidence_basis": confidence_basis,
             "blastRadius": blast_radius_desc,
             "downstream_reachable_assets": downstream_assets,
             "downstreamReachableAssets": downstream_assets,
@@ -1091,6 +1222,12 @@ def find_attack_paths(
             "recommendation": recommendations[0] if recommendations else "Enforce principle of least privilege.",
             "recommendations": recommendations,
             "evidence": transition_evidence,
+            "access_modes": sorted({step["access_mode"] for step in transition_evidence if step["relationship"] == "ALLOWS"}),
+            "potential_workload_pivot": workload_pivot_detected,
+            "workload_pivot_assumptions": (
+                ["Static IAM control permission found; runtime prerequisites for accessing workload credentials are unverified."]
+                if workload_pivot_detected else []
+            ),
             "risk_factors": path_eval.get("factors", {}),
             "privilege_escalation_details": priv_details,
             "lateral_movement_details": lat_details,

@@ -1091,6 +1091,10 @@ export const AttackPaths: FC = () => {
               (group.originalPaths.find(p => (p.privilegeEscalationDetails || (p as any).privilege_escalation_details)?.is_passrole) as any)?.privilege_escalation_details;
 
             const representativeEvidence = group.originalPaths.find(p => (p.evidence || []).length > 0)?.evidence || [];
+            const minEvidenceConfidence = group.originalPaths.length
+              ? Math.min(...group.originalPaths.map(path => path.confidence ?? 0))
+              : undefined;
+            const confidenceBasis = group.originalPaths.find(path => path.confidence_basis)?.confidence_basis;
             const isEvidenceOpen = Boolean(evidenceExpanded[group.groupId]);
             const aiResponse = aiPathResponses[group.groupId];
             const aiError = aiPathErrors[group.groupId];
@@ -1175,6 +1179,14 @@ export const AttackPaths: FC = () => {
                       <span className="text-[10px] text-enterprise-accent bg-enterprise-accent/10 border border-enterprise-accent/30 px-2.5 py-0.5 rounded font-bold">
                         RISK SCORE: {group.maxRiskScore} / 100
                       </span>
+                      {minEvidenceConfidence !== undefined && minEvidenceConfidence > 0 && (
+                        <span
+                          className="text-[10px] text-cyan-300 bg-cyan-950/50 border border-cyan-500/40 px-2.5 py-0.5 rounded font-mono font-bold"
+                          title={`Evidence confidence: ${confidenceBasis || 'not classified'}. This measures evidence quality, not whether the path has been executed.`}
+                        >
+                          EVIDENCE CONFIDENCE: {minEvidenceConfidence}%
+                        </span>
+                      )}
                       <span className="text-[10px] text-blue-400 bg-blue-950/50 border border-blue-500/40 px-2.5 py-0.5 rounded font-mono font-bold flex items-center gap-1">
                         <Users className="w-3 h-3 text-blue-400" />
                         <span>{group.sources.length} Compromised Source{group.sources.length > 1 ? 's' : ''}</span>
@@ -1674,9 +1686,26 @@ export const AttackPaths: FC = () => {
                               <span className="text-[10px] px-2 py-0.5 rounded bg-blue-950 border border-blue-500/30 text-blue-300 font-bold">
                                 {ev.relationship || ev.action || 'TRANSITION'}
                               </span>
+                              {ev.access_mode && (
+                                <span className={`text-[10px] px-2 py-0.5 rounded border font-bold uppercase ${
+                                  ev.access_mode === 'read' ? 'bg-sky-950 border-sky-500/30 text-sky-300' :
+                                  ev.access_mode === 'write' ? 'bg-amber-950 border-amber-500/30 text-amber-300' :
+                                  ev.access_mode === 'execute' ? 'bg-purple-950 border-purple-500/30 text-purple-300' :
+                                  ev.access_mode === 'admin' ? 'bg-red-950 border-red-500/30 text-red-300' :
+                                  'bg-gray-800 border-gray-600 text-gray-300'
+                                }`}>
+                                  {ev.access_mode}
+                                </span>
+                              )}
+                              {ev.workload_pivot_capability && (
+                                <span className="text-[10px] px-2 py-0.5 rounded border bg-red-950 border-red-500/30 text-red-300 font-bold uppercase">
+                                  Workload pivot: {ev.workload_pivot_capability}
+                                </span>
+                              )}
                             </div>
                             {ev.why && <p className="text-[11px] text-gray-300 font-sans">{ev.why}</p>}
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 text-[10px] text-gray-400 pt-1 border-t border-gray-800/60">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2 text-[10px] text-gray-400 pt-1 border-t border-gray-800/60">
+                              <div><span className="text-gray-500 font-sans">IAM action:</span> <span className="text-cyan-300">{ev.actions?.join(', ') || ev.action || ev.required_permission || '—'}</span></div>
                               <div><span className="text-gray-500 font-sans">Policy:</span> <span className="text-gray-300">{ev.policy_name || (ev as any).policyName || 'Implicit / Attached'}</span></div>
                               <div><span className="text-gray-500 font-sans">Statement:</span> <span className="text-gray-300">{ev.statement_sid || (ev as any).statementSid || 'Allow'}</span></div>
                               <div><span className="text-gray-500 font-sans">Decision:</span> <span className="text-emerald-400 font-bold">{ev.decision || 'ALLOW'}</span></div>

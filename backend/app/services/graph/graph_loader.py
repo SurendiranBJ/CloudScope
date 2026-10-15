@@ -8,12 +8,16 @@ from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources_with_provenance,
     evaluate_assume_role_trust,
     evaluate_assume_role_trust_with_evidence,
+    evaluate_resource_policy_grants,
+    get_effective_identity_policy_documents,
+    check_resource_explicitly_denied,
 )
 from app.services.aws.session import get_account_id
 from app.services.graph.edge_validation import validate_edge
 from app.services.scanner.inventory import AWSInventory
 
 logger = logging.getLogger("scanner")
+ARN_ID_RESOURCE_TYPES = {"EC2", "ECS", "SQS", "SNS", "KMS", "EKS", "StepFunctions"}
 
 
 def get_node_id(res_type: str, item_id: str) -> str:
@@ -28,6 +32,11 @@ def get_node_id(res_type: str, item_id: str) -> str:
         "Lambda": "aws:lambda",
         "RDS": "aws:rds",
         "DynamoDB": "aws:dynamodb",
+        "ECS": "aws:ecs",
+        "ECR": "aws:ecr",
+        "CodeCommit": "aws:codecommit",
+        "SQS": "aws:sqs", "SNS": "aws:sns", "KMS": "aws:kms",
+        "EKS": "aws:eks", "StepFunctions": "aws:stepfunctions",
         "Secrets": "aws:secret",
         "AuroraDBUser": "aws:dbuser",
         "DBUser": "aws:dbuser"
@@ -44,18 +53,25 @@ def load_graph_from_neo4j() -> nx.DiGraph:
         # 1. Fetch nodes
         nodes = execute_read(
             "MATCH (n) RETURN n.id as id, labels(n)[0] as type, n.label as label, "
-            "n.riskScore as riskScore, n.arn as arn, n.description as desc"
+            "n.riskScore as riskScore, n.arn as arn, n.description as desc, n.details as details"
         )
         for n in nodes:
             node_id = n['id']
             if node_id:
+                details = n.get("details") or {}
+                if isinstance(details, str):
+                    try:
+                        details = json.loads(details)
+                    except (TypeError, ValueError):
+                        details = {}
                 G.add_node(
                     node_id,
                     type=n.get('type', 'Resource'),
                     label=n.get('label', node_id),
                     riskScore=n.get('riskScore', 0),
                     arn=n.get('arn', ''),
-                    description=n.get('desc', '')
+                    description=n.get('desc', ''),
+                    details=details,
                 )
 
         # 2. Fetch edges
@@ -194,6 +210,15 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         inv.lambdas = [dict(item, type="Lambda") for item in lambda_items]
         inv.lambda_functions = lambda_items
 
+        inv.ecs = [dict(item, type="ECS") for item in inventory.get("ecs_tasks") or inventory.get("ecs", [])]
+        inv.ecr = [dict(item, type="ECR") for item in inventory.get("ecr_repositories") or inventory.get("ecr", [])]
+        inv.codecommit = [dict(item, type="CodeCommit") for item in inventory.get("codecommit_repositories") or inventory.get("codecommit", [])]
+        inv.sqs = [dict(item, type="SQS") for item in inventory.get("sqs", [])]
+        inv.sns = [dict(item, type="SNS") for item in inventory.get("sns", [])]
+        inv.kms = [dict(item, type="KMS") for item in inventory.get("kms", [])]
+        inv.eks = [dict(item, type="EKS") for item in inventory.get("eks", [])]
+        inv.stepfunctions = [dict(item, type="StepFunctions") for item in inventory.get("stepfunctions", [])]
+
         inv.secrets = [dict(item, type="Secrets") for item in inventory.get("secrets", [])]
 
         rds_raw = inventory.get("rds_instances") or inventory.get("rds", [])
@@ -287,7 +312,8 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             riskScore=s.get('riskScore', 0),
             arn=s['arn'],
             description=f"S3 Bucket: {s['name']}",
-            region=s.get('region', 'us-east-1')
+            region=s.get('region', 'us-east-1'),
+            details=s.get('details', {})
         )
 
     # 6. Add EC2 nodes (RUNNING instances only)
@@ -316,7 +342,8 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             label=l['name'],
             riskScore=l.get('riskScore', 0),
             arn=l['arn'],
-            description=f"Lambda Function: {l['name']}"
+            description=f"Lambda Function: {l['name']}",
+            details=l.get('details', {})
         )
 
     # 8. Add Secrets nodes
@@ -328,7 +355,8 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             label=sec['name'],
             riskScore=sec.get('riskScore', 0),
             arn=sec['arn'],
-            description=f"Secret: {sec['name']}"
+            description=f"Secret: {sec['name']}",
+            details=sec.get('details', {})
         )
 
     # 9. Add RDS nodes
@@ -354,6 +382,17 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             arn=ddb['arn'],
             description=f"DynamoDB Table: {ddb['name']}"
         )
+
+    for item_type, resources in (("ECS", inventory.ecs), ("ECR", inventory.ecr), ("CodeCommit", inventory.codecommit), ("SQS", inventory.sqs), ("SNS", inventory.sns), ("KMS", inventory.kms), ("EKS", inventory.eks), ("StepFunctions", inventory.stepfunctions)):
+        for resource in resources:
+            name = resource.get("name") or resource.get("id")
+            register_node(
+                get_node_id(item_type, resource.get("id") or name),
+                [resource.get("arn")], type=item_type, label=name,
+                riskScore=resource.get("riskScore", 0), arn=resource.get("arn", ""),
+                description=f"{item_type} resource: {name}", region=resource.get("region", "global"),
+                details=resource.get("details", {}),
+            )
 
     # Helper for adding semantically validated edges with provenance and alias propagation
     def safe_add_edge(u: str, v: str, label: str, **attrs) -> bool:
@@ -499,6 +538,39 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 why=f"Lambda function '{l['name']}' executes with configured IAM role '{role_name}'"
             )
 
+    for task in inventory.ecs:
+        role_name = task.get("details", {}).get("task_role_name")
+        task_id = get_node_id("ECS", task.get("id") or task.get("name"))
+        if role_name:
+            role_id = get_node_id("Role", role_name)
+            safe_add_edge(
+                task_id, role_id, "EXECUTES_WITH", source="ECS_TASK_CONFIGURATION",
+                principal=task.get("arn", task.get("name", "")), principal_type="ECS",
+                why=f"Running ECS task '{task.get('name')}' executes with task role '{role_name}'",
+            )
+        for image in task.get("details", {}).get("images", []):
+            image_ref = str(image).split("@", 1)[0]
+            for repository in inventory.ecr:
+                repository_uri = repository.get("details", {}).get("repository_uri") or ""
+                if repository_uri and (image_ref == repository_uri or image_ref.startswith(repository_uri + ":")):
+                    repo_id = get_node_id("ECR", repository.get("id") or repository.get("name"))
+                    safe_add_edge(
+                        task_id, repo_id, "USES_IMAGE", source="ECS_TASK_DEFINITION",
+                        why=f"ECS task '{task.get('name')}' runs an image from ECR repository '{repository.get('name')}'",
+                    )
+
+    for machine in inventory.stepfunctions:
+        role_arn = machine.get("details", {}).get("role_arn", "")
+        role_name = role_arn.rsplit("/", 1)[-1] if role_arn else ""
+        if role_name:
+            safe_add_edge(
+                get_node_id("StepFunctions", machine.get("id") or machine.get("name")),
+                get_node_id("Role", role_name), "EXECUTES_WITH",
+                source="STEP_FUNCTIONS_CONFIGURATION", principal=machine.get("arn", ""),
+                principal_type="StepFunctions",
+                why=f"State machine '{machine.get('name')}' runs service integrations with configured role '{role_name}'",
+            )
+
     # 7. AssumeRole Trust: Users/Roles -> CAN_ASSUME -> Role
     _policy_doc_map = {}
     for _p in inventory.policies:
@@ -578,7 +650,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
     # 8. Policy -> ALLOWS -> Resource via evaluate_policy_allows_resources_with_provenance
     all_resources = (
         inventory.s3 + inventory.secrets + inventory.rds +
-        inventory.dynamodb + running_ec2 + inventory.lambdas
+        inventory.dynamodb + running_ec2 + inventory.lambdas + inventory.ecs + inventory.ecr + inventory.codecommit + inventory.sqs + inventory.sns + inventory.kms + inventory.eks + inventory.stepfunctions
     )
 
     from app.services.attack.policy_evaluator import parse_policy_document, match_action
@@ -592,7 +664,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         )
         for res in allowed_res:
             res_type = res.get('type')
-            item_ident = res.get('id') if res_type == 'EC2' else (res.get('name') or res.get('id'))
+            item_ident = res.get('id') if res_type in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
             res_id = get_node_id(res_type, item_ident)
             res_key = str(item_ident)
             edge_prov = prov_map.get(res_key, {})
@@ -605,6 +677,9 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                 statement_sid=edge_prov.get('statement_sid', 'Statement-1'),
                 effect=edge_prov.get('effect', 'Allow'),
                 action=edge_prov.get('action', '*'),
+                actions=edge_prov.get('actions') or [edge_prov.get('action', '*')],
+                access_categories=edge_prov.get('access_categories', []),
+                statement_sids=edge_prov.get('statement_sids') or [edge_prov.get('statement_sid', 'Statement-1')],
                 resource=str(item_ident),
                 resource_arn=edge_prov.get('resource_arn', ''),
                 condition_status=edge_prov.get('condition_status', 'NONE'),
@@ -617,11 +692,11 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         # Keep explicit deny evidence as a first-class, non-traversable edge.
         # It must not disappear simply because the evaluator correctly suppresses ALLOWS.
         for res_key, deny_ev in deny_map.items():
-            res = next((item for item in all_resources if str(item.get('id') if item.get('type') == 'EC2' else (item.get('name') or item.get('id'))) == str(res_key)), None)
+            res = next((item for item in all_resources if str(item.get('id') if item.get('type') in ARN_ID_RESOURCE_TYPES else (item.get('name') or item.get('id'))) == str(res_key)), None)
             if not res:
                 continue
             res_type = res.get('type')
-            item_ident = res.get('id') if res_type == 'EC2' else (res.get('name') or res.get('id'))
+            item_ident = res.get('id') if res_type in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
             res_id = get_node_id(res_type, item_ident)
             safe_add_edge(
                 p_id, res_id, 'DENIES', edge_type='DENIES', source='IAM',
@@ -707,6 +782,40 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
                                             )
                     except Exception as e:
                         logger.debug(f"Failed parsing rds-db ARN {r_pattern}: {e}")
+
+    # Exact-principal resource policy grants. Wildcard and external principals
+    # stay visible as resource policy evidence but are not guessed into identities.
+    for principal, ptype in ([(x, "User") for x in inventory.users] + [(x, "Role") for x in inventory.roles]):
+        if not principal.get("arn"):
+            continue
+        applicable_docs = get_effective_identity_policy_documents(
+            principal, _policy_doc_map, inventory.groups if ptype == "User" else None
+        )
+        for resource in all_resources:
+            for grant in evaluate_resource_policy_grants(resource, [principal], account_id):
+                if check_resource_explicitly_denied(applicable_docs, resource, principal=principal, account_id=account_id):
+                    continue
+                # A role's permissions boundary constrains a resource-policy grant;
+                # unresolved boundaries are conservatively excluded from paths.
+                if ptype == "Role" and principal.get("permissionsBoundary"):
+                    from app.services.simulation.effective_access import _filter_by_permissions_boundary
+                    if not _filter_by_permissions_boundary(principal, [resource], _policy_doc_map, account_id):
+                        continue
+                source_id = get_node_id(ptype, principal.get("name", ""))
+                resource_type = resource.get("type", "Resource")
+                resource_ident = resource.get("id") if resource_type in ARN_ID_RESOURCE_TYPES else (resource.get("name") or resource.get("id"))
+                target_id = get_node_id(resource_type, str(resource_ident))
+                evidence = grant.get("evidence", {})
+                safe_add_edge(
+                    source_id, target_id, "ALLOWS", source="RESOURCE_POLICY",
+                    policy_name=grant.get("policy_name", ""), policy_arn=resource.get("arn", ""),
+                    principal=principal.get("arn", ""), principal_type=ptype,
+                    action=evidence.get("action", ""), actions=evidence.get("actions", []),
+                    statement_sid=evidence.get("statement_sid", ""), resource_arn=resource.get("arn", ""),
+                    condition_status=evidence.get("condition_status", "NONE"),
+                    organization_policy_status="NOT_COLLECTED", decision="ALLOWED",
+                    why=f"Collected resource policy on '{resource.get('name') or resource.get('id')}' grants '{principal.get('arn')}' action '{evidence.get('action', 'unknown')}'",
+                )
 
     logger.info(f"Built local NetworkX Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G

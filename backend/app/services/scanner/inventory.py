@@ -12,6 +12,14 @@ class AWSInventory:
         self.secrets: List[Dict[str, Any]] = []
         self.rds: List[Dict[str, Any]] = []
         self.dynamodb: List[Dict[str, Any]] = []
+        self.ecs: List[Dict[str, Any]] = []
+        self.ecr: List[Dict[str, Any]] = []
+        self.codecommit: List[Dict[str, Any]] = []
+        self.sqs: List[Dict[str, Any]] = []
+        self.sns: List[Dict[str, Any]] = []
+        self.kms: List[Dict[str, Any]] = []
+        self.eks: List[Dict[str, Any]] = []
+        self.stepfunctions: List[Dict[str, Any]] = []
         self.findings: List[Dict[str, Any]] = []
         self.alerts: List[Dict[str, Any]] = []
 
@@ -26,5 +34,13 @@ class AWSInventory:
         self.secrets.clear()
         self.rds.clear()
         self.dynamodb.clear()
+        self.ecs.clear()
+        self.ecr.clear()
+        self.codecommit.clear()
+        self.sqs.clear()
+        self.sns.clear()
+        self.kms.clear()
+        self.eks.clear()
+        self.stepfunctions.clear()
         self.findings.clear()
         self.alerts.clear()

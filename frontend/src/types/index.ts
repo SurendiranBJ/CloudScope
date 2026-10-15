@@ -83,6 +83,10 @@ export interface TransitionEvidence {
   policy_name?: string;
   statement_sid?: string;
   action?: string;
+  required_permission?: string;
+  access_mode?: string;
+  actions?: string[];
+  workload_pivot_capability?: 'execute' | null;
   resource_arn?: string;
   decision?: string;
   condition_status?: string;
@@ -125,6 +129,7 @@ export interface AttackPath {
   riskScore?: number;
   risk_score?: number;
   confidence?: number;
+  confidence_basis?: string;
   pathType?: string;
   attack_type?: string;
   orderedRelationships?: string[];

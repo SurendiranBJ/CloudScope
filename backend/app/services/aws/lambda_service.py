@@ -36,6 +36,14 @@ def collect_lambda_functions() -> RegionalCollectionResult:
                         handler = fn.get('Handler', 'Unknown')
                         code_size = fn.get('CodeSize', 0)
                         last_modified = fn.get('LastModified', '')
+                        resource_policy = None
+                        resource_policy_status = "NO_POLICY"
+                        try:
+                            resource_policy = client.get_policy(FunctionName=name).get("Policy")
+                            resource_policy_status = "COLLECTED" if resource_policy else "NO_POLICY"
+                        except Exception as policy_error:
+                            code = getattr(policy_error, "response", {}).get("Error", {}).get("Code", "")
+                            resource_policy_status = "NO_POLICY" if code == "ResourceNotFoundException" else "ACCESS_DENIED" if code in {"AccessDeniedException", "AccessDenied"} else "ERROR"
 
                         owner = account_id
                         try:
@@ -79,7 +87,9 @@ def collect_lambda_functions() -> RegionalCollectionResult:
                                 "handler": handler,
                                 "code_size_bytes": code_size,
                                 "code_size": code_size,
-                                "last_modified": last_modified
+                                "last_modified": last_modified,
+                                "resource_policy": resource_policy,
+                                "resource_policy_status": resource_policy_status
                             }
                         })
 

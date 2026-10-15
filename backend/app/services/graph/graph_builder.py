@@ -17,10 +17,15 @@ from app.services.attack.policy_evaluator import (
     evaluate_policy_allows_resources_with_provenance,
     evaluate_assume_role_trust,
     evaluate_assume_role_trust_with_evidence,
+    evaluate_resource_policy_grants,
+    get_effective_identity_policy_documents,
+    check_resource_explicitly_denied,
 )
 from app.services.aws.session import get_account_id
 
 logger = logging.getLogger("scanner")
+
+ARN_ID_RESOURCE_TYPES = {"EC2", "ECS", "SQS", "SNS", "KMS", "EKS", "StepFunctions"}
 
 
 def get_node_id(res_type: str, item_id: str) -> str:
@@ -35,6 +40,11 @@ def get_node_id(res_type: str, item_id: str) -> str:
         "Lambda": "aws:lambda",
         "RDS": "aws:rds",
         "DynamoDB": "aws:dynamodb",
+        "ECS": "aws:ecs",
+        "ECR": "aws:ecr",
+        "CodeCommit": "aws:codecommit",
+        "SQS": "aws:sqs", "SNS": "aws:sns", "KMS": "aws:kms",
+        "EKS": "aws:eks", "StepFunctions": "aws:stepfunctions",
         "Secrets": "aws:secret",
         "AuroraDBUser": "aws:dbuser",
         "DBUser": "aws:dbuser"
@@ -154,14 +164,16 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                     n.arn = $arn,
                     n.riskScore = $riskScore,
                     n.type = 'S3',
-                    n.region = $region
+                    n.region = $region,
+                    n.details = $details
                 """,
                 {
                     "id": s_id,
                     "name": s['name'],
                     "arn": s.get('arn', f"arn:aws:s3:::{s['name']}"),
                     "riskScore": s.get('riskScore', 0),
-                    "region": s.get('region', 'global')
+                    "region": s.get('region', 'global'),
+                    "details": json.dumps(s.get('details', {}))
                 }
             )
 
@@ -198,14 +210,16 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                     n.arn = $arn,
                     n.riskScore = $riskScore,
                     n.type = 'Lambda',
-                    n.region = $region
+                    n.region = $region,
+                    n.details = $details
                 """,
                 {
                     "id": l_id,
                     "name": l_fn['name'],
                     "arn": l_fn.get('arn', ''),
                     "riskScore": l_fn.get('riskScore', 0),
-                    "region": l_fn.get('region', 'us-east-1')
+                    "region": l_fn.get('region', 'us-east-1'),
+                    "details": json.dumps(l_fn.get('details', {}))
                 }
             )
 
@@ -219,14 +233,16 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                     n.arn = $arn,
                     n.riskScore = $riskScore,
                     n.type = 'Secrets',
-                    n.region = $region
+                    n.region = $region,
+                    n.details = $details
                 """,
                 {
                     "id": sec_id,
                     "name": sec['name'],
                     "arn": sec.get('arn', ''),
                     "riskScore": sec.get('riskScore', 0),
-                    "region": sec.get('region', 'us-east-1')
+                    "region": sec.get('region', 'us-east-1'),
+                    "details": json.dumps(sec.get('details', {}))
                 }
             )
 
@@ -271,6 +287,22 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                     "region": ddb.get('region', 'us-east-1')
                 }
             )
+
+        for item_type, resources in (("ECS", inventory.ecs), ("ECR", inventory.ecr), ("CodeCommit", inventory.codecommit), ("SQS", inventory.sqs), ("SNS", inventory.sns), ("KMS", inventory.kms), ("EKS", inventory.eks), ("StepFunctions", inventory.stepfunctions)):
+            for resource in resources:
+                resource_name = resource.get("name") or resource.get("id")
+                resource_id = get_node_id(item_type, resource.get("id") or resource_name)
+                execute_write(
+                    f"""
+                    MERGE (n:{item_type} {{id: $id}})
+                    SET n.label = $name, n.name = $name, n.arn = $arn,
+                        n.riskScore = $risk_score, n.type = $type, n.region = $region,
+                        n.details = $details
+                    """,
+                    {"id": resource_id, "name": resource_name, "arn": resource.get("arn", ""),
+                     "risk_score": resource.get("riskScore", 0), "type": item_type,
+                     "region": resource.get("region", "global"), "details": json.dumps(resource.get("details", {}))}
+                )
 
         # 6. Relationship: User -> Group (MEMBER_OF) + Reconciliation
         for u in inventory.users:
@@ -470,7 +502,8 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
         # 11. Relationship: Policy -> Target Resource (ALLOWS) via AST Evaluation + Reconciliation
         all_resources: List[Dict[str, Any]] = (
             inventory.s3 + running_ec2 + inventory.lambdas +
-            inventory.secrets + inventory.rds + inventory.dynamodb
+            inventory.secrets + inventory.rds + inventory.dynamodb +
+            inventory.ecs + inventory.ecr + inventory.codecommit + inventory.sqs + inventory.sns + inventory.kms + inventory.eks + inventory.stepfunctions
         )
         for p in inventory.policies:
             p_id = get_node_id("Policy", p['name'])
@@ -480,7 +513,7 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
             valid_res_node_ids = []
             for res in allowed_res:
                 rtype = res.get('type', 'Resource')
-                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                item_ident = res.get('id') if rtype in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
                 valid_res_node_ids.append(get_node_id(rtype, item_ident))
 
             execute_write(
@@ -494,13 +527,13 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
 
             deny_resource_ids = []
             resource_by_key = {
-                str(r.get('id') if r.get('type') == 'EC2' else (r.get('name') or r.get('id'))): r
+                str(r.get('id') if r.get('type') in ARN_ID_RESOURCE_TYPES else (r.get('name') or r.get('id'))): r
                 for r in all_resources
             }
             for denied_key in deny_map:
                 denied_res = resource_by_key.get(str(denied_key))
                 if denied_res:
-                    ident = denied_res.get('id') if denied_res.get('type') == 'EC2' else (denied_res.get('name') or denied_res.get('id'))
+                    ident = denied_res.get('id') if denied_res.get('type') in ARN_ID_RESOURCE_TYPES else (denied_res.get('name') or denied_res.get('id'))
                     deny_resource_ids.append(get_node_id(denied_res.get('type', 'Resource'), ident))
             execute_write(
                 """
@@ -513,7 +546,7 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
 
             for res in allowed_res:
                 rtype = res.get('type', 'Resource')
-                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                item_ident = res.get('id') if rtype in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
                 res_node_id = get_node_id(rtype, item_ident)
                 prov = prov_map.get(str(item_ident), {})
                 execute_write(
@@ -525,8 +558,11 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                         rel.policy_name = $policy_name,
                         rel.policy_arn = $policy_arn,
                         rel.statement_sid = $statement_sid,
+                        rel.statement_sids = $statement_sids,
                         rel.effect = $effect,
                         rel.action = $action,
+                        rel.actions = $actions,
+                        rel.access_categories = $access_categories,
                         rel.resource = $resource,
                         rel.resource_arn = $resource_arn,
                         rel.decision = $decision,
@@ -540,8 +576,11 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                         "policy_name": p['name'],
                         "policy_arn": p.get('arn', ''),
                         "statement_sid": prov.get('statement_sid', 'Statement-1'),
+                        "statement_sids": prov.get('statement_sids') or [prov.get('statement_sid', 'Statement-1')],
                         "effect": prov.get('effect', 'Allow'),
                         "action": prov.get('action', '*'),
+                        "actions": prov.get('actions') or [prov.get('action', '*')],
+                        "access_categories": prov.get('access_categories', []),
                         "resource": str(item_ident),
                         "resource_arn": prov.get('resource_arn', ''),
                         "decision": prov.get('decision', 'ALLOWED'),
@@ -558,7 +597,7 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 if not res:
                     continue
                 rtype = res.get('type', 'Resource')
-                item_ident = res.get('id') if rtype == 'EC2' else (res.get('name') or res.get('id'))
+                item_ident = res.get('id') if rtype in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
                 res_node_id = get_node_id(rtype, item_ident)
                 execute_write(
                     """
@@ -575,6 +614,50 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                      "why": deny.get('why', 'Explicit IAM deny'), "evidence": json.dumps(deny, sort_keys=True),
                      "edge_id": __import__('hashlib').sha256(f"{p_id}|DENIES|{res_node_id}".encode()).hexdigest()}
                 )
+
+        # Resource policies: exact in-scan IAM principal grants, kept distinct
+        # from identity-policy edges and marked with uncollected SCP context.
+        resource_policy_edge_ids = []
+        for principal, principal_type in ([(x, "User") for x in inventory.users] + [(x, "Role") for x in inventory.roles]):
+            if not principal.get("arn"):
+                continue
+            applicable_docs = get_effective_identity_policy_documents(
+                principal, _policy_doc_map, inventory.groups if principal_type == "User" else None
+            )
+            for resource in all_resources:
+                for grant in evaluate_resource_policy_grants(resource, [principal], account_id):
+                    if check_resource_explicitly_denied(applicable_docs, resource, principal=principal, account_id=account_id):
+                        continue
+                    if principal_type == "Role" and principal.get("permissionsBoundary"):
+                        from app.services.simulation.effective_access import _filter_by_permissions_boundary
+                        if not _filter_by_permissions_boundary(principal, [resource], _policy_doc_map, account_id):
+                            continue
+                    resource_type = resource.get("type", "Resource")
+                    resource_ident = resource.get("id") if resource_type in ARN_ID_RESOURCE_TYPES else (resource.get("name") or resource.get("id"))
+                    principal_id = get_node_id(principal_type, principal.get("name", ""))
+                    resource_id = get_node_id(resource_type, str(resource_ident))
+                    edge_id = hashlib.sha256(f"{principal_id}|RESOURCE_POLICY|{resource_id}".encode()).hexdigest()
+                    resource_policy_edge_ids.append(edge_id)
+                    evidence = grant.get("evidence", {})
+                    execute_write(
+                        "MATCH (p {id: $principal_id}), (res {id: $resource_id}) "
+                        "MERGE (p)-[rel:ALLOWS {edge_id: $edge_id}]->(res) "
+                        "SET rel.source='RESOURCE_POLICY', rel.policy_name=$policy_name, rel.principal=$principal_arn, "
+                        "rel.principal_type=$principal_type, rel.action=$action, rel.actions=$actions, "
+                        "rel.statement_sid=$sid, rel.resource_arn=$resource_arn, rel.condition_status=$condition_status, "
+                        "rel.organization_policy_status='NOT_COLLECTED', rel.decision='ALLOWED', rel.why=$why",
+                        {"principal_id": principal_id, "resource_id": resource_id, "edge_id": edge_id,
+                         "policy_name": grant.get("policy_name", ""), "principal_arn": principal.get("arn", ""),
+                         "principal_type": principal_type, "action": evidence.get("action", ""),
+                         "actions": evidence.get("actions", []), "sid": evidence.get("statement_sid", ""),
+                         "resource_arn": resource.get("arn", ""), "condition_status": evidence.get("condition_status", "NONE"),
+                         "why": f"Collected resource policy grants '{principal.get('arn')}' action '{evidence.get('action', 'unknown')}' on '{resource.get('name') or resource.get('id')}'"},
+                    )
+        execute_write(
+            "MATCH (p)-[rel:ALLOWS]->(res) WHERE rel.source='RESOURCE_POLICY' "
+            "AND NOT rel.edge_id IN $valid_edge_ids DELETE rel",
+            {"valid_edge_ids": resource_policy_edge_ids},
+        )
 
         # 12. Relationship: EC2 -> Role (ATTACHED_TO) + Reconciliation
         for e in running_ec2:
@@ -636,9 +719,78 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                      "why": f"Lambda function '{l['name']}' executes with role '{exec_role}'"}
                 )
 
+        for task in inventory.ecs:
+            task_role = task.get("details", {}).get("task_role_name")
+            task_id = get_node_id("ECS", task.get("id") or task.get("name"))
+            image_repo_ids = []
+            for image in task.get("details", {}).get("images", []):
+                image_ref = str(image).split("@", 1)[0]
+                for repository in inventory.ecr:
+                    repository_uri = repository.get("details", {}).get("repository_uri") or ""
+                    if repository_uri and (image_ref == repository_uri or image_ref.startswith(repository_uri + ":")):
+                        image_repo_ids.append(get_node_id("ECR", repository.get("id") or repository.get("name")))
+            execute_write(
+                """
+                MATCH (task:ECS {id: $task_id})-[rel:USES_IMAGE]->(repo:ECR)
+                WHERE NOT repo.id IN $valid_repo_ids
+                DELETE rel
+                """,
+                {"task_id": task_id, "valid_repo_ids": image_repo_ids}
+            )
+            for repo_id in sorted(set(image_repo_ids)):
+                execute_write(
+                    """
+                    MATCH (task:ECS {id: $task_id}), (repo:ECR {id: $repo_id})
+                    MERGE (task)-[rel:USES_IMAGE]->(repo)
+                    SET rel.source='ECS_TASK_DEFINITION', rel.why=$why
+                    """,
+                    {"task_id": task_id, "repo_id": repo_id,
+                     "why": f"ECS task '{task.get('name')}' uses a container image in ECR repository '{repo_id.rsplit(':', 1)[-1]}'"}
+                )
+            role_id = get_node_id("Role", task_role) if task_role else ""
+            execute_write(
+                """
+                MATCH (task:ECS {id: $task_id})-[rel:EXECUTES_WITH]->(role:Role)
+                WHERE $role_id = '' OR role.id <> $role_id
+                DELETE rel
+                """,
+                {"task_id": task_id, "role_id": role_id}
+            )
+            if not task_role:
+                continue
+            execute_write(
+                """
+                MATCH (task:ECS {id: $task_id}), (role:Role {id: $role_id})
+                MERGE (task)-[rel:EXECUTES_WITH]->(role)
+                SET rel.source='ECS_TASK_CONFIGURATION', rel.principal_type='ECS',
+                    rel.why=$why
+                """,
+                {"task_id": task_id, "role_id": role_id,
+                 "why": f"Running ECS task '{task.get('name')}' executes with task role '{task_role}'"}
+            )
+
+        for machine in inventory.stepfunctions:
+            role_arn = machine.get("details", {}).get("role_arn", "")
+            role_name = role_arn.rsplit("/", 1)[-1] if role_arn else ""
+            machine_id = get_node_id("StepFunctions", machine.get("id") or machine.get("name"))
+            role_id = get_node_id("Role", role_name) if role_name else ""
+            execute_write(
+                "MATCH (machine:StepFunctions {id: $machine_id})-[rel:EXECUTES_WITH]->(role:Role) "
+                "WHERE $role_id = '' OR role.id <> $role_id DELETE rel",
+                {"machine_id": machine_id, "role_id": role_id},
+            )
+            if role_id:
+                execute_write(
+                    "MATCH (machine:StepFunctions {id: $machine_id}), (role:Role {id: $role_id}) "
+                    "MERGE (machine)-[rel:EXECUTES_WITH]->(role) "
+                    "SET rel.source='STEP_FUNCTIONS_CONFIGURATION', rel.principal_type='StepFunctions', rel.why=$why",
+                    {"machine_id": machine_id, "role_id": role_id,
+                     "why": f"State machine '{machine.get('name')}' runs service integrations with configured role '{role_name}'"},
+                )
+
         # 14. Configuration Node Reconciliation: prune stale AWS inventory nodes
         # Strictly preserves historical CloudTrail (:ActivityEvent) nodes and edges.
-        # For regional resources (EC2, Lambda), only prune within successfully scanned regions.
+        # For regional resources, only prune within successfully scanned regions.
         global_node_type_specs = [
             ("User", [get_node_id("User", u['name']) for u in inventory.users]),
             ("Group", [get_node_id("Group", g['name']) for g in inventory.groups]),
@@ -663,6 +815,11 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
         # Region-scoped pruning for EC2 & Lambda
         valid_ec2_ids = [get_node_id("EC2", e['id']) for e in running_ec2]
         valid_lambda_ids = [get_node_id("Lambda", l['name']) for l in inventory.lambdas]
+        regional_specs = [
+            ("ECS", [get_node_id("ECS", x.get("id") or x.get("name")) for x in inventory.ecs]),
+            ("ECR", [get_node_id("ECR", x.get("id") or x.get("name")) for x in inventory.ecr]),
+            ("CodeCommit", [get_node_id("CodeCommit", x.get("id") or x.get("name")) for x in inventory.codecommit]),
+        ]
 
         if successful_regions is not None:
             if len(successful_regions) > 0:
@@ -682,6 +839,15 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                     """,
                     {"successful_regions": successful_regions, "valid_ids": valid_lambda_ids}
                 )
+                for label, valid_ids in regional_specs:
+                    execute_write(
+                        f"""
+                        MATCH (n:{label})
+                        WHERE n.region IN $successful_regions AND NOT n.id IN $valid_ids
+                        DETACH DELETE n
+                        """,
+                        {"successful_regions": successful_regions, "valid_ids": valid_ids}
+                    )
             else:
                 logger.info("No successful regions available for regional node pruning; preserving all existing EC2 and Lambda nodes.")
         else:
@@ -701,6 +867,15 @@ def build_graph_in_neo4j(inventory: AWSInventory, successful_regions: Optional[L
                 """,
                 {"valid_ids": valid_lambda_ids}
             )
+            for label, valid_ids in regional_specs:
+                execute_write(
+                    f"""
+                    MATCH (n:{label})
+                    WHERE NOT n.id IN $valid_ids
+                    DETACH DELETE n
+                    """,
+                    {"valid_ids": valid_ids}
+                )
 
         logger.info("Neo4j idempotent synchronization completed successfully.")
     except Exception as e:

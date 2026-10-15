@@ -65,10 +65,12 @@ def collect_s3_buckets() -> list:
             # 2. Bucket Policy Evaluation for Public Access
             has_public_policy = False
             policy_status = "NO_POLICY"
+            resource_policy = None
             try:
                 pol_resp = client.get_bucket_policy(Bucket=name)
                 pol_str = pol_resp.get('Policy', '')
                 if pol_str:
+                    resource_policy = pol_str
                     pol_doc = json.loads(pol_str)
                     statements = pol_doc.get('Statement', [])
                     if isinstance(statements, dict):
@@ -183,6 +185,8 @@ def collect_s3_buckets() -> list:
                     "restrict_public_buckets": restrict_public_buckets,
                     "pab_status": pab_status,
                     "policy_status": policy_status,
+                    "resource_policy": resource_policy,
+                    "resource_policy_status": "COLLECTED" if resource_policy else policy_status,
                     "encrypted": encrypted,
                     "encryption_status": encryption_status,
                     "versioning": versioning_enabled,

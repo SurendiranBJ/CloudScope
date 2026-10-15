@@ -32,7 +32,8 @@ from app.services.attack.constants import MAX_ROLE_HOPS
 logger = logging.getLogger("scanner")
 
 # Cloud resource types that count as effective access targets
-RESOURCE_TYPES = {"S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB"}
+RESOURCE_TYPES = {"S3", "EC2", "Lambda", "Secrets", "Secret", "RDS", "DynamoDB", "ECS", "ECR", "CodeCommit", "SQS", "SNS", "KMS", "EKS", "StepFunctions"}
+ARN_ID_RESOURCE_TYPES = {"EC2", "ECS", "SQS", "SNS", "KMS", "EKS", "StepFunctions"}
 
 
 def compute_effective_access(
@@ -113,7 +114,7 @@ def compute_effective_access(
             # 2. Filter through Permissions Boundary if attached to user
             matched = _filter_by_permissions_boundary(user, matched, policy_doc_map, account_id)
             for res in matched:
-                item_ident = res.get('id') if res.get('type') == 'EC2' else (res.get('name') or res.get('id'))
+                item_ident = res.get('id') if res.get('type') in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
                 prov = prov_map.get(str(item_ident), {})
                 ev = {
                     "principal": uname,
@@ -224,7 +225,7 @@ def compute_effective_access(
                     # Provenance: User -> RoleA -> RoleB -> Policy -> Resource
                     full_node_path = [uname] + role_chain + [pname, res.get("name", res.get("id", ""))]
                     rel_chain = (["CAN_ASSUME"] * len(role_chain)) + ["HAS_POLICY", "ALLOWS"]
-                    item_ident = res.get('id') if res.get('type') == 'EC2' else (res.get('name') or res.get('id'))
+                    item_ident = res.get('id') if res.get('type') in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
                     prov = prov_map.get(str(item_ident), {})
                     ev = {
                         "principal": uname,
@@ -332,7 +333,7 @@ def compute_effective_access(
             ]
             matched = _filter_by_permissions_boundary(role, matched, policy_doc_map, account_id)
             for res in matched:
-                item_ident = res.get('id') if res.get('type') == 'EC2' else (res.get('name') or res.get('id'))
+                item_ident = res.get('id') if res.get('type') in ARN_ID_RESOURCE_TYPES else (res.get('name') or res.get('id'))
                 prov = prov_map.get(str(item_ident), {})
                 ev = {
                     "principal": rname,
@@ -454,6 +455,7 @@ def explain_principal_access(
         getattr(inventory, "s3", []) + getattr(inventory, "secrets", []) +
         getattr(inventory, "rds", []) + getattr(inventory, "dynamodb", []) +
         getattr(inventory, "ec2", []) + getattr(inventory, "lambdas", [])
+        + getattr(inventory, "ecs", []) + getattr(inventory, "ecr", []) + getattr(inventory, "codecommit", [])
     )
     target_clean = str(target_resource_id_or_arn).strip().lower()
     known_ids = {

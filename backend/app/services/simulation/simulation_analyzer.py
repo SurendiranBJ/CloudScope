@@ -271,7 +271,8 @@ def _all_resources(inventory: Any) -> List[Dict[str, Any]]:
         getattr(inventory, "lambdas", []) +
         getattr(inventory, "secrets", []) +
         getattr(inventory, "rds", []) +
-        getattr(inventory, "dynamodb", [])
+        getattr(inventory, "dynamodb", []) +
+        getattr(inventory, "ecs", []) + getattr(inventory, "ecr", []) + getattr(inventory, "codecommit", [])
     )
 
 

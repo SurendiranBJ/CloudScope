@@ -333,7 +333,8 @@ def get_entity_relationships(
             type_map = {
                 "user": "User", "role": "Role", "group": "Group", "policy": "Policy",
                 "s3": "S3", "ec2": "EC2", "lambda": "Lambda", "rds": "RDS",
-                "dynamodb": "DynamoDB", "secrets": "Secrets"
+                "dynamodb": "DynamoDB", "secrets": "Secrets", "ecs": "ECS",
+                "ecr": "ECR", "codecommit": "CodeCommit"
             }
             entity_type = type_map.get(raw_type.lower(), raw_type.capitalize())
         else:
