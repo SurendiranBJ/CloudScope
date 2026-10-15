@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+﻿import { useState, useRef, useEffect, useMemo } from 'react';
 import type { FC } from 'react';
 import { useNavigate } from 'react-router-dom';
 import cytoscape from 'cytoscape';
@@ -7,9 +7,7 @@ import {
   GitMerge,
   ArrowDown,
   Sparkles,
-  RefreshCw,
-  Bot,
-  Terminal,
+  LoaderCircle,
   ChevronDown,
   ChevronUp,
   Target,
@@ -28,12 +26,12 @@ import {
   Activity,
   FileText,
   Key,
-  ShieldCheck
+  ShieldCheck,
+  Network,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getAttackPaths } from '../api/attack';
-import { getSimulationAttackPaths } from '../api/simulation';
-import { postCopilotMessage } from '../api/copilot';
+import { explainAttackPath, type CopilotMessage } from '../api/copilot';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import type { AttackPath, AttackPathNode, DownstreamReachableAsset } from '../types';
@@ -71,14 +69,12 @@ export const AttackPaths: FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all');
   const [resourceTypeFilter, setResourceTypeFilter] = useState<string>('all');
-  const [aiExpanded, setAiExpanded] = useState<Record<string, { loading: boolean; text: string; codeBlock?: string } | null>>({});
   const [isTreeExpanded, setIsTreeExpanded] = useState(true);
   const [evidenceExpanded, setEvidenceExpanded] = useState<Record<string, boolean>>({});
   const [inspectedAsset, setInspectedAsset] = useState<DownstreamReachableAsset | null>(null);
-
-  // Simulation View Controls
-  const [simViewMode, setSimViewMode] = useState<'current' | 'desired' | 'diff'>('diff');
-  const [diffFilter, setDiffFilter] = useState<'all' | 'new' | 'removed' | 'changed' | 'unchanged'>('all');
+  const [aiPathResponses, setAiPathResponses] = useState<Record<string, CopilotMessage>>({});
+  const [aiPathLoading, setAiPathLoading] = useState<Record<string, boolean>>({});
+  const [aiPathErrors, setAiPathErrors] = useState<Record<string, string>>({});
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
@@ -89,74 +85,65 @@ export const AttackPaths: FC = () => {
     refetchInterval: 10000
   });
 
-  const { data: simAttackData } = useQuery({
-    queryKey: ['simulation-attack-paths'],
-    queryFn: getSimulationAttackPaths,
-    refetchInterval: 5000,
-  });
+  const rawAttackPaths = data || [];
 
-  const isSimActive = Boolean(simAttackData?.simulation_active);
+  const handleHighlightInFullGraph = (selectedPath: AttackPath) => {
+    const pathNodeIds = selectedPath.nodes.map(n => n.id || n.name).filter(Boolean);
+    if (pathNodeIds.length === 0) return;
+    navigate(`/graph?highlight=${encodeURIComponent(pathNodeIds.join(','))}`);
+  };
 
-  const rawAttackPaths = useMemo<AttackPath[]>(() => {
-    if (!isSimActive || !simAttackData) {
-      return data || [];
+  const handleExplainPathWithAI = async (group: ConsolidatedAttackPathGroup) => {
+    const representativePath = group.originalPaths[0];
+    if (!representativePath?.id) {
+      setAiPathErrors((current) => ({ ...current, [group.groupId]: 'No verified path ID is available for this group.' }));
+      return;
     }
 
-    if (simViewMode === 'current') {
-      return (simAttackData.current_paths as AttackPath[]) || data || [];
+    setAiPathLoading((current) => ({ ...current, [group.groupId]: true }));
+    setAiPathErrors((current) => ({ ...current, [group.groupId]: '' }));
+    try {
+      const explanation = await explainAttackPath(representativePath.id);
+      setAiPathResponses((current) => ({ ...current, [group.groupId]: explanation }));
+    } catch (error: any) {
+      setAiPathErrors((current) => ({
+        ...current,
+        [group.groupId]: error?.response?.data?.detail || 'AI could not explain this path. Check that an AI provider is configured, then try again.',
+      }));
+    } finally {
+      setAiPathLoading((current) => ({ ...current, [group.groupId]: false }));
     }
+  };
 
-    if (simViewMode === 'desired') {
-      const desiredPaths = [
-        ...(simAttackData.unchanged_paths || []),
-        ...(simAttackData.new_paths || []),
-        ...(simAttackData.changed_paths || []).map((c: any) => c.desired),
-      ];
-      return desiredPaths as AttackPath[];
-    }
-
-    // simViewMode === 'diff'
-    const tagged: any[] = [];
-    (simAttackData.new_paths || []).forEach((p: any) => {
-      tagged.push({ ...p, _diffStatus: 'NEW' });
-    });
-    (simAttackData.removed_paths || []).forEach((p: any) => {
-      tagged.push({ ...p, _diffStatus: 'REMOVED' });
-    });
-    (simAttackData.changed_paths || []).forEach((c: any) => {
-      tagged.push({
-        ...c.desired,
-        _diffStatus: 'CHANGED',
-        _currentRisk: c.current?.riskScore ?? 0,
-        _desiredRisk: c.desired?.riskScore ?? 0,
-        _riskDelta: c.risk_delta ?? 0,
-      });
-    });
-    (simAttackData.unchanged_paths || []).forEach((p: any) => {
-      tagged.push({ ...p, _diffStatus: 'UNCHANGED' });
-    });
-
-    if (diffFilter === 'all') return tagged;
-    return tagged.filter(p => p._diffStatus?.toLowerCase() === diffFilter.toLowerCase());
-  }, [isSimActive, simAttackData, simViewMode, diffFilter, data]);
-
-  // Extract exact relationship label from backend orderedRelationships (single source of truth)
+  // Extract exact relationship label from backend evidence or orderedRelationships (canonical truth)
   function findExactEdgeLabel(group: ConsolidatedAttackPathGroup, srcNodeIdOrName: string, tgtNodeIdOrName: string): string {
     for (const path of group.originalPaths) {
-      if (!path.nodes || !path.orderedRelationships) continue;
-      for (let i = 0; i < path.nodes.length - 1; i++) {
-        const u = path.nodes[i];
-        const v = path.nodes[i + 1];
-        const uMatch = (u.id === srcNodeIdOrName || u.name === srcNodeIdOrName);
-        const vMatch = (v.id === tgtNodeIdOrName || v.name === tgtNodeIdOrName);
-        if (uMatch && vMatch && path.orderedRelationships[i]) {
-          return path.orderedRelationships[i];
+      // 1. Prioritize step-by-step evidence transitions (has exact from_node and to_node IDs)
+      if (path.evidence && Array.isArray(path.evidence)) {
+        for (const step of path.evidence) {
+          const fromMatch = (step.from_node === srcNodeIdOrName || (!step.from_node && step.from_name === srcNodeIdOrName));
+          const toMatch = (step.to_node === tgtNodeIdOrName || (!step.to_node && step.to_name === tgtNodeIdOrName));
+          if (fromMatch && toMatch && step.relationship) {
+            return step.relationship;
+          }
+        }
+      }
+      // 2. Canonical node sequence matching
+      if (path.nodes && path.orderedRelationships) {
+        for (let i = 0; i < path.nodes.length - 1; i++) {
+          const u = path.nodes[i];
+          const v = path.nodes[i + 1];
+          const uMatch = (u.id === srcNodeIdOrName || (!u.id && u.name === srcNodeIdOrName));
+          const vMatch = (v.id === tgtNodeIdOrName || (!v.id && v.name === tgtNodeIdOrName));
+          if (uMatch && vMatch && path.orderedRelationships[i]) {
+            return path.orderedRelationships[i];
+          }
         }
       }
     }
     // If connecting role to downstream reachable asset
     if (group.isRoleTarget && group.downstreamAssets) {
-      const matchAsset = group.downstreamAssets.find(a => (a.id || a.name) === tgtNodeIdOrName);
+      const matchAsset = group.downstreamAssets.find(a => (a.id === tgtNodeIdOrName || a.name === tgtNodeIdOrName));
       if (matchAsset) {
         return matchAsset.evidence?.action ? 'ALLOWS' : 'REACHABLE';
       }
@@ -175,10 +162,10 @@ export const AttackPaths: FC = () => {
       const sourceNode = path.nodes[0];
       const targetNode = path.nodes.length > 1 ? path.nodes[path.nodes.length - 1] : null;
       
-      // Intermediate chain: all nodes between source and final target
+      // Intermediate chain: nodes strictly between source (hop 0) and final target
       const intermediateNodes = path.nodes.length > 2 
         ? path.nodes.slice(1, -1) 
-        : (path.nodes.length === 2 ? [path.nodes[1]] : []);
+        : [];
 
       // If final node is a Role (e.g. Surendiran -> OverlyTrustingAdminRole), preserve role as target while displaying in chain
       const isDirectRoleTarget = !!(targetNode && targetNode.type === 'Role');
@@ -233,13 +220,18 @@ export const AttackPaths: FC = () => {
         group.originalPaths.push(path);
 
         // Deduplicate and append source identity
-        if (!group.sources.some(s => (s.id || s.name) === (sourceNode.id || sourceNode.name))) {
+        const srcId = sourceNode.id || sourceNode.name;
+        if (!group.sources.some(s => (s.id || s.name) === srcId)) {
           group.sources.push(sourceNode);
         }
 
-        // Deduplicate and append target resource
-        if (effectiveTargetNode && !group.targets.some(t => (t.id || t.name) === (effectiveTargetNode.id || effectiveTargetNode.name))) {
-          group.targets.push(effectiveTargetNode);
+        // Deduplicate and append target resource (never add source as target)
+        if (effectiveTargetNode) {
+          const tgtId = effectiveTargetNode.id || effectiveTargetNode.name;
+          const isSourceAlready = group.sources.some(s => (s.id || s.name) === tgtId);
+          if (!isSourceAlready && !group.targets.some(t => (t.id || t.name) === tgtId)) {
+            group.targets.push(effectiveTargetNode);
+          }
         }
 
         // Deduplicate and append downstream reachable assets
@@ -639,7 +631,7 @@ export const AttackPaths: FC = () => {
           style: {
             'background-color': ENTITY_STYLES.RDS.backgroundColor,
             'border-color': ENTITY_STYLES.RDS.borderColor,
-            'shape': 'database' as cytoscape.Css.NodeShape
+            'shape': 'barrel'
           }
         },
         {
@@ -647,7 +639,7 @@ export const AttackPaths: FC = () => {
           style: {
             'background-color': ENTITY_STYLES.DynamoDB.backgroundColor,
             'border-color': ENTITY_STYLES.DynamoDB.borderColor,
-            'shape': 'database' as cytoscape.Css.NodeShape
+            'shape': 'barrel'
           }
         },
         {
@@ -844,74 +836,6 @@ export const AttackPaths: FC = () => {
     });
   }, [selectedGroup, focusedSourceId]);
 
-  // AI Copilot Explainer on Consolidated Group
-  const handleExplainAI = async (group: ConsolidatedAttackPathGroup) => {
-    const current = aiExpanded[group.groupId];
-    if (current && !current.loading) {
-      setAiExpanded(prev => ({ ...prev, [group.groupId]: null }));
-      return;
-    }
-
-    setAiExpanded(prev => ({ ...prev, [group.groupId]: { loading: true, text: '' } }));
-
-    try {
-      const sourceNames = group.sources.map(s => s.name).join(', ');
-      const chainNames = group.sharedChain.map(n => `${n.name} (${n.type})`).join(' → ');
-      const targetNames = group.targets.length > 0 
-        ? group.targets.map(t => `${t.name} (${t.type})`).join(', ')
-        : 'the granting privileged role';
-
-      const prompt = `Analyze the consolidated lateral attack path where ${group.sources.length} identities (${sourceNames}) share the common privilege path: ${chainNames}. 
-Reachable Assets (${group.targets.length}): ${targetNames}. 
-Severity: ${group.severity}. 
-MITRE Techniques: ${group.mitreTechniques.join(', ')}. 
-Explain why this shared privilege path introduces high blast radius across multiple identities and suggest an IAM remediation.`;
-      
-      const response = await postCopilotMessage({
-        prompt,
-        context_type: 'attack_path',
-        attack_path_id: group.originalPaths[0]?.id || group.groupId,
-        entity_id: group.sharedChain[0]?.name,
-      });
-      setAiExpanded(prev => ({
-        ...prev,
-        [group.groupId]: { loading: false, text: response.analysis || response.text, codeBlock: response.codeBlock }
-      }));
-    } catch (err: any) {
-      const status = err?.response?.status;
-      const data = err?.response?.data;
-      const detail =
-        (data?.error && data?.error?.message) ||
-        data?.detail ||
-        err?.message ||
-        'Unable to connect to AI Security Copilot service.';
-      const reqId =
-        err?.response?.headers?.['x-request-id'] ||
-        data?.request_id ||
-        (data?.error && data?.error?.request_id);
-      const reqIdSuffix = reqId ? ` (Request ID: ${reqId})` : '';
-
-      let textMsg: string;
-      if (status === 401) {
-        textMsg = `Authentication Failed (401): ${detail}. Stale credentials have been cleared — please retry to use your active session.${reqIdSuffix}`;
-      } else if (status === 403) {
-        textMsg = `Access Denied (403): ${detail}. Analyst role or higher is required for AI Copilot.${reqIdSuffix}`;
-      } else if (status === 429) {
-        textMsg = `Rate Limited (429): ${detail}.${reqIdSuffix}`;
-      } else {
-        textMsg = `AI Explanation Unavailable: ${detail}${reqIdSuffix}`;
-      }
-
-      setAiExpanded(prev => ({
-        ...prev,
-        [group.groupId]: {
-          loading: false,
-          text: textMsg
-        }
-      }));
-    }
-  };
-
   const handleZoomIn = () => {
     const cy = cyRef.current;
     if (!cy) return;
@@ -943,19 +867,6 @@ Explain why this shared privilege path introduces high blast radius across multi
     a.click();
   };
 
-  const handleHighlightInFullGraph = (group: ConsolidatedAttackPathGroup, specificSourceId?: string) => {
-    const activeSources = specificSourceId 
-      ? group.sources.filter(s => (s.id || s.name) === specificSourceId)
-      : group.sources;
-
-    const allNodeIds = [
-      ...activeSources.map(s => s.id || s.name),
-      ...group.sharedChain.map(n => n.id || n.name),
-      ...group.targets.map(t => t.id || t.name)
-    ];
-    navigate(`/graph?highlight=${allNodeIds.join(',')}`);
-  };
-
   return (
     <div className="flex-1 min-h-0 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none text-gray-200">
       
@@ -964,10 +875,10 @@ Explain why this shared privilege path introduces high blast radius across multi
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
             <GitMerge className="w-6 h-6 text-enterprise-accent" />
-            <span>Attack Paths & Lateral Movement DAG</span>
+            <span>Attack Paths</span>
           </h1>
           <p className="text-xs text-enterprise-subtext mt-1">
-            Consolidated branching attack trees merging duplicate common prefixes and shared downstream chains.
+            See how identities can reach sensitive cloud resources and what access enables each path.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -975,90 +886,6 @@ Explain why this shared privilege path introduces high blast radius across multi
           <ScanTrigger />
         </div>
       </div>
-
-      {/* Simulation Active Bar */}
-      {isSimActive && (
-        <div className="bg-[#0F172A] border border-amber-500/40 rounded-xl p-3.5 shadow-xl flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
-            <span className="text-xs font-bold text-amber-300 uppercase tracking-wider">
-              SIMULATION ACTIVE ({simAttackData?.pending_changes ?? 1} pending change{(simAttackData?.pending_changes ?? 1) > 1 ? 's' : ''})
-            </span>
-            <span className="text-[10px] text-amber-400/80 font-mono px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">
-              SIMULATION ONLY — NOT APPLIED TO AWS
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* View Mode Buttons: Current / Desired / Diff View */}
-            <div className="flex items-center bg-gray-900 p-1 rounded-lg border border-gray-700 text-xs">
-              <button
-                onClick={() => setSimViewMode('current')}
-                className={`px-3 py-1 rounded font-semibold transition-colors ${
-                  simViewMode === 'current'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                Current Paths
-              </button>
-              <button
-                onClick={() => setSimViewMode('desired')}
-                className={`px-3 py-1 rounded font-semibold transition-colors ${
-                  simViewMode === 'desired'
-                    ? 'bg-indigo-600 text-white shadow'
-                    : 'text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                Desired Paths
-              </button>
-              <button
-                onClick={() => setSimViewMode('diff')}
-                className={`px-3 py-1 rounded font-semibold transition-colors ${
-                  simViewMode === 'diff'
-                    ? 'bg-amber-600 text-white shadow'
-                    : 'text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                Diff View
-              </button>
-            </div>
-
-            {/* In Diff View: Filter tabs for New, Removed, Changed, Unchanged */}
-            {simViewMode === 'diff' && (
-              <div className="flex items-center gap-1 bg-gray-900 p-1 rounded-lg border border-gray-700 text-[11px]">
-                {(
-                  [
-                    { id: 'all', label: 'All Diff' },
-                    { id: 'new', label: `+ New (${simAttackData?.new_paths?.length || 0})` },
-                    { id: 'removed', label: `- Removed (${simAttackData?.removed_paths?.length || 0})` },
-                    { id: 'changed', label: `Changed (${simAttackData?.changed_paths?.length || 0})` },
-                    { id: 'unchanged', label: `Unchanged (${simAttackData?.unchanged_paths?.length || 0})` },
-                  ] as const
-                ).map(tab => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setDiffFilter(tab.id as any)}
-                    className={`px-2 py-0.5 rounded font-mono font-medium transition-colors ${
-                      diffFilter === tab.id
-                        ? tab.id === 'new'
-                          ? 'bg-emerald-600 text-white'
-                          : tab.id === 'removed'
-                          ? 'bg-red-600 text-white'
-                          : tab.id === 'changed'
-                          ? 'bg-amber-600 text-white'
-                          : 'bg-gray-700 text-white'
-                        : 'text-gray-400 hover:text-gray-200'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Blast Radius & Risk Summary Metric Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
@@ -1179,7 +1006,7 @@ Explain why this shared privilege path introduces high blast radius across multi
 
       {/* INTERACTIVE BRANCHING ATTACK DAG TREE VISUALIZER */}
       {isTreeExpanded && (
-        <div className="bg-[#0F172A] border border-enterprise-border rounded-xl p-4 shadow-2xl relative overflow-hidden flex flex-col h-[480px]">
+        <div className="attack-path-graph-panel bg-[#0F172A] border border-enterprise-border rounded-xl p-4 shadow-2xl relative overflow-hidden flex flex-col h-[480px]">
           <div className="flex items-center justify-between mb-2 z-10 pb-2 border-b border-gray-800">
             <div className="flex items-center gap-2">
               <GitMerge className="w-4 h-4 text-enterprise-accent" />
@@ -1205,7 +1032,7 @@ Explain why this shared privilege path introduces high blast radius across multi
           <div ref={containerRef} className="w-full flex-1 relative bg-[#0B1120] rounded-lg" />
 
           {/* Canvas Helper Legend */}
-          <div className="absolute bottom-6 left-6 z-10 bg-gray-900/90 backdrop-blur-md border border-gray-700 rounded-lg px-3 py-1.5 text-[10px] flex items-center gap-3 text-gray-300 flex-wrap max-w-2xl">
+          <div className="graph-legend absolute bottom-6 left-6 z-10 bg-gray-900/90 backdrop-blur-md border border-gray-700 rounded-lg px-3 py-1.5 text-[10px] flex items-center gap-3 text-gray-300 flex-wrap max-w-2xl">
             <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: ENTITY_STYLES.User.backgroundColor }} /><span>User</span></div>
             <div className="flex items-center gap-1.5"><span className="w-2.5 h-2 rounded" style={{ backgroundColor: ENTITY_STYLES.Group.backgroundColor }} /><span>Group</span></div>
             <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rotate-45" style={{ backgroundColor: ENTITY_STYLES.Policy.backgroundColor }} /><span>Policy</span></div>
@@ -1243,10 +1070,6 @@ Explain why this shared privilege path introduces high blast radius across multi
         ) : (
           filteredGroups.map((group) => {
             const isSelected = selectedGroup && selectedGroup.groupId === group.groupId;
-            const aiState = aiExpanded[group.groupId];
-            const isAIExpanded = !!aiState && !aiState.loading;
-            const isAILoading = !!aiState?.loading;
-
             const correlationStatus = group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ATTACK_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ATTACK_ACTIVITY')?.correlationStatus ||
               group.originalPaths.find(p => p.correlationStatus === 'CORRELATED_ACTIVITY' || (p as any).correlation_status === 'CORRELATED_ACTIVITY')?.correlationStatus ||
               group.originalPaths.find(p => p.correlationStatus === 'OBSERVED_ACTIVITY' || (p as any).correlation_status === 'OBSERVED_ACTIVITY')?.correlationStatus ||
@@ -1257,6 +1080,9 @@ Explain why this shared privilege path introduces high blast radius across multi
 
             const representativeEvidence = group.originalPaths.find(p => (p.evidence || []).length > 0)?.evidence || [];
             const isEvidenceOpen = Boolean(evidenceExpanded[group.groupId]);
+            const aiResponse = aiPathResponses[group.groupId];
+            const aiError = aiPathErrors[group.groupId];
+            const isAiLoading = Boolean(aiPathLoading[group.groupId]);
 
             return (
               <div
@@ -1265,11 +1091,11 @@ Explain why this shared privilege path introduces high blast radius across multi
                 className={`bg-enterprise-card border rounded-2xl p-6 transition-all shadow-xl flex flex-col gap-5 cursor-pointer ${
                   isSelected
                     ? 'border-red-500/80 bg-[#141B2D] ring-1 ring-red-500/50 shadow-red-500/10'
-                    : isSimActive && group.diffStatus === 'NEW'
+                    : group.diffStatus === 'NEW'
                     ? 'border-emerald-500/50 bg-emerald-950/10 hover:border-emerald-500'
-                    : isSimActive && group.diffStatus === 'REMOVED'
+                    : group.diffStatus === 'REMOVED'
                     ? 'border-red-500/40 bg-red-950/10 opacity-70 hover:opacity-90'
-                    : isSimActive && group.diffStatus === 'CHANGED'
+                    : group.diffStatus === 'CHANGED'
                     ? 'border-amber-500/50 bg-amber-950/10 hover:border-amber-500'
                     : 'border-enterprise-border hover:border-gray-700'
                 }`}
@@ -1278,7 +1104,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                 <div className="flex flex-wrap items-start justify-between gap-4 border-b border-enterprise-border pb-4">
                   <div className="space-y-1.5">
                     <div className="flex items-center gap-2.5 flex-wrap">
-                      {isSimActive && group.diffStatus && (
+                      {group.diffStatus && (
                         <span
                           className={`text-[10px] font-black px-2.5 py-0.5 rounded uppercase tracking-wider border flex items-center gap-1.5 ${
                             group.diffStatus === 'NEW'
@@ -1294,7 +1120,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                           {group.diffStatus === 'REMOVED' && '- REMOVED PATH'}
                           {group.diffStatus === 'CHANGED' && (
                             <span>
-                              CHANGED (Current Risk: {group.currentRiskScore ?? '—'} → Desired Risk: {group.desiredRiskScore ?? '—'}{' '}
+                              CHANGED (Current Risk: {group.currentRiskScore ?? 'â€”'} â†’ Desired Risk: {group.desiredRiskScore ?? 'â€”'}{' '}
                               | Delta:{' '}
                               {group.riskDelta !== undefined
                                 ? (group.riskDelta > 0 ? `+${group.riskDelta}` : group.riskDelta)
@@ -1355,27 +1181,73 @@ Explain why this shared privilege path introduces high blast radius across multi
                   {/* Action Buttons */}
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={(e) => { e.stopPropagation(); handleHighlightInFullGraph(group, focusedSourceId || undefined); }}
-                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-enterprise-accent hover:bg-blue-600 text-white font-semibold rounded-lg text-xs transition-colors shadow"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const selectedPath = group.originalPaths[0];
+                        if (selectedPath) handleHighlightInFullGraph(selectedPath);
+                      }}
+                      disabled={!group.originalPaths[0]?.nodes?.length}
+                      className="inline-flex items-center gap-2 rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm font-semibold text-enterprise-text transition-colors hover:border-enterprise-accent/50 hover:text-enterprise-accent focus:outline-none focus:ring-2 focus:ring-enterprise-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <GitMerge className="w-3.5 h-3.5" />
-                      <span>Trace in Full Graph</span>
+                      <Network aria-hidden="true" className="h-4 w-4" />
+                      Trace in Cloud Graph
                     </button>
                     <button
-                      onClick={(e) => { e.stopPropagation(); handleExplainAI(group); }}
-                      disabled={isAILoading}
-                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-60 text-white border border-enterprise-border font-semibold rounded-lg text-xs transition-colors"
+                      type="button"
+                      disabled={isAiLoading}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleExplainPathWithAI(group);
+                      }}
+                      className="inline-flex items-center gap-2 rounded-lg border border-enterprise-accent/40 bg-enterprise-accent/10 px-3 py-2 text-sm font-semibold text-enterprise-accent transition-colors hover:bg-enterprise-accent/20 focus:outline-none focus:ring-2 focus:ring-enterprise-accent/50 disabled:cursor-wait disabled:opacity-60"
                     >
-                      {isAILoading ? (
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-enterprise-accent" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5 text-enterprise-accent" />
-                      )}
-                      <span>Explain with AI</span>
-                      {!isAILoading && (isAIExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />)}
+                      {isAiLoading
+                        ? <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
+                        : <Sparkles aria-hidden="true" className="h-4 w-4" />}
+                      {isAiLoading
+                        ? 'Explaining…'
+                        : aiResponse ? 'Explain again' : 'Explain with AI'}
                     </button>
                   </div>
                 </div>
+
+                {(aiResponse || aiError) && (
+                  <section
+                    aria-live="polite"
+                    className="rounded-xl border border-enterprise-accent/30 bg-enterprise-accent/5 p-4 text-enterprise-text"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                      <Sparkles aria-hidden="true" className="h-4 w-4 text-enterprise-accent" />
+                      AI explanation
+                    </div>
+                    {aiError && (
+                      <p role="alert" className="text-sm text-red-700 dark:text-red-300">{aiError}</p>
+                    )}
+                    {aiResponse && (
+                      <div className="space-y-3 text-sm">
+                        <p className="text-xs text-enterprise-subtext">Explanation for the primary path in this consolidated group.</p>
+                        {aiResponse.summary && <p className="font-semibold">{aiResponse.summary}</p>}
+                        <p className="whitespace-pre-wrap leading-relaxed">{aiResponse.analysis || aiResponse.text}</p>
+                        {aiResponse.evidence?.length ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold text-enterprise-subtext">Evidence</p>
+                            <ul className="list-disc space-y-1 pl-5">{aiResponse.evidence.map((item, index) => <li key={index}>{item}</li>)}</ul>
+                          </div>
+                        ) : null}
+                        {aiResponse.recommendations?.length ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold text-enterprise-subtext">Suggested remediation</p>
+                            <ol className="list-decimal space-y-1 pl-5">{aiResponse.recommendations.map((item, index) => <li key={index}>{item}</li>)}</ol>
+                          </div>
+                        ) : null}
+                        {aiResponse.limitations?.length ? <p className="text-xs text-enterprise-subtext">Scope: {aiResponse.limitations.join(' ')}</p> : null}
+                        <p className="text-xs text-enterprise-subtext">AI guidance is advisory. Verify the path evidence and review changes before applying them.</p>
+                      </div>
+                    )}
+                  </section>
+                )}
 
                 {/* Observed Attack Activity Callout Banner */}
                 {(() => {
@@ -1392,7 +1264,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                       <div className="space-y-2 w-full font-mono">
                         <div className="flex items-center justify-between flex-wrap gap-2">
                           <span className="font-bold text-red-300 text-sm flex items-center gap-2">
-                            <span>🚨 Active Attack Observed in CloudTrail:</span>
+                            <span>ðŸš¨ Active Attack Observed in CloudTrail:</span>
                             <span className="text-white px-2 py-0.5 bg-red-900/60 rounded border border-red-500/40 font-bold">
                               {observedAttack.event_name || observedAttack.eventName || 'Security Event'}
                             </span>
@@ -1469,18 +1341,20 @@ Explain why this shared privilege path introduces high blast radius across multi
                 {/* EXACT REFERENCE DESIGN: VERTICAL HIERARCHICAL BRANCHING DIAGRAM */}
                 <div className="bg-[#0B1120]/80 rounded-xl p-5 border border-enterprise-border/80 flex flex-col items-center select-none shadow-inner">
                   
-                  {/* LAYER 1: MULTIPLE SOURCE IDENTITIES (CONVERGING AT TOP) */}
+                  {/* LAYER 1: MULTIPLE SOURCE IDENTITIES / WORKLOADS (CONVERGING AT TOP) */}
                   <div className="w-full flex flex-col items-center">
                     <div className="flex items-center gap-2 mb-2">
                       <Users className="w-3.5 h-3.5 text-blue-400" />
                       <span className="text-[10px] font-mono font-bold text-blue-400 uppercase tracking-wider">
-                        Source Identities ({group.sources.length})
+                        Source Entities ({group.sources.length})
                       </span>
                     </div>
 
                     <div className="flex flex-wrap items-center justify-center gap-2 max-w-2xl">
                       {group.sources.map((src) => {
                         const isSourceFocused = focusedSourceId === (src.id || `node:${src.name}`);
+                        const srcStyle = getGraphEntityStyle(src.type);
+                        const srcType = src.type || 'Identity';
                         return (
                           <button
                             key={src.id || src.name}
@@ -1492,13 +1366,18 @@ Explain why this shared privilege path introduces high blast radius across multi
                             className={`px-3 py-1.5 rounded-lg border flex items-center gap-2 shadow-md transition-all ${
                               isSourceFocused
                                 ? 'bg-blue-600 border-blue-400 text-white ring-2 ring-blue-400 shadow-blue-500/20 scale-105'
-                                : 'bg-blue-950/40 hover:bg-blue-900/50 border-blue-500/50 text-blue-100'
+                                : `${srcStyle.cardBgBorder} text-gray-100 hover:brightness-125`
                             }`}
-                            title="Click to focus on this individual identity trace"
+                            title={`Click to focus on ${src.name} (${srcType}) trace`}
                           >
-                            <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm"
+                              style={{ backgroundColor: srcStyle.dotBg }}
+                            />
                             <span className="font-bold text-xs font-mono">{src.name}</span>
-                            <span className="text-[8px] opacity-75 uppercase font-semibold">User</span>
+                            <span className="text-[8px] opacity-80 uppercase font-semibold tracking-wider px-1 py-0.2 bg-black/40 rounded border border-white/10">
+                              {srcType}
+                            </span>
                           </button>
                         );
                       })}
@@ -1690,34 +1569,56 @@ Explain why this shared privilege path introduces high blast radius across multi
                   {/* Bottom Impact Summary Bar */}
                   <div className="mt-5 pt-3 border-t border-gray-800/80 w-full flex items-center justify-between text-xs text-gray-400 flex-wrap gap-2">
                     <div className="flex flex-col gap-1">
-                      <div className="flex items-center gap-2">
-                        <Flame className="w-3.5 h-3.5 text-red-400" />
-                        <span className="font-mono text-[11px]">
-                          <strong className="text-white">Blast Radius:</strong> {group.blastRadiusSummary}
-                        </span>
-                      </div>
-                      {/* Explainable asset breakdown */}
                       {(() => {
                         const assetsToBreakDown = (group.isRoleTarget && group.downstreamAssets && group.downstreamAssets.length > 0)
                           ? group.downstreamAssets
                           : group.targets;
-                        if (!assetsToBreakDown || assetsToBreakDown.length === 0) return null;
                         
-                        const counts: Record<string, number> = {};
+                        // Count unique canonical assets
+                        const uniqueAssetsMap = new Map<string, string>();
                         assetsToBreakDown.forEach(a => {
-                          const t = normalizeGraphType(a.type);
-                          counts[t] = (counts[t] || 0) + 1;
+                          const aId = a.id || a.name;
+                          const aType = normalizeGraphType(a.type);
+                          if (!uniqueAssetsMap.has(aId)) {
+                            uniqueAssetsMap.set(aId, aType);
+                          }
+                        });
+                        const totalUnique = uniqueAssetsMap.size;
+
+                        const counts: Record<string, number> = {};
+                        uniqueAssetsMap.forEach(type => {
+                          counts[type] = (counts[type] || 0) + 1;
                         });
                         const items = Object.entries(counts).map(([type, count]) => `${count} ${type}`);
+
+                        // Documented severity mapping based on reachable unique cloud assets
+                        let vectorSeverity = 'Low';
+                        if (totalUnique >= 5 || group.severity === 'critical') vectorSeverity = 'High';
+                        else if (totalUnique >= 2 || group.severity === 'high') vectorSeverity = 'Medium';
+
                         return (
-                          <div className="flex flex-wrap items-center gap-1.5 ml-5 mt-0.5">
-                            <span className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold">Assets:</span>
-                            {items.map((item, idx) => (
-                              <span key={idx} className="px-1.5 py-0.2 bg-gray-900 text-[9px] font-mono text-gray-300 rounded border border-gray-800">
-                                {item}
+                          <>
+                            <div className="flex items-center gap-2">
+                              <Flame className="w-3.5 h-3.5 text-red-400" />
+                              <span className="font-mono text-[11px]">
+                                <strong className="text-white">Blast Radius:</strong>{' '}
+                                <span className={vectorSeverity === 'High' ? 'text-red-400 font-bold' : vectorSeverity === 'Medium' ? 'text-amber-400 font-bold' : 'text-blue-400 font-bold'}>
+                                  {vectorSeverity}
+                                </span>{' '}
+                                ({totalUnique} unique cloud asset{totalUnique !== 1 ? 's' : ''})
                               </span>
-                            ))}
-                          </div>
+                            </div>
+                            {items.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1.5 ml-5 mt-0.5">
+                                <span className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold">Assets:</span>
+                                {items.map((item, idx) => (
+                                  <span key={idx} className="px-1.5 py-0.2 bg-gray-900 text-[9px] font-mono text-gray-300 rounded border border-gray-800">
+                                    {item}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </>
                         );
                       })()}
                     </div>
@@ -1755,7 +1656,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                         {representativeEvidence.map((ev, i) => (
                           <div key={i} className="bg-gray-900/90 border border-gray-800 rounded-lg p-3 text-xs flex flex-col gap-1.5 font-mono">
                             <div className="flex items-center justify-between flex-wrap gap-2">
-                              <span className="text-blue-400 font-bold text-xs">{ev.from_node || (ev as any).fromNode || `Step ${i + 1}`} → {ev.to_node || (ev as any).toNode}</span>
+                              <span className="text-blue-400 font-bold text-xs">{ev.from_node || (ev as any).fromNode || `Step ${i + 1}`} â†’ {ev.to_node || (ev as any).toNode}</span>
                               <span className="text-[10px] px-2 py-0.5 rounded bg-blue-950 border border-blue-500/30 text-blue-300 font-bold">
                                 {ev.relationship || ev.action || 'TRANSITION'}
                               </span>
@@ -1774,35 +1675,6 @@ Explain why this shared privilege path introduces high blast radius across multi
                   </div>
                 )}
 
-                {/* AI Explanation Card */}
-                {isAIExpanded && aiState && (
-                  <div className="bg-enterprise-accent/5 p-4 rounded-xl border border-enterprise-accent/20 flex gap-3 text-xs leading-relaxed text-gray-200 mt-1">
-                    <Bot className="w-5 h-5 text-enterprise-accent shrink-0 mt-0.5" />
-                    <div className="space-y-3 w-full">
-                      <h4 className="font-extrabold text-white text-xs flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <Bot className="w-4 h-4 text-enterprise-accent" />
-                          <span>AI-generated explanation based on CloudScope evidence</span>
-                        </span>
-                        <span className="text-[9px] font-normal px-2 py-0.5 rounded bg-enterprise-accent/15 text-enterprise-accent border border-enterprise-accent/30">
-                          Gemini Security Analysis
-                        </span>
-                      </h4>
-                      <p className="text-[11px] text-enterprise-subtext whitespace-pre-wrap">{aiState.text}</p>
-                      {aiState.codeBlock && (
-                        <div className="space-y-1.5">
-                          <span className="font-semibold text-white text-[10px] flex items-center gap-1">
-                            <Terminal className="w-3.5 h-3.5 text-enterprise-accent" />
-                            <span>Remediation Reference</span>
-                          </span>
-                          <pre className="p-3 bg-gray-900 border border-enterprise-border rounded-lg text-[9px] font-mono text-gray-300 overflow-x-auto">
-                            {aiState.codeBlock}
-                          </pre>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })
@@ -1829,7 +1701,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                   <h3 className="font-bold text-sm text-white font-mono">{inspectedAsset.name}</h3>
                   <p className="text-[10px] text-gray-400 font-mono mt-0.5">
                     Type: <strong className="text-white uppercase">{inspectedAsset.type}</strong>
-                    {inspectedAsset.region && ` • Region: ${inspectedAsset.region}`}
+                    {inspectedAsset.region && ` â€¢ Region: ${inspectedAsset.region}`}
                   </p>
                 </div>
               </div>
@@ -1837,7 +1709,7 @@ Explain why this shared privilege path introduces high blast radius across multi
                 onClick={() => setInspectedAsset(null)}
                 className="text-gray-400 hover:text-white px-2 py-1 rounded-lg hover:bg-gray-800 text-xs font-mono transition-colors"
               >
-                ✕
+                âœ•
               </button>
             </div>
 

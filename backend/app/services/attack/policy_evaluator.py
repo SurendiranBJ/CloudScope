@@ -222,13 +222,22 @@ def match_resource_specific_action(action: str, res_type: str) -> bool:
         return False
 
     elif t == "LAMBDA":
-        if a in ("lambda:*", "lambda:*function*"):
+        if a in ("*", "*:*", "lambda:*", "lambda:*function*"):
             return True
         if a.startswith("lambda:"):
-            non_function = {"lambda:listfunctions", "lambda:listeventsourcemappings", "lambda:listlayers", "lambda:listlayerversions"}
-            if a in non_function:
+            # Exclude metadata-only read actions that do not grant execution/code access
+            if a in ("lambda:getfunctionconfiguration", "lambda:getfunctioneventinvokeconfig"):
                 return False
-            return True
+            # Actions that grant execution, invocation, code, or configuration control over an existing function:
+            valid_function_actions = (
+                "lambda:invoke",
+                "lambda:updatefunction",
+                "lambda:putfunction",
+                "lambda:addpermission",
+                "lambda:publishversion",
+                "lambda:getfunction",
+            )
+            return any(a.startswith(prefix) for prefix in valid_function_actions)
         return False
 
     elif t in ("SECRETS", "SECRET"):

@@ -47,6 +47,10 @@ async def lifespan(app: FastAPI):
         # Initialize relational database schemas (SQLite / PostgreSQL)
         init_db()
 
+        # Reconcile orphaned scan executions interrupted by past process crashes
+        from app.persistence.repository import reconcile_interrupted_scans
+        reconcile_interrupted_scans()
+
         # Recover authoritative published snapshot from durable SQL
         from app.services.scanner.snapshot_store import snapshot_store
         recovered = snapshot_store.recover_from_sql()

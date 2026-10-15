@@ -26,3 +26,8 @@ export const suppressFinding = async (id: string): Promise<SecurityFinding> => {
   const res = await apiClient.post<APIResponse<SecurityFinding>>(`/findings/${id}/suppress`);
   return res.data.data;
 };
+
+export const updateFindingTriage = async (id: string, payload: { assignedTo: string; dueDate: string; analystNotes: string }): Promise<SecurityFinding> => {
+  const res = await apiClient.put<APIResponse<SecurityFinding>>(`/findings/${id}/triage`, payload);
+  return res.data.data;
+};

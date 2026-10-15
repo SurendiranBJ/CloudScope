@@ -26,6 +26,16 @@ from app.persistence.models import (
 
 logger = logging.getLogger("cloudscope.persistence")
 
+class DatabasePersistenceError(RuntimeError):
+    """Raised when a durable write to the database fails."""
+    pass
+
+
+class DatabaseQueryError(RuntimeError):
+    """Raised when a durable query to the database fails."""
+    pass
+
+
 # Ensure tables are initialized on import
 try:
     init_db()
@@ -64,11 +74,13 @@ def _json_dumps(value: Any) -> str:
 def record_scan_run_start(
     scan_id: str,
     started_at: str,
-    scan_mode: str = "single",
+    scan_mode: str = "global",
     created_by: str = "system",
     trigger_type: str = "MANUAL",
+    total_collectors: int = 12,
+    active_phase: str = "INITIALIZING",
 ) -> None:
-    """Insert initial ScanRun record into durable store."""
+    """Insert initial ScanRun record into durable store. Raises DatabasePersistenceError on failure."""
     try:
         with get_db_session() as session:
             existing = session.query(ScanRunModel).filter_by(scan_id=scan_id).first()
@@ -80,11 +92,14 @@ def record_scan_run_start(
                     scan_mode=scan_mode,
                     created_by=created_by,
                     trigger_type=trigger_type,
-                    active_phase="INITIALIZING",
+                    active_phase=active_phase,
+                    total_collectors=total_collectors,
+                    completed_collectors=0,
                 )
                 session.add(run)
     except Exception as e:
-        logger.warning(f"Failed to record scan run start: {e}")
+        logger.error(f"Failed to record scan run start for {scan_id}: {e}", exc_info=True)
+        raise DatabasePersistenceError(f"Failed to record scan run start: {str(e)}") from e
 
 
 def record_scan_run_finish(
@@ -98,8 +113,9 @@ def record_scan_run_finish(
     failed_regions: Optional[List[str]] = None,
     error_summary: Optional[str] = None,
     completed_collectors: int = 12,
+    total_collectors: int = 12,
 ) -> None:
-    """Update completed or failed ScanRun record in durable store."""
+    """Update completed or failed ScanRun record in durable store. Idempotent. Raises DatabasePersistenceError on failure."""
     try:
         with get_db_session() as session:
             run = session.query(ScanRunModel).filter_by(scan_id=scan_id).first()
@@ -108,31 +124,40 @@ def record_scan_run_finish(
                     scan_id=scan_id,
                     started_at=completed_at,
                     scan_mode="global",
+                    total_collectors=total_collectors,
                 )
                 session.add(run)
 
             run.status = status
             run.completed_at = completed_at
             run.duration_seconds = duration_seconds
-            run.snapshot_id = snapshot_id
+            # Never fabricate a snapshot ID for failed scans! Only persist if actually published
+            run.snapshot_id = snapshot_id if status in ("SUCCESS", "PARTIAL") else None
             run.active_phase = "COMPLETED" if status in ("SUCCESS", "PARTIAL") else "FAILED"
             run.resolved_regions = _json_dumps(resolved_regions or [])
             run.successful_regions = _json_dumps(successful_regions or [])
             run.failed_regions = _json_dumps(failed_regions or [])
             run.error_summary = error_summary
             run.completed_collectors = completed_collectors
+            if total_collectors:
+                run.total_collectors = total_collectors
     except Exception as e:
-        logger.warning(f"Failed to record scan run completion: {e}")
+        logger.error(f"Failed to record scan run completion for {scan_id}: {e}", exc_info=True)
+        raise DatabasePersistenceError(f"Failed to record scan run completion: {str(e)}") from e
 
 
-def get_recent_scan_runs(limit: int = 10) -> List[Dict[str, Any]]:
-    """Retrieve recent scan executions ordered newest first."""
+def get_recent_scan_runs(limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
+    """
+    Retrieve recent scan executions ordered newest first with deterministic tie-breaker.
+    Raises DatabaseQueryError on DB failure so callers never mistake DB outages for empty history.
+    """
     try:
         with get_db_session() as session:
             runs = (
                 session.query(ScanRunModel)
-                .order_by(desc(ScanRunModel.started_at))
-                .limit(limit)
+                .order_by(desc(ScanRunModel.started_at), desc(ScanRunModel.scan_id))
+                .offset(max(0, offset))
+                .limit(min(max(1, limit), 200))
                 .all()
             )
             return [
@@ -143,20 +168,54 @@ def get_recent_scan_runs(limit: int = 10) -> List[Dict[str, Any]]:
                     "started_at": r.started_at,
                     "completed_at": r.completed_at,
                     "duration_seconds": r.duration_seconds,
-                    "scan_mode": r.scan_mode,
+                    "scan_mode": r.scan_mode or "global",
                     "resolved_regions": json.loads(r.resolved_regions or "[]"),
                     "successful_regions": json.loads(r.successful_regions or "[]"),
                     "failed_regions": json.loads(r.failed_regions or "[]"),
-                    "active_phase": r.active_phase,
+                    "active_phase": r.active_phase or "IDLE",
+                    "total_collectors": r.total_collectors or 12,
+                    "completed_collectors": r.completed_collectors or 0,
                     "error_summary": r.error_summary,
-                    "created_by": r.created_by,
-                    "trigger_type": r.trigger_type,
+                    "created_by": r.created_by or "system",
+                    "trigger_type": r.trigger_type or "MANUAL",
                 }
                 for r in runs
             ]
     except Exception as e:
-        logger.warning(f"Failed to retrieve scan runs: {e}")
-        return []
+        logger.error(f"Failed to retrieve scan runs from database: {e}", exc_info=True)
+        raise DatabaseQueryError(f"Database query failed: {str(e)}") from e
+
+
+def reconcile_interrupted_scans() -> int:
+    """
+    On startup or recovery check, mark orphaned 'SCANNING' runs as 'INTERRUPTED'
+    if and only if no active distributed lock is currently held.
+    Never invents a successful completion time or snapshot.
+    """
+    try:
+        from app.services.scanner.distributed_lock import distributed_scan_lock
+        lock_info = distributed_scan_lock.get_lock_info()
+        if lock_info.get("available") is False:
+            logger.warning("[RECOVERY] Skipping interrupted scan reconciliation because lock state is unavailable")
+            return 0
+        if lock_info.get("is_locked"):
+            # Lock is currently held by an active worker; do not touch
+            return 0
+
+        interrupted_count = 0
+        with get_db_session() as session:
+            stale_runs = session.query(ScanRunModel).filter_by(status="SCANNING").all()
+            for r in stale_runs:
+                r.status = "INTERRUPTED"
+                r.active_phase = "INTERRUPTED"
+                r.error_summary = "Scan execution interrupted by worker process termination"
+                interrupted_count += 1
+            if interrupted_count > 0:
+                logger.info(f"[RECOVERY] Reconciled {interrupted_count} orphaned scan run(s) as INTERRUPTED")
+        return interrupted_count
+    except Exception as e:
+        logger.warning(f"Failed to reconcile interrupted scan runs: {e}")
+        return 0
 
 
 # ==============================================================================
@@ -493,6 +552,9 @@ def get_finding_state(finding_id: str) -> Optional[Dict[str, Any]]:
                 "snapshot_id": item.snapshot_id,
                 "changed_by": item.changed_by,
                 "change_reason": item.change_reason,
+                "assigned_to": item.assigned_to,
+                "due_date": item.due_date,
+                "analyst_notes": item.analyst_notes,
             }
     except Exception as e:
         logger.warning(f"Failed to fetch finding state: {e}")
@@ -515,12 +577,34 @@ def get_all_finding_states() -> Dict[str, Dict[str, Any]]:
                     "snapshot_id": item.snapshot_id,
                     "changed_by": item.changed_by,
                     "change_reason": item.change_reason,
+                    "assigned_to": item.assigned_to,
+                    "due_date": item.due_date,
+                    "analyst_notes": item.analyst_notes,
                 }
                 for item in items
             }
     except Exception as e:
         logger.warning(f"Failed to fetch all finding states: {e}")
         return {}
+
+
+def update_finding_triage(finding_id: str, assigned_to: Optional[str], due_date: Optional[str], analyst_notes: Optional[str]) -> Dict[str, Any]:
+    """Persist analyst ownership and remediation context for a finding."""
+    now_str = datetime.now(timezone.utc).isoformat() + "Z"
+    with get_db_session() as session:
+        item = session.query(FindingStateModel).filter_by(finding_id=finding_id).first()
+        if item is None:
+            item = FindingStateModel(
+                finding_id=finding_id, status="OPEN", first_seen=now_str, last_seen=now_str,
+                updated_at=now_str, snapshot_id="snap-initial",
+            )
+            session.add(item)
+        item.assigned_to = assigned_to
+        item.due_date = due_date
+        item.analyst_notes = analyst_notes
+        item.updated_at = now_str
+        session.flush()
+        return {"assigned_to": item.assigned_to, "due_date": item.due_date, "analyst_notes": item.analyst_notes}
 
 
 # ==============================================================================
@@ -594,7 +678,7 @@ def query_audit_events(
                 q = q.filter(AuditEventModel.resource_type == resource_type)
 
             events = (
-                q.order_by(desc(AuditEventModel.timestamp))
+                q.order_by(desc(AuditEventModel.timestamp), desc(AuditEventModel.event_id))
                 .offset(offset)
                 .limit(limit)
                 .all()
@@ -602,7 +686,9 @@ def query_audit_events(
 
             return [
                 {
+                    "id": ev.event_id,
                     "event_id": ev.event_id,
+                    "event_time": ev.timestamp,
                     "timestamp": ev.timestamp,
                     "actor_id": ev.actor_id,
                     "actor_role": ev.actor_role,
@@ -619,8 +705,8 @@ def query_audit_events(
                 for ev in events
             ]
     except Exception as e:
-        logger.warning(f"Failed to query audit events: {e}")
-        return []
+        logger.error(f"Failed to query audit events: {e}", exc_info=True)
+        raise DatabaseQueryError(f"Audit query failed: {str(e)}") from e
 
 
 def cleanup_old_audit_events(retention_days: int = 90) -> int:

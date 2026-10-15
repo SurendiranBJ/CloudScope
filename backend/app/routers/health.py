@@ -30,7 +30,8 @@ from fastapi import Depends, HTTPException, status
 router = APIRouter(tags=["Health & Operations"])
 
 # Startup time and commit identification
-START_TIME = datetime.now(timezone.utc).isoformat()
+START_DATETIME = datetime.now(timezone.utc)
+START_TIME = START_DATETIME.isoformat()
 APP_VERSION = settings.APP_VERSION
 BUILD_VERSION = (settings.BUILD_VERSION or f"v{settings.APP_VERSION}")
 

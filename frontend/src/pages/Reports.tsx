@@ -283,7 +283,7 @@ export const Reports: React.FC = () => {
   const hasData = reportsData?.has_data ?? (complianceStandards.length > 0);
 
   return (
-    <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
+    <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
@@ -316,7 +316,7 @@ export const Reports: React.FC = () => {
               <p className="text-[11px] text-enterprise-subtext">Trigger a scan from the Control Center to evaluate verified AWS security controls.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {complianceStandards.map((std: any) => (
                 <div
                   key={std.name}
@@ -380,7 +380,7 @@ export const Reports: React.FC = () => {
           Generate & Export Report Documents
         </h2>
         {downloadError && <p role="alert" className="text-xs text-enterprise-critical">{downloadError}</p>}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {reportTypes.map((report) => {
             const isDownloading = downloading === report.id;
             const isSuccess = downloadSuccess === report.id;

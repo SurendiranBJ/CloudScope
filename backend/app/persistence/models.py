@@ -83,6 +83,9 @@ class FindingStateModel(Base):
     snapshot_id = Column(String(64), index=True, nullable=False)
     changed_by = Column(String(128), nullable=True)
     change_reason = Column(Text, nullable=True)
+    assigned_to = Column(String(128), nullable=True)
+    due_date = Column(String(10), nullable=True)
+    analyst_notes = Column(Text, nullable=True)
 
 
 class AuditEventModel(Base):

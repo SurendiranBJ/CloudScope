@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Generic, TypeVar, Optional, List, Dict, Any
 from datetime import datetime
 
@@ -155,6 +155,9 @@ class SecurityFinding(BaseModel):
     lastSeen: Optional[str] = None
     updatedAt: Optional[str] = None
     resolvedAt: Optional[str] = None
+    assignedTo: Optional[str] = None
+    dueDate: Optional[str] = None
+    analystNotes: Optional[str] = None
     source: str
     source_types: Optional[List[str]] = None
     source_snapshot_id: Optional[str] = None
@@ -167,6 +170,11 @@ class SecurityFinding(BaseModel):
     identityType: Optional[str] = None
     issue: Optional[str] = None
     recommendation: Optional[str] = None
+
+class FindingTriageUpdate(BaseModel):
+    assignedTo: Optional[str] = Field(default=None, max_length=128)
+    dueDate: Optional[str] = Field(default=None, pattern=r"^$|^\d{4}-\d{2}-\d{2}$")
+    analystNotes: Optional[str] = Field(default=None, max_length=2000)
 
 class RiskFinding(BaseModel):
     id: str

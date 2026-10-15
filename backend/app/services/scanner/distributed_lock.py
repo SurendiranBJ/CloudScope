@@ -148,6 +148,26 @@ class DistributedScanLock:
         """Query active lock status, TTL, and owner."""
         try:
             client = cache.redis_client
+            if client is None:
+                if settings.is_production:
+                    return {
+                        "is_locked": False,
+                        "ttl": 0,
+                        "ttl_seconds": 0,
+                        "owner_token": None,
+                        "owner_preview": None,
+                        "available": False,
+                    }
+                val = cache.get(self.lock_key)
+                owner = str(val) if val else None
+                return {
+                    "is_locked": bool(owner),
+                    "ttl": 0,
+                    "ttl_seconds": 0,
+                    "owner_token": owner,
+                    "owner_preview": f"{owner[:8]}..." if owner else None,
+                    "available": True,
+                }
             val = client.get(self.lock_key)
             ttl = client.ttl(self.lock_key) if val else -2
             owner = val.decode("utf-8") if isinstance(val, bytes) else str(val) if val else None
@@ -157,8 +177,19 @@ class DistributedScanLock:
                 "ttl_seconds": max(0, ttl) if ttl > 0 else 0,
                 "owner_token": owner,
                 "owner_preview": f"{owner[:8]}..." if owner else None,
+                "available": True,
             }
         except Exception:
+            if settings.is_production:
+                logger.error("[DISTRIBUTED_LOCK] Unable to verify scan lock state in production")
+                return {
+                    "is_locked": False,
+                    "ttl": 0,
+                    "ttl_seconds": 0,
+                    "owner_token": None,
+                    "owner_preview": None,
+                    "available": False,
+                }
             val = cache.get(self.lock_key)
             owner = str(val) if val else None
             return {
@@ -167,6 +198,7 @@ class DistributedScanLock:
                 "ttl_seconds": 0,
                 "owner_token": owner,
                 "owner_preview": f"{owner[:8]}..." if owner else None,
+                "available": True,
             }
 
 

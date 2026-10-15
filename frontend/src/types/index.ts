@@ -206,6 +206,11 @@ export interface SecurityFinding {
   status: FindingStatus;
   firstSeen?: string;
   lastSeen?: string;
+  updatedAt?: string;
+  resolvedAt?: string;
+  assignedTo?: string;
+  dueDate?: string;
+  analystNotes?: string;
   source: 'STATIC_IAM' | 'RESOURCE_CONFIGURATION' | 'ATTACK_PATH' | 'CLOUDTRAIL' | 'CORRELATION' | string;
   tags?: string[];
   // Backwards compatibility with RiskFinding

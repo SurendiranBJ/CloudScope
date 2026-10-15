@@ -1,17 +1,13 @@
 import { useState, useMemo } from 'react';
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Shield, RefreshCw,
   AlertTriangle, CheckCircle, Info, ChevronDown, ChevronUp,
-  Lock, Tag, Users, Activity, Plus, Minus, X
+  Lock, Tag, Users, X
 } from 'lucide-react';
 import { getPolicyCatalog, getPolicyById } from '../api/policies';
-import { getSimulationState, addSimulationChange, type SimulationChangePayload } from '../api/simulation';
-import { getIAMUsers } from '../api/users';
-import { getIAMRoles } from '../api/roles';
 import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
-import { SimulationPreviewModal } from '../components/SimulationPreviewModal';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import { LastScannedBadge } from '../components/LastScannedBadge';
 import type { PolicyCatalogEntry } from '../types';
@@ -73,22 +69,6 @@ export const Policies: React.FC = () => {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selected, setSelected] = useState<PolicyCatalogEntry | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [attachPrincipalType, setAttachPrincipalType] = useState<'USER' | 'GROUP' | 'ROLE'>('USER');
-  const [attachPrincipalId, setAttachPrincipalId] = useState('');
-  const [attachMsg, setAttachMsg] = useState('');
-  const [previewModalOpen, setPreviewModalOpen] = useState(false);
-  const [pendingChange, setPendingChange] = useState<SimulationChangePayload | null>(null);
-  const qc = useQueryClient();
-
-  const { data: discoveredUsers = [] } = useQuery({
-    queryKey: ['iam-users'],
-    queryFn: getIAMUsers,
-  });
-
-  const { data: discoveredRoles = [] } = useQuery({
-    queryKey: ['iam-roles'],
-    queryFn: getIAMRoles,
-  });
 
   const {
     isScanning,
@@ -118,24 +98,6 @@ export const Policies: React.FC = () => {
   const hasExistingData = !!catalogData && policies.length > 0;
   const showInitialLoading = isLoading && !catalogData && !hasCompletedSnapshot;
 
-  const { data: simState } = useQuery({
-    queryKey: ['simulation-state'],
-    queryFn: getSimulationState,
-    refetchInterval: 5000,
-  });
-
-  const addChangeMutation = useMutation({
-    mutationFn: addSimulationChange,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['simulation-state'] });
-      setAttachMsg('✓ Simulation change added. SIMULATION ONLY — NOT APPLIED TO AWS.');
-      setTimeout(() => setAttachMsg(''), 4000);
-    },
-    onError: (err: Error) => {
-      setAttachMsg(`Error: ${err.message}`);
-    },
-  });
-
   const sorted = useMemo(() => {
     return [...policies].sort((a, b) => {
       const av = a[sortField] ?? 0;
@@ -164,31 +126,6 @@ export const Policies: React.FC = () => {
     else { setSortField(field); setSortDir('desc'); }
   };
 
-  const handleOpenPreview = (action: 'ATTACH_POLICY' | 'DETACH_POLICY') => {
-    if (!selected || !attachPrincipalId.trim()) {
-      setAttachMsg('Enter or select a principal ID first.');
-      return;
-    }
-    setPendingChange({
-      action,
-      principal_type: attachPrincipalType,
-      principal_id: attachPrincipalId.trim(),
-      policy_arn: selected.arn,
-    });
-    setPreviewModalOpen(true);
-  };
-
-  const handleConfirmSimulation = async () => {
-    if (!pendingChange) return;
-    try {
-      await addChangeMutation.mutateAsync(pendingChange);
-      setPreviewModalOpen(false);
-      setPendingChange(null);
-    } catch {
-      // Error handled in addChangeMutation.onError
-    }
-  };
-
   const filterTabs: { label: string; value: FilterType }[] = [
     { label: 'All', value: 'all' },
     { label: 'Customer-Managed', value: 'customer-managed' },
@@ -209,7 +146,7 @@ export const Policies: React.FC = () => {
                 Policy Catalog
               </h1>
               <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                <p className="text-xs text-enterprise-subtext">Browse AWS IAM policies and simulate changes</p>
+                <p className="text-xs text-enterprise-subtext">Review IAM policies, risk ratings, and attached identities.</p>
                 {isScanning && (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-400 text-[11px] animate-pulse">
                     <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
@@ -239,12 +176,6 @@ export const Policies: React.FC = () => {
             <div className="flex items-center gap-2 flex-wrap justify-end">
               <ScannedRegionBadge />
               <LastScannedBadge />
-              {simState?.simulation_active && (
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
-                  <Activity className="w-3.5 h-3.5" />
-                  {simState.pending_changes} sim change{simState.pending_changes !== 1 ? 's' : ''} active
-                </div>
-              )}
               <button
                 onClick={() => refetch()}
                 disabled={isFetching}
@@ -516,93 +447,13 @@ export const Policies: React.FC = () => {
                 </div>
               )}
 
-              {/* Simulation attach/detach */}
-              {selected.isAttachable && (
-                <div className="border border-enterprise-border rounded-lg p-4 space-y-3">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400">
-                    <Activity className="w-3.5 h-3.5" />
-                    Simulate Policy Change
-                  </div>
-                  <p className="text-[10px] text-enterprise-subtext">
-                    Changes are <strong className="text-amber-400">SIMULATION ONLY</strong> — NOT applied to AWS.
-                  </p>
 
-                  <div className="space-y-2">
-                    <div className="flex gap-2">
-                      {(['USER', 'GROUP', 'ROLE'] as const).map(pt => (
-                        <button
-                          key={pt}
-                          onClick={() => setAttachPrincipalType(pt)}
-                          className={`flex-1 py-1.5 rounded-lg text-[10px] font-medium transition-all ${
-                            attachPrincipalType === pt
-                              ? 'bg-enterprise-accent text-white'
-                              : 'bg-gray-800 text-gray-400 hover:text-white'
-                          }`}
-                        >
-                          {pt}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      id={`sim-principal-${selected.name}`}
-                      list="discovered-principals"
-                      value={attachPrincipalId}
-                      onChange={e => setAttachPrincipalId(e.target.value)}
-                      placeholder={`Select or enter ${attachPrincipalType.toLowerCase()} name...`}
-                      className="w-full px-3 py-2 bg-enterprise-bg border border-enterprise-border rounded-lg text-xs text-gray-200 placeholder-enterprise-subtext focus:outline-none focus:border-enterprise-accent font-mono"
-                    />
-                    <datalist id="discovered-principals">
-                      {attachPrincipalType === 'USER' && discoveredUsers.map(u => (
-                        <option key={u.name} value={u.name} />
-                      ))}
-                      {attachPrincipalType === 'ROLE' && discoveredRoles.map(r => (
-                        <option key={r.name} value={r.name} />
-                      ))}
-                    </datalist>
-
-                    <div className="flex gap-2">
-                      <button
-                        id={`attach-btn-${selected.name}`}
-                        onClick={() => handleOpenPreview('ATTACH_POLICY')}
-                        disabled={addChangeMutation.isPending}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-green-600/80 hover:bg-green-600 text-white text-xs font-semibold transition-colors disabled:opacity-50"
-                      >
-                        <Plus className="w-3.5 h-3.5" /> Attach
-                      </button>
-                      <button
-                        id={`detach-btn-${selected.name}`}
-                        onClick={() => handleOpenPreview('DETACH_POLICY')}
-                        disabled={addChangeMutation.isPending}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-semibold transition-colors disabled:opacity-50"
-                      >
-                        <Minus className="w-3.5 h-3.5" /> Detach
-                      </button>
-                    </div>
-                    {attachMsg && (
-                      <p className={`text-[10px] ${attachMsg.startsWith('✓') ? 'text-green-400' : 'text-red-400'}`}>
-                        {attachMsg}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* SIMULATION PREVIEW MODAL */}
-      <SimulationPreviewModal
-        isOpen={previewModalOpen}
-        onClose={() => {
-          setPreviewModalOpen(false);
-          setPendingChange(null);
-        }}
-        onConfirm={handleConfirmSimulation}
-        payload={pendingChange}
-        policyName={selected?.name}
-        isConfirming={addChangeMutation.isPending}
-      />
+
     </div>
   );
 };

@@ -1,4 +1,4 @@
-from app.config import settings
+﻿from app.config import settings
 """
 CloudScope Durable Relational Database Configuration.
 
@@ -8,20 +8,45 @@ for SQLite (development) and PostgreSQL (production).
 
 import os
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
+def resolve_database_url(url: Optional[str] = None) -> str:
+    """
+    Establish one explicit, predictable database location:
+    1. In Docker: /app/storage/cloudscope.db when /app/storage exists.
+    2. On host: deterministic location in backend directory so different CWDs never read different SQLite files.
+    3. Custom/test URLs (e.g. absolute paths, :memory:, postgresql) are preserved as-is.
+    """
+    raw_url = url or settings.DATABASE_URL or ""
 
-DEFAULT_DB_FILE = os.path.join(DATA_DIR, "cloudscope.db")
-DATABASE_URL = settings.DATABASE_URL
+    # Docker container persistent volume for the application default only.
+    # Explicit SQLite paths and non-SQLite URLs must remain user-controlled.
+    if os.path.isdir("/app/storage") and raw_url in ("", "sqlite:///./cloudscope.db"):
+        os.makedirs("/app/storage", exist_ok=True)
+        return "sqlite:////app/storage/cloudscope.db"
+
+    # SQLite relative URL resolution to predictable backend directory
+    if raw_url.startswith("sqlite:///"):
+        path_part = raw_url[len("sqlite:///"):]
+        # Memory or absolute paths stay untouched
+        if path_part != ":memory:" and not os.path.isabs(path_part) and not path_part.startswith("/") and not path_part.startswith("\\"):
+            backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            normalized_rel = os.path.normpath(path_part)
+            abs_db_path = os.path.abspath(os.path.join(backend_dir, normalized_rel))
+            os.makedirs(os.path.dirname(abs_db_path), exist_ok=True)
+            return f"sqlite:///{abs_db_path.replace(os.sep, '/')}"
+
+    return raw_url if raw_url else "sqlite:///./cloudscope.db"
+
+
+DATABASE_URL = resolve_database_url(settings.DATABASE_URL)
 
 engine_kwargs = {"echo": False}
 
 if DATABASE_URL.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
+    engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30.0}
 else:
     # PostgreSQL production pool configuration
     engine_kwargs.update({
@@ -32,6 +57,22 @@ else:
     })
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
+
+from sqlalchemy import event
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    """Enable WAL mode, busy timeout, and normal sync for concurrency on SQLite."""
+    if DATABASE_URL.startswith("sqlite"):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
+        except Exception:
+            pass
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -66,6 +107,13 @@ def init_db() -> None:
                 for col_name, col_def in new_cols:
                     if col_name not in existing_cols:
                         conn.execute(text(f"ALTER TABLE scan_snapshots ADD COLUMN {col_name} {col_def}"))
+                conn.commit()
+        if "finding_states" in inspector.get_table_names():
+            existing_cols = {c["name"] for c in inspector.get_columns("finding_states")}
+            with engine.connect() as conn:
+                for col_name, col_def in (("assigned_to", "VARCHAR(128)"), ("due_date", "VARCHAR(10)"), ("analyst_notes", "TEXT")):
+                    if col_name not in existing_cols:
+                        conn.execute(text(f"ALTER TABLE finding_states ADD COLUMN {col_name} {col_def}"))
                 conn.commit()
     except Exception:
         pass

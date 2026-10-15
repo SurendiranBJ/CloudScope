@@ -42,10 +42,10 @@ export const IdentityGraphPage: FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showLabels, setShowLabels] = useState(true);
-  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(false);
   const [highlightRisky, setHighlightRisky] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [graphMode, setGraphMode] = useState<'current' | 'desired' | 'diff'>('diff');
+  const [graphMode, setGraphMode] = useState<'current' | 'desired' | 'diff'>('current');
 
   const pageRef = useRef<HTMLDivElement>(null);
 
@@ -112,10 +112,12 @@ export const IdentityGraphPage: FC = () => {
   }, [selectedIdentityId, selectedResourceId, selectedNode, elements]);
 
   const handleClearFocus = useCallback(() => {
+    setAnalystMode('identity_overview');
     setSelectedIdentityId(null);
     setSelectedResourceId(null);
     setSelectedNode(null);
     setSelectedEdge(null);
+    setGraphMode('current');
     window.dispatchEvent(new CustomEvent('graph:reset'));
   }, []);
 
@@ -286,11 +288,11 @@ export const IdentityGraphPage: FC = () => {
   }, []);
 
   return (
-    <div ref={pageRef} className="flex flex-col flex-1 min-h-0 bg-[#0B1120] text-gray-200 font-sans overflow-hidden">
+    <div ref={pageRef} className="flex flex-col flex-1 min-h-0 bg-enterprise-bg text-enterprise-text font-sans overflow-hidden">
       
       {/* HEADER BAR */}
       {!isFullscreen && (
-        <header className="flex flex-wrap items-center justify-between px-6 py-3 border-b border-gray-800 bg-[#0F172A] shrink-0 gap-3 z-30">
+        <header className="flex flex-wrap items-center justify-between px-6 py-3 border-b border-enterprise-border bg-enterprise-card shrink-0 gap-3 z-30">
           <div className="flex items-center gap-4">
             <div>
               <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
@@ -635,7 +637,7 @@ export const IdentityGraphPage: FC = () => {
       </main>
 
       {/* FOOTER STATS BAR */}
-      <footer className="flex items-center px-6 py-3 border-t border-gray-800 bg-[#0F172A] shrink-0 text-xs text-gray-400 gap-8 overflow-x-auto z-10">
+      <footer className="flex items-center px-6 py-3 border-t border-enterprise-border bg-enterprise-card shrink-0 text-xs text-enterprise-subtext gap-8 overflow-x-auto z-10">
         <div className="flex flex-col">
           <span className="text-gray-500 mb-0.5 text-[10px] uppercase font-bold tracking-wider">Total Nodes</span>
           <span className="text-white font-mono text-sm">{totalNodes}</span>

@@ -1042,10 +1042,30 @@ def find_attack_paths(
 
         target_cat = get_target_category(target_attr.get('type', ''))
 
+        edges_details = [
+            {
+                "id": f"e-{step['from_node']}->{step['to_node']}",
+                "source": step["from_node"],
+                "target": step["to_node"],
+                "relationship": step["relationship"],
+                "label": step["relationship"],
+                "evidence": step.get("evidence", {}),
+                "action": step.get("action", ""),
+                "decision": step.get("decision", "ALLOWED"),
+                "why": step.get("why", ""),
+            }
+            for step in transition_evidence
+        ]
+
         evaluated_paths.append({
             "source": source,
+            "source_id": source,
+            "source_asset": source_label,
+            "source_type": source_attr.get('type', 'User'),
             "destination": target,
             "target": target,
+            "target_id": target,
+            "target_asset": target_label,
             "pathType": path_type,
             "attack_type": path_type,
             "target_type": target_attr.get('type', ''),
@@ -1053,6 +1073,8 @@ def find_attack_paths(
             "targetCategory": target_cat,
             "nodes": nodes_details,
             "ordered_nodes": nodes_details,
+            "edges": edges_details,
+            "ordered_edges": edges_details,
             "orderedRelationships": ordered_relationships,
             "ordered_relationships": ordered_relationships,
             "hopCount": hop_count,

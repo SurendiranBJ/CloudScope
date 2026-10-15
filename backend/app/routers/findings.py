@@ -7,7 +7,8 @@ Provides query endpoints with multi-attribute filtering and lifecycle mutation e
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
-from app.schemas import APIResponse, SecurityFinding
+from app.schemas import APIResponse, SecurityFinding, FindingTriageUpdate
+from app.persistence import get_all_finding_states, update_finding_triage
 from app.services.findings.finding_service import finding_service
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
@@ -109,6 +110,12 @@ def get_security_findings(
         item if isinstance(item, SecurityFinding) else SecurityFinding(**item)
         for item in published_findings
     ]
+    triage_states = get_all_finding_states()
+    for finding in findings:
+        state = triage_states.get(finding.id, {})
+        finding.assignedTo = state.get("assigned_to")
+        finding.dueDate = state.get("due_date")
+        finding.analystNotes = state.get("analyst_notes")
 
     if not findings and not has_published_snapshot() and not scan_manager.is_running:
         pass
@@ -183,6 +190,11 @@ def get_finding_by_id(
     if not finding:
         raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
 
+    state = get_all_finding_states().get(finding_id, {})
+    finding.assignedTo = state.get("assigned_to")
+    finding.dueDate = state.get("due_date")
+    finding.analystNotes = state.get("analyst_notes")
+
     return APIResponse(
         success=True,
         message="Finding retrieved successfully",
@@ -190,6 +202,62 @@ def get_finding_by_id(
         snapshot_id=get_current_snapshot_id(),
         snapshot_published_at=get_current_snapshot_published_at(),
         data=finding
+    )
+
+
+@router.put("/{finding_id}/triage", response_model=APIResponse[SecurityFinding], dependencies=[Depends(rate_limit("finding"))])
+def update_finding_triage_details(
+    finding_id: str,
+    payload: FindingTriageUpdate,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_security_officer),
+):
+    """Set the owner, remediation due date, and analyst notes for a finding."""
+    if payload.dueDate:
+        try:
+            datetime.strptime(payload.dueDate, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422, detail="dueDate must be a valid calendar date in YYYY-MM-DD format")
+
+    finding = next((
+        item if isinstance(item, SecurityFinding) else SecurityFinding(**item)
+        for item in get_current_findings()
+        if (item.id if isinstance(item, SecurityFinding) else item.get("id")) == finding_id
+    ), None)
+    if not finding:
+        raise HTTPException(status_code=404, detail=f"Finding '{finding_id}' not found")
+
+    try:
+        state = update_finding_triage(
+            finding_id,
+            (payload.assignedTo or "").strip() or None,
+            (payload.dueDate or "").strip() or None,
+            (payload.analystNotes or "").strip() or None,
+        )
+    except Exception as err:
+        raise HTTPException(status_code=500, detail="Could not save finding triage details") from err
+
+    finding.assignedTo = state["assigned_to"]
+    finding.dueDate = state["due_date"]
+    finding.analystNotes = state["analyst_notes"]
+    audit_service.log(
+        action="FINDING_TRIAGE_UPDATED",
+        actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="finding",
+        resource_id=finding_id,
+        snapshot_id=get_current_snapshot_id(),
+        result="SUCCESS",
+        ip_address=getattr(request.state, "client_ip", None) or (request.client.host if request.client else None),
+        metadata={"assigned_to": state["assigned_to"], "due_date": state["due_date"]},
+    )
+    return APIResponse(
+        success=True,
+        message="Finding remediation plan saved",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        snapshot_id=get_current_snapshot_id(),
+        snapshot_published_at=get_current_snapshot_published_at(),
+        data=finding,
     )
 
 

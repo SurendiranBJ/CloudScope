@@ -36,7 +36,6 @@ import { ScanTrigger, useScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import { LastScannedBadge } from '../components/LastScannedBadge';
 import { GlobalScanStatus } from '../components/GlobalScanStatus';
-import { ThemeToggle } from '../components/ThemeToggle';
 import { apiClient } from '../api/client';
 import { useScanLifecycle } from '../hooks/useScanLifecycle';
 
@@ -267,11 +266,6 @@ export const Dashboard: React.FC = () => {
               <GitMerge className="w-3.5 h-3.5" />
               <span>Attack Graph</span>
             </button>
-          </div>
-
-          {/* Theme Toggle Button (Dark / Light Mode) */}
-          <div className="pl-2 border-l border-enterprise-border/80">
-            <ThemeToggle />
           </div>
         </div>
       </div>
@@ -606,12 +600,6 @@ export const Dashboard: React.FC = () => {
               <Key className="w-4 h-4 text-purple-400" />
               <span>High-Risk IAM Identities</span>
             </h3>
-            <button
-              onClick={() => navigate('/graph')}
-              className="text-xs text-purple-400 hover:underline font-semibold"
-            >
-              Identity Graph →
-            </button>
           </div>
 
           <div className="space-y-2 flex-1 overflow-y-auto max-h-60 pr-1">

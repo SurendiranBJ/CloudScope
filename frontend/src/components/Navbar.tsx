@@ -1,10 +1,8 @@
 import React, { useState } from 'react';
-import { Search, Bell, ChevronDown, User, AlertOctagon, Shield, Check } from 'lucide-react';
+import { Search, ChevronDown, User, Shield } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { getDashboardSummary } from '../api/dashboard';
 import { useScanLifecycle } from '../hooks/useScanLifecycle.ts';
-import { useAuth, type Role } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 import { ThemeToggle } from './ThemeToggle';
 
 interface NavbarProps {
@@ -15,34 +13,29 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const isDashboard = location.pathname === '/' || location.pathname === '/dashboard';
-  const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const { currentUser, activeDevRole, setDevRole, isDevMode, isAuthenticated } = useAuth();
-  const roleLabel = isDevMode ? activeDevRole : isAuthenticated ? 'API-authorized session' : 'Not authenticated';
-
-  const { data } = useQuery({
-    queryKey: ['dashboardSummary'],
-    queryFn: getDashboardSummary,
-    refetchInterval: 10000
-  });
+  const { currentUser, isAuthenticated } = useAuth();
+  const roleLabel = isAuthenticated ? 'Signed in' : 'Not authenticated';
 
   const { isScanning, scanJustCompleted, hasCompletedSnapshot, currentSnapshotId } = useScanLifecycle();
 
-  const alerts = data?.recentAlerts || [];
+  const showSearch = location.pathname === '/resources' || location.pathname === '/risks';
 
   return (
     <header className="h-16 border-b border-enterprise-border bg-enterprise-card px-6 flex items-center justify-between relative z-40 select-none">
       {/* Search Input */}
-      <div className="w-96 relative">
+      <div className={`relative ${showSearch ? 'w-96' : 'w-0'}`}>
+        {showSearch && <>
         <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
           <Search className="h-4 w-4 text-enterprise-subtext" />
         </span>
         <input
           type="text"
-          placeholder="Search IAM identities, resources, rules, alerts..."
+          placeholder={location.pathname === '/resources' ? 'Filter cloud resources…' : 'Filter findings…'}
           className="w-full bg-enterprise-bg/60 border border-enterprise-border rounded-lg pl-10 pr-4 py-2 text-sm text-white placeholder-enterprise-subtext focus:outline-none focus:border-enterprise-accent transition-colors"
           onChange={(e) => onSearchChange && onSearchChange(e.target.value)}
         />
+        </>}
       </div>
 
       {/* Right Controls */}
@@ -76,39 +69,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
         {/* Theme Toggle Button */}
         <ThemeToggle className="hidden sm:inline-flex" />
 
-        {/* Notifications Dropdown */}
-        <div className="relative">
-          <button
-            onClick={() => setShowNotifications(!showNotifications)}
-            className="p-2 text-enterprise-subtext hover:text-white rounded-lg hover:bg-gray-800/40 relative transition-colors"
-          >
-            <Bell className="w-5 h-5" />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-enterprise-critical glow-red" />
-          </button>
-
-          {showNotifications && (
-            <div className="absolute right-0 mt-2 w-80 bg-enterprise-card border border-enterprise-border rounded-xl shadow-2xl glow-blue overflow-hidden z-50">
-              <div className="p-3 border-b border-enterprise-border bg-enterprise-bg/40 flex justify-between items-center">
-                <span className="font-semibold text-sm">Security Alerts</span>
-                <span className="text-xs px-2 py-0.5 rounded bg-enterprise-critical/20 text-enterprise-critical font-bold">
-                  {(alerts || []).length} Open
-                </span>
-              </div>
-              <div className="divide-y divide-enterprise-border max-h-60 overflow-y-auto">
-                {(alerts || []).map((alert: any) => (
-                  <div key={alert.id} className="p-3 hover:bg-gray-800/20 transition-colors flex gap-2">
-                    <AlertOctagon className={`w-5 h-5 shrink-0 ${alert.severity === 'critical' ? 'text-enterprise-critical' : 'text-enterprise-warning'}`} />
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-white truncate">{alert.description}</p>
-                      <p className="text-[10px] text-enterprise-subtext mt-1">{alert.timestamp.split('T')[0]}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
         {/* Profile Dropdown */}
         <div className="relative">
           <button
@@ -135,38 +95,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
                 </div>
               </div>
 
-              {isDevMode && (
-                <div className="p-2 space-y-1">
-                  <p className="text-[10px] text-enterprise-subtext font-semibold uppercase tracking-wider px-2 pt-1">
-                    Dev Role Switcher
-                  </p>
-                  {(['VIEWER', 'ANALYST', 'SECURITY_OFFICER', 'ADMINISTRATOR'] as Role[]).map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => {
-                        setDevRole(r);
-                        setShowProfile(false);
-                      }}
-                      className={`w-full text-left px-2.5 py-1.5 rounded text-xs flex items-center justify-between transition-colors ${
-                        activeDevRole === r
-                          ? 'bg-enterprise-accent/20 text-enterprise-accent font-semibold'
-                          : 'hover:bg-gray-800 text-gray-300'
-                      }`}
-                    >
-                      <span>{r}</span>
-                      {activeDevRole === r && <Check className="w-3.5 h-3.5" />}
-                    </button>
-                  ))}
-                </div>
-              )}
-
               <div className="p-2 space-y-0.5">
-                <button
-                  onClick={() => { setShowProfile(false); navigate('/operations'); }}
-                  className="w-full text-left px-3 py-1.5 rounded hover:bg-gray-800 text-xs text-gray-200"
-                >
-                  Operations Center
-                </button>
                 <button
                   onClick={() => { setShowProfile(false); navigate('/settings'); }}
                   className="w-full text-left px-3 py-1.5 rounded hover:bg-gray-800 text-xs text-gray-200"

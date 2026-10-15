@@ -81,28 +81,42 @@ class ScanCoordinator:
             now_iso = datetime.now(timezone.utc).isoformat() + "Z"
 
             # 4. Record durable state & audit log
-            record_scan_run_start(
-                scan_id=scan_id,
-                started_at=now_iso,
-                scan_mode="global",
-                created_by=actor_id,
-                trigger_type=trigger_type,
-            )
+            try:
+                record_scan_run_start(
+                    scan_id=scan_id,
+                    started_at=now_iso,
+                    scan_mode="global",
+                    created_by=actor_id,
+                    trigger_type=trigger_type,
+                    total_collectors=12,
+                    active_phase="INITIALIZING",
+                )
+            except Exception as e:
+                logger.error(f"[COORDINATOR] Durable persistence failed on scan start ({scan_id}): {e}")
+                distributed_scan_lock.release(owner_token)
+                return {
+                    "status": "UNAVAILABLE",
+                    "scan_id": None,
+                    "message": "Durable database is unavailable; scan execution cannot be started",
+                }
 
-            record_audit_event(
-                event_id=str(uuid.uuid4()),
-                timestamp=now_iso,
-                actor_id=actor_id,
-                actor_role=actor_role,
-                action="SCAN_TRIGGERED",
-                resource_type="SCAN",
-                resource_id=scan_id,
-                scan_id=scan_id,
-                result="SUCCESS",
-                ip_address=ip_address,
-                user_agent=user_agent,
-                metadata={"trigger_type": trigger_type},
-            )
+            try:
+                record_audit_event(
+                    event_id=str(uuid.uuid4()),
+                    timestamp=now_iso,
+                    actor_id=actor_id,
+                    actor_role=actor_role,
+                    action="SCAN_TRIGGERED",
+                    resource_type="SCAN",
+                    resource_id=scan_id,
+                    scan_id=scan_id,
+                    result="SUCCESS",
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    metadata={"trigger_type": trigger_type},
+                )
+            except Exception as audit_err:
+                logger.warning(f"[COORDINATOR] Failed to record start audit event: {audit_err}")
 
             # 5. Launch execution thread with lease renewal heartbeat
             scan_thread = threading.Thread(
@@ -188,40 +202,50 @@ class ScanCoordinator:
             # 1. Stop heartbeat
             stop_heartbeat.set()
 
-            # 2. Release distributed lock
-            distributed_scan_lock.release(owner_token)
+            # 2. Release distributed lock FIRST so lock is never leaked even if DB write fails
+            try:
+                distributed_scan_lock.release(owner_token)
+            except Exception as lock_err:
+                logger.error(f"[COORDINATOR] Failed to release distributed lock: {lock_err}")
 
             # 3. Update durable scan run record
-            record_scan_run_finish(
-                scan_id=scan_id,
-                status=result_status,
-                completed_at=completed_iso,
-                duration_seconds=duration,
-                snapshot_id=scan_id if result_status in ("SUCCESS", "PARTIAL") else None,
-                resolved_regions=getattr(scan_manager, "_resolved_regions", []),
-                successful_regions=getattr(scan_manager, "_successful_regions", []),
-                failed_regions=getattr(scan_manager, "_failed_regions", []),
-                error_summary=err_summary,
-            )
+            try:
+                record_scan_run_finish(
+                    scan_id=scan_id,
+                    status=result_status,
+                    completed_at=completed_iso,
+                    duration_seconds=duration,
+                    snapshot_id=scan_id if result_status in ("SUCCESS", "PARTIAL") else None,
+                    resolved_regions=getattr(scan_manager, "_resolved_regions", []),
+                    successful_regions=getattr(scan_manager, "_successful_regions", []),
+                    failed_regions=getattr(scan_manager, "_failed_regions", []),
+                    error_summary=err_summary,
+                    completed_collectors=getattr(scan_manager, "_completed_collectors", 12),
+                    total_collectors=getattr(scan_manager, "_total_collectors", 12),
+                )
+            except Exception as finish_err:
+                logger.error(f"[COORDINATOR] Failed to persist scan completion record for {scan_id}: {finish_err}")
 
-            # SnapshotStore already atomically persisted the complete snapshot and
-            # current pointer. Do not perform a second metadata-only pointer write.
+            # Clean up worker state
             scan_manager._scan_lease_valid = None
 
             # 5. Record completion audit event
-            record_audit_event(
-                event_id=str(uuid.uuid4()),
-                timestamp=completed_iso,
-                actor_id=actor_id,
-                actor_role=actor_role,
-                action="SCAN_COMPLETED" if result_status in ("SUCCESS", "PARTIAL") else "SCAN_FAILED",
-                resource_type="SCAN",
-                resource_id=scan_id,
-                scan_id=scan_id,
-                snapshot_id=scan_id if result_status in ("SUCCESS", "PARTIAL") else None,
-                result="SUCCESS" if result_status in ("SUCCESS", "PARTIAL") else "FAILURE",
-                metadata={"duration_seconds": duration, "error": err_summary, "status": result_status},
-            )
+            try:
+                record_audit_event(
+                    event_id=str(uuid.uuid4()),
+                    timestamp=completed_iso,
+                    actor_id=actor_id,
+                    actor_role=actor_role,
+                    action="SCAN_COMPLETED" if result_status in ("SUCCESS", "PARTIAL") else "SCAN_FAILED",
+                    resource_type="SCAN",
+                    resource_id=scan_id,
+                    scan_id=scan_id,
+                    snapshot_id=scan_id if result_status in ("SUCCESS", "PARTIAL") else None,
+                    result="SUCCESS" if result_status in ("SUCCESS", "PARTIAL") else "FAILURE",
+                    metadata={"duration_seconds": duration, "error": err_summary, "status": result_status},
+                )
+            except Exception as audit_err:
+                logger.warning(f"[COORDINATOR] Failed to record completion audit event: {audit_err}")
 
             logger.info(f"[COORDINATOR] Worker finished scan {scan_id} with status={result_status} in {duration}s")
 

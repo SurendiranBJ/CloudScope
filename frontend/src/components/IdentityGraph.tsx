@@ -1218,9 +1218,9 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
   };
 
   return (
-    <div className="relative w-full h-full bg-[#0B0F19] overflow-hidden select-none flex flex-col">
+    <div className="relative w-full h-full bg-enterprise-bg overflow-hidden select-none flex flex-col">
       {/* Category Pills Toolbar */}
-      <div className="flex-none px-4 py-2 border-b border-gray-800/80 bg-gray-950/70 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 z-10">
+      <div className="flex-none px-4 py-2 border-b border-enterprise-border bg-enterprise-card/90 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 z-10">
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mr-1 flex items-center gap-1">
             <Filter className="w-3 h-3 text-gray-500" /> Universe:
@@ -1299,8 +1299,8 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       </div>
 
       {/* Main Graph Canvas Container */}
-      <div className="relative flex-1 w-full h-full bg-[#0B0F19]">
-        <div ref={containerRef} className="w-full h-full" />
+      <div className="relative flex-1 w-full h-full bg-enterprise-bg">
+        <div ref={containerRef} className="cytoscape-container w-full h-full" />
 
         {/* Hover Tooltip */}
         {tooltip.visible && (
