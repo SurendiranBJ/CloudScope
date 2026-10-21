@@ -338,6 +338,8 @@ class SnapshotStore:
         snap_dict = cache.get(f"v1:snapshot:{snapshot_id}")
         if isinstance(snap_dict, dict):
             snap = self._dict_to_snapshot(snap_dict)
+            if snap.project_id != get_project_id():
+                return None
             with self._lock:
                 self._history[snap.snapshot_id] = snap
             return snap

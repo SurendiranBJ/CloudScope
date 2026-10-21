@@ -13,6 +13,8 @@ export const apiClient = axios.create({
 
 // Request interceptor: attach bearer token or dev role headers
 apiClient.interceptors.request.use((config) => {
+  const snapshotId = localStorage.getItem('cloudscope_snapshot_view');
+  if (snapshotId) config.headers['X-CloudScope-Snapshot-ID'] = snapshotId;
   const token = localStorage.getItem('cloudscope_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

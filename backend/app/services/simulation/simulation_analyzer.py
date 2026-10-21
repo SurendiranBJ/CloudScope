@@ -73,10 +73,10 @@ def build_desired_analysis(
         r["riskAssessment"] = eval_res
 
     # ── 2. Build desired NetworkX graph using existing local graph builder ─────
-    G_desired = build_local_graph(desired_inventory)
+    G_desired = build_local_graph(desired_inventory, desired_policy_doc_map)
 
     # ── 3. Build current NetworkX graph ───────────────────────────────────────
-    G_current = build_local_graph(current_inventory)
+    G_current = build_local_graph(current_inventory, current_policy_doc_map)
 
     # ── 4. Graph diff ─────────────────────────────────────────────────────────
     graph_diff = compute_graph_diff(G_current, G_desired)
@@ -86,6 +86,13 @@ def build_desired_analysis(
         G_desired,
         inventory=desired_inventory,
         policy_doc_map=desired_policy_doc_map,
+    )
+    # Recompute both sides from the same current snapshot and engine version;
+    # cached paths may belong to an older scan or analysis implementation.
+    current_attack_paths = find_attack_paths(
+        G_current,
+        inventory=current_inventory,
+        policy_doc_map=current_policy_doc_map,
     )
     attack_path_comparison = compare_attack_paths(current_attack_paths, desired_attack_paths)
 
@@ -97,11 +104,12 @@ def build_desired_analysis(
     )
     desired_global_score = desired_global_posture["overall_score"]
 
-    current_global_score = (
-        current_global_posture.get("overall_score", 0)
-        if current_global_posture
-        else 0
+    current_global_posture = compute_global_security_score(
+        current_inventory,
+        current_attack_paths,
+        current_inventory.alerts,
     )
+    current_global_score = current_global_posture["overall_score"]
 
     risk_delta = desired_global_score - current_global_score
     top_reasons = _build_risk_reasons(
@@ -134,30 +142,15 @@ def build_desired_analysis(
         desired_inventory, desired_policy_doc_map, all_desired_resources
     )
     resource_diff = compare_reachable_resources(current_reach, desired_reach)
+    _enrich_resource_diff(
+        resource_diff, current_inventory, desired_inventory,
+        current_policy_doc_map, desired_policy_doc_map,
+        all_resources, all_desired_resources,
+    )
 
     # ── 8. Desired Cytoscape elements for frontend visualization ─────────────
-    desired_elements = []
-    if G_desired:
-        for nid, attr in G_desired.nodes(data=True):
-            desired_elements.append({
-                "data": {
-                    "id": nid,
-                    "label": attr.get("label", nid),
-                    "type": attr.get("type", "Resource"),
-                    "riskScore": attr.get("riskScore", 0),
-                    "arn": attr.get("arn", ""),
-                    "description": attr.get("description", ""),
-                }
-            })
-        for s, t, attr in G_desired.edges(data=True):
-            desired_elements.append({
-                "data": {
-                    "id": f"e-{s}-{t}",
-                    "source": s,
-                    "target": t,
-                    "label": attr.get("label", ""),
-                }
-            })
+    desired_elements = _graph_elements(G_desired)
+    current_elements = _graph_elements(G_current)
 
     # ── 9. Blast radius (accurate unique identities and reachable resources) ──
     blast_comparison = _compute_blast_comparison(
@@ -174,6 +167,7 @@ def build_desired_analysis(
     return {
         "simulation_active": True,
         "graph_diff": graph_diff,
+        "current_elements": current_elements,
         "desired_elements": desired_elements,
         "risk_comparison": risk_comparison,
         "attack_path_comparison": attack_path_comparison,
@@ -181,6 +175,7 @@ def build_desired_analysis(
         "new_reachable_resources": resource_diff["new_reachable"],
         "removed_reachable_resources": resource_diff["removed_reachable"],
         "desired_attack_paths": desired_attack_paths,
+        "current_attack_paths": current_attack_paths,
         "summary": summary,
     }
 
@@ -213,46 +208,78 @@ def build_policy_preview_analysis(
 
     logger.info(f"[SIMULATION PREVIEW] Analyzing proposed change: {proposed_change}")
 
-    # Create a temporary single-change simulation manager
+    # One preview may contain changes to several identities. Validate and
+    # apply each in order so a remove followed by an add is handled correctly.
     temp_mgr = SimulationStateManager()
+    raw_changes = proposed_change if isinstance(proposed_change, list) else [proposed_change]
+    if not raw_changes:
+        raise ValueError("Add at least one policy change before previewing.")
+    if len(raw_changes) > 50:
+        raise ValueError("A single preview can include at most 50 policy changes.")
 
-    action = proposed_change.get("action", "")
-    ptype = proposed_change.get("principal_type", "")
-    pid = proposed_change.get("principal_id", "")
-    parn = proposed_change.get("policy_arn", "")
-
-    if action == "ATTACH_POLICY":
-        temp_mgr.attach_policy(ptype, pid, parn)
-    elif action == "DETACH_POLICY":
-        temp_mgr.detach_policy(ptype, pid, parn)
-    else:
-        return {"error": f"Unsupported action: {action}"}
+    principal_lists = {"USER": current_inventory.users, "ROLE": current_inventory.roles, "GROUP": current_inventory.groups}
+    attached_state: Dict[Tuple[str, str, str], bool] = {}
+    normalized_changes: List[Dict[str, str]] = []
+    for index, raw in enumerate(raw_changes, start=1):
+        action = str(raw.get("action") or "").upper()
+        ptype = str(raw.get("principal_type") or "").upper()
+        pid = str(raw.get("principal_id") or "")
+        parn = str(raw.get("policy_arn") or "")
+        if action not in {"ATTACH_POLICY", "DETACH_POLICY"}:
+            raise ValueError(f"Change {index}: select attach or detach.")
+        principal_list = principal_lists.get(ptype)
+        if principal_list is None:
+            raise ValueError(f"Change {index}: unsupported identity type '{ptype or 'missing'}'.")
+        if not parn.startswith("arn:"):
+            raise ValueError(f"Change {index}: select a valid IAM policy ARN.")
+        entity = next((item for item in principal_list if item.get("name") == pid or item.get("arn") == pid), None)
+        if entity is None:
+            raise ValueError(f"Change {index}: {ptype.lower()} '{pid}' is not present in the current scan.")
+        policy_name = _name_from_arn(parn)
+        attached_names = entity.get("policies", []) if ptype == "USER" else entity.get("attachedPolicies", entity.get("policies", []))
+        attached_arns = entity.get("attachedPolicyArns") or {}
+        state_key = (ptype, pid, policy_name)
+        attached = attached_state.get(state_key, policy_name in attached_names or parn in attached_arns.values())
+        if action == "ATTACH_POLICY" and attached:
+            raise ValueError(f"Change {index}: {policy_name} is already attached to {pid} at this point in the change set.")
+        if action == "DETACH_POLICY" and not attached:
+            raise ValueError(f"Change {index}: {policy_name} is not attached to {pid} at this point in the change set.")
+        attached_state[state_key] = action == "ATTACH_POLICY"
+        if action == "ATTACH_POLICY":
+            temp_mgr.attach_policy(ptype, pid, parn)
+        else:
+            temp_mgr.detach_policy(ptype, pid, parn)
+        normalized_changes.append({"action": action, "principal_type": ptype, "principal_id": pid, "policy_arn": parn, "policy_name": policy_name})
 
     desired_inventory = temp_mgr.get_desired_inventory(current_inventory)
 
     # Ensure the proposed policy document is available
     desired_policy_doc_map = dict(current_policy_doc_map)
-    if parn and _name_from_arn(parn) not in desired_policy_doc_map:
-        # Try to fetch document for preview
+    # Resolve every selected policy document (including AWS-managed ones not
+    # present in the last scan) before calculating the projected permissions.
+    unresolved_names = []
+    for change in normalized_changes:
+        parn, policy_name = change["policy_arn"], change["policy_name"]
+        # Resolve the exact selected ARN even when a same-named policy is
+        # already present in the scan. AWS/customer-managed policies may share
+        # names, and a stale scan document must not silently drive the preview.
+        if parn in desired_policy_doc_map:
+            continue
         try:
             from app.services.aws.iam_service import fetch_policy_document_by_arn
             doc_result = fetch_policy_document_by_arn(parn)
-            if doc_result:
-                desired_policy_doc_map[doc_result["name"]] = doc_result["document"]
-                # Also add to desired inventory policies
-                pol_name = doc_result["name"]
-                if not any(p["name"] == pol_name for p in desired_inventory.policies):
-                    desired_inventory.policies.append({
-                        "name": pol_name,
-                        "arn": parn,
-                        "type": doc_result.get("type", "aws-managed"),
-                        "document": doc_result["document"],
-                        "riskScore": 0,
-                    })
-        except Exception as e:
-            logger.warning(f"[SIMULATION PREVIEW] Could not fetch policy document {parn}: {e}")
+            if doc_result and doc_result.get("document"):
+                desired_policy_doc_map[parn] = doc_result["document"]
+                desired_policy_doc_map.setdefault(doc_result["name"], doc_result["document"])
+                if not any(p.get("arn") == parn for p in desired_inventory.policies):
+                    desired_inventory.policies.append({"name": doc_result["name"], "arn": parn, "type": doc_result.get("type", "aws-managed"), "document": doc_result["document"], "riskScore": 0})
+            else:
+                unresolved_names.append(policy_name)
+        except Exception as exc:
+            logger.warning(f"[SIMULATION PREVIEW] Could not fetch policy doc for {parn}: {exc}")
+            unresolved_names.append(policy_name)
 
-    return build_desired_analysis(
+    result = build_desired_analysis(
         desired_inventory=desired_inventory,
         desired_policy_doc_map=desired_policy_doc_map,
         current_inventory=current_inventory,
@@ -260,20 +287,79 @@ def build_policy_preview_analysis(
         current_attack_paths=current_attack_paths,
         current_global_posture=current_global_posture,
     )
+    result["proposed_change"] = normalized_changes
+    if unresolved_names:
+        result.setdefault("analysis_warnings", []).append(
+            f"Policy document(s) could not be loaded: {', '.join(sorted(set(unresolved_names)))}. Their access and path effects may be missing; refresh the scan or retry."
+        )
+    return result
 
 
 # ─── Private helpers ─────────────────────────────────────────────────────────
 
 def _all_resources(inventory: Any) -> List[Dict[str, Any]]:
-    return (
-        getattr(inventory, "s3", []) +
-        getattr(inventory, "ec2", []) +
-        getattr(inventory, "lambdas", []) +
-        getattr(inventory, "secrets", []) +
-        getattr(inventory, "rds", []) +
-        getattr(inventory, "dynamodb", []) +
-        getattr(inventory, "ecs", []) + getattr(inventory, "ecr", []) + getattr(inventory, "codecommit", [])
-    )
+    fields = ("s3", "ec2", "lambdas", "secrets", "rds", "dynamodb", "ecs", "ecr", "codecommit", "sqs", "sns", "kms", "eks", "stepfunctions")
+    return [resource for field in fields for resource in (getattr(inventory, field, []) or [])]
+
+
+def _graph_elements(graph: Any) -> List[Dict[str, Any]]:
+    elements = []
+    for node_id, attr in graph.nodes(data=True):
+        elements.append({"data": {"id": str(node_id), "label": attr.get("label", str(node_id)), "type": attr.get("type", "Resource"), "riskScore": attr.get("riskScore", 0), "arn": attr.get("arn", ""), "description": attr.get("description", "")}})
+    for index, (source, target, attr) in enumerate(graph.edges(data=True)):
+        elements.append({"data": {"id": f"edge-{index}", "source": str(source), "target": str(target), "label": attr.get("label", "")}})
+    return elements
+
+
+def _enrich_resource_diff(diff: Dict[str, Any], current_inventory: Any, desired_inventory: Any,
+                          current_policy_docs: Dict[str, str], desired_policy_docs: Dict[str, str],
+                          current_resources: List[Dict[str, Any]], desired_resources: List[Dict[str, Any]]) -> None:
+    """Attach resource identity, ARN, region and policy provenance to reachability deltas."""
+    from app.services.simulation.effective_access import compute_effective_access
+
+    def lookups(resources: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        return {str(value): item for item in resources for value in (item.get("id"), item.get("name"), item.get("arn")) if value}
+
+    cur_map, des_map = lookups(current_resources), lookups(desired_resources)
+    cur_access = compute_effective_access(current_inventory, current_policy_docs, current_resources)
+    des_access = compute_effective_access(desired_inventory, desired_policy_docs, desired_resources)
+
+    def access_map(records: List[Dict[str, Any]]) -> Dict[tuple, Dict[str, Any]]:
+        result: Dict[tuple, Dict[str, Any]] = {}
+        for record in records:
+            key = (f"{record.get('identity_type')}:{record.get('identity_name')}", str(record.get("target_resource_id")))
+            entry = result.setdefault(key, {"policy_names": [], "access_details": []})
+            entry["policy_names"] = sorted(set(entry["policy_names"]) | set(record.get("policy_names", [])))
+            evidence = record.get("evidence") or {}
+            detail = {
+                "policy": ", ".join(record.get("policy_names", [])),
+                "action": evidence.get("matched_action") or evidence.get("action"),
+                "reason": evidence.get("reason", ""),
+                "access_path": record.get("access_path", []),
+            }
+            if detail not in entry["access_details"]:
+                entry["access_details"].append(detail)
+        return result
+
+    cur_access_map, des_access_map = access_map(cur_access), access_map(des_access)
+    for bucket, inventory_map, provenance_map in (
+        ("new_reachable", des_map, des_access_map),
+        ("removed_reachable", cur_map, cur_access_map),
+    ):
+        for item in diff.get(bucket, []):
+            key = f"{item.get('identity_type', 'Unknown')}:{item.get('identity', '')}"
+            resource_key = str(item.get("resource_id", ""))
+            resource = inventory_map.get(resource_key, {})
+            access = provenance_map.get((key, resource_key), {})
+            item.update({
+                "name": resource.get("name") or resource.get("id") or resource_key,
+                "type": resource.get("type", "Resource"),
+                "arn": resource.get("arn", ""),
+                "region": resource.get("region", ""),
+                "policy_names": access.get("policy_names", []),
+                "access_details": access.get("access_details", []),
+                "decision": "Newly reachable" if bucket == "new_reachable" else "No longer reachable",
+            })
 
 
 def _build_risk_reasons(

@@ -4,6 +4,23 @@ import { useQuery } from '@tanstack/react-query';
 import { getAvailableRegions, postScanRegion } from '../api/settings';
 import { getRegionFriendlyName } from '../utils/regionNames';
 
+const regionErrorMessage = (error: unknown): string => {
+  const response = error as { response?: { status?: number; data?: { detail?: unknown } }; message?: string };
+  if (response.response?.status === 409) {
+    return 'A scan is already running. Global mode will take effect after the current scan finishes.';
+  }
+  const detail = response.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => {
+      if (item && typeof item === 'object' && 'msg' in item) return String((item as { msg: unknown }).msg);
+      return String(item);
+    }).join('; ');
+  }
+  if (detail && typeof detail === 'object') return Object.values(detail as Record<string, unknown>).map(String).join(' ');
+  return response.message || 'Could not start a scan for the selected region.';
+};
+
 interface RegionSelectorProps {
   /** Current active scan mode from the health endpoint */
   currentMode?: string;
@@ -59,9 +76,8 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
     try {
       await postScanRegion(mode, region);
       onRegionChanged();
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? 'Failed to update scan region';
-      setError(detail);
+    } catch (err: unknown) {
+      setError(regionErrorMessage(err));
       // Revert the dropdown to the previous value
       setPendingCode(currentMode === 'global' ? 'global' : (currentRegion ?? ''));
     } finally {

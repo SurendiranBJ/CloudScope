@@ -494,6 +494,33 @@ def get_latest_snapshot() -> Optional[Dict[str, Any]]:
         return None
 
 
+def get_recent_snapshots(limit: int = 10) -> List[Dict[str, Any]]:
+    """Return retained published snapshots in the active account/project scope."""
+    try:
+        with get_db_session() as session:
+            query = session.query(ScanSnapshotModel)
+            if get_project_id() is None:
+                query = query.filter(ScanSnapshotModel.project_id.is_(None))
+            else:
+                query = query.filter_by(project_id=get_project_id())
+            snapshots = query.order_by(desc(ScanSnapshotModel.published_at)).limit(min(max(1, limit), 10)).all()
+            return [{
+                "snapshot_id": snap.snapshot_id,
+                "scan_id": snap.scan_id,
+                "published_at": snap.published_at,
+                "status": snap.status,
+                "duration_seconds": snap.duration_seconds,
+                "regions": json.loads(snap.regions_json or "{}"),
+                "resource_counts": json.loads(snap.resource_counts_json or "{}"),
+                "finding_counts": json.loads(snap.finding_counts_json or "{}"),
+                "metadata": json.loads(snap.metadata_json or "{}"),
+                "is_current": bool(snap.is_current),
+            } for snap in snapshots]
+    except Exception as e:
+        logger.error("Failed to list retained snapshots: %s", e, exc_info=True)
+        raise DatabaseQueryError(f"Could not load snapshot history: {e}") from e
+
+
 def get_snapshot_id_at_or_before(timestamp: str) -> Optional[str]:
     """Find the newest global snapshot published no later than an event timestamp."""
     try:

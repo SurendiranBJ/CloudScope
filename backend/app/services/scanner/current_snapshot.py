@@ -21,9 +21,9 @@ _UNPINNED = object()
 _request_snapshot: ContextVar[Any] = ContextVar("cloudscope_request_snapshot", default=_UNPINNED)
 
 
-def pin_request_snapshot() -> Token:
-    """Pin one immutable snapshot for all reads made during an API request."""
-    return _request_snapshot.set(snapshot_store.get_current())
+def pin_request_snapshot(snapshot_id: Optional[str] = None) -> Token:
+    """Pin the selected historical snapshot or current snapshot for one request."""
+    return _request_snapshot.set(snapshot_store.get_snapshot(snapshot_id) if snapshot_id else snapshot_store.get_current())
 
 
 def reset_request_snapshot(token: Token) -> None:

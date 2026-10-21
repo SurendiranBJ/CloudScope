@@ -27,6 +27,7 @@ from typing import List
 from app.schemas import (
     APIResponse,
     SimulationChangeRequest,
+    SimulationChangeBatchRequest,
     SimulationPreviewRequest,
 )
 from app.cache import cache
@@ -80,6 +81,16 @@ def _get_current_inventory():
         "secret": inv.secrets,
         "rds": inv.rds,
         "dynamodb": inv.dynamodb,
+        "ecs": inv.ecs,
+        "ecr": inv.ecr,
+        "codecommit": inv.codecommit,
+        "sqs": inv.sqs,
+        "sns": inv.sns,
+        "kms": inv.kms,
+        "eks": inv.eks,
+        "stepfunctions": inv.stepfunctions,
+        "stepfunctionstatemachine": inv.stepfunctions,
+        "stepfunctionstatemachines": inv.stepfunctions,
     }
     for resource in resources:
         resource_type = str(resource.get("type", "")).replace("_", "").replace(" ", "").lower()
@@ -170,6 +181,17 @@ def get_simulation_state(current_user: AuthenticatedUser = Depends(require_analy
     )
 
 
+@router.get("/simulation/groups", response_model=APIResponse[dict])
+def get_simulation_groups(current_user: AuthenticatedUser = Depends(require_analyst)):
+    """Return scanned IAM groups for policy impact simulations."""
+    return APIResponse(
+        success=True,
+        message="Scanned IAM groups",
+        timestamp=utc_now_iso(),
+        data={"groups": get_current_groups() if has_published_snapshot() else []},
+    )
+
+
 @router.post("/simulation/changes", response_model=APIResponse[dict], dependencies=[Depends(rate_limit("simulation"))])
 def add_simulation_change(
     body: SimulationChangeRequest,
@@ -217,7 +239,6 @@ def add_simulation_change(
         ip_address=client_ip,
         metadata={"simulation_action": action, "policy_arn": body.policy_arn}
     )
-
     return APIResponse(
         success=True,
         message=f"Simulation change added: {action} '{policy_name}' to {ptype} '{body.principal_id}'. "
@@ -226,6 +247,54 @@ def add_simulation_change(
         data=change.to_dict(),
     )
 
+
+@router.post("/simulation/changes/batch", response_model=APIResponse[dict], dependencies=[Depends(rate_limit("simulation"))])
+def add_simulation_changes_batch(
+    body: SimulationChangeBatchRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_analyst),
+):
+    """Save multiple analysis changes as drafts; never applies them to AWS."""
+    if not body.changes or len(body.changes) > 50:
+        raise HTTPException(status_code=400, detail="Add between 1 and 50 changes to save as a draft.")
+    owner_id = _simulation_owner(current_user)
+    created = []
+    try:
+        for item in body.changes:
+            action = item.action.upper()
+            ptype = item.principal_type.upper()
+            if action not in {"ATTACH_POLICY", "DETACH_POLICY"}:
+                raise ValueError(f"Unsupported action: {action}")
+            if ptype not in {"USER", "GROUP", "ROLE"}:
+                raise ValueError(f"Unsupported identity type: {ptype}")
+            policy_name = _resolve_policy_name(item.policy_arn)
+            if action == "ATTACH_POLICY":
+                change = simulation_state.attach_policy(ptype, item.principal_id, item.policy_arn, policy_name, owner_id=owner_id)
+            else:
+                change = simulation_state.detach_policy(ptype, item.principal_id, item.policy_arn, policy_name, owner_id=owner_id)
+            created.append(change)
+    except Exception as exc:
+        for change in reversed(created):
+            simulation_state.remove_change(change.change_id, owner_id=owner_id)
+        if isinstance(exc, HTTPException):
+            raise exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=400, detail=str(exc))
+        raise
+
+    client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
+    audit_service.log(
+        action="SIMULATION_EXECUTED", actor_id=current_user.subject,
+        actor_role=current_user.highest_role.value if current_user.highest_role else "UNKNOWN",
+        resource_type="simulation", resource_id="batch", result="SUCCESS", ip_address=client_ip,
+        metadata={"change_count": len(created)},
+    )
+    return APIResponse(
+        success=True,
+        message=f"Saved {len(created)} simulation change(s) as drafts. No AWS changes were made.",
+        timestamp=utc_now_iso(),
+        data={"changes": [change.to_dict() for change in created]},
+    )
 
 @router.delete("/simulation/changes/{change_id}", response_model=APIResponse[dict])
 def remove_simulation_change(change_id: str, current_user: AuthenticatedUser = Depends(require_analyst)):
@@ -238,6 +307,38 @@ def remove_simulation_change(change_id: str, current_user: AuthenticatedUser = D
         message=f"Simulation change '{change_id}' removed.",
         timestamp=utc_now_iso(),
         data={"change_id": change_id, "removed": True},
+    )
+
+
+@router.put("/simulation/changes/{change_id}", response_model=APIResponse[dict], dependencies=[Depends(rate_limit("simulation"))])
+def update_simulation_change(
+    change_id: str,
+    body: SimulationChangeRequest,
+    current_user: AuthenticatedUser = Depends(require_analyst),
+):
+    """Edit one analyst-owned saved simulation change; never mutates AWS."""
+    action = body.action.upper()
+    ptype = body.principal_type.upper()
+    if action not in {"ATTACH_POLICY", "DETACH_POLICY"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
+    if ptype not in {"USER", "GROUP", "ROLE"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported principal_type: {ptype}")
+    if not body.principal_id.strip() or not body.policy_arn.startswith("arn:"):
+        raise HTTPException(status_code=400, detail="Select an identity and a valid policy ARN.")
+    try:
+        change = simulation_state.update_change(
+            change_id, action, ptype, body.principal_id.strip(), body.policy_arn,
+            _resolve_policy_name(body.policy_arn), owner_id=_simulation_owner(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if change is None:
+        raise HTTPException(status_code=404, detail=f"Change '{change_id}' not found")
+    return APIResponse(
+        success=True,
+        message="Saved simulation change updated. No AWS changes were made.",
+        timestamp=utc_now_iso(),
+        data=change,
     )
 
 
@@ -275,20 +376,23 @@ def preview_simulation_change(
     current_attack_paths = get_current_attack_paths()
     current_global_posture = get_current_dashboard().get("globalPosture")
 
-    proposed_change = {
-        "action": body.action.upper(),
-        "principal_type": body.principal_type.upper(),
-        "principal_id": body.principal_id,
-        "policy_arn": body.policy_arn,
-    }
+    if body.changes:
+        proposed_change = [item.model_dump() for item in body.changes]
+    elif body.action and body.principal_type and body.principal_id and body.policy_arn:
+        proposed_change = {"action": body.action.upper(), "principal_type": body.principal_type.upper(), "principal_id": body.principal_id, "policy_arn": body.policy_arn}
+    else:
+        raise HTTPException(status_code=400, detail="Provide one change or a list of changes to preview.")
 
-    analysis = build_policy_preview_analysis(
-        proposed_change=proposed_change,
-        current_inventory=inv,
-        current_policy_doc_map=policy_doc_map,
-        current_attack_paths=current_attack_paths,
-        current_global_posture=current_global_posture,
-    )
+    try:
+        analysis = build_policy_preview_analysis(
+            proposed_change=proposed_change,
+            current_inventory=inv,
+            current_policy_doc_map=policy_doc_map,
+            current_attack_paths=current_attack_paths,
+            current_global_posture=current_global_posture,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
     audit_service.log(
@@ -299,7 +403,7 @@ def preview_simulation_change(
         resource_id=body.principal_id,
         result="SUCCESS",
         ip_address=client_ip,
-        metadata={"action": body.action, "policy_arn": body.policy_arn}
+        metadata={"change_count": len(proposed_change) if isinstance(proposed_change, list) else 1}
     )
 
     return APIResponse(

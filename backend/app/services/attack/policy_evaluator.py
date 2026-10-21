@@ -1529,7 +1529,7 @@ def get_effective_identity_policy_documents(
     )
     for pname in p_policy_names:
         clean = pname.replace("[inline] ", "")
-        doc = policy_doc_map.get(pname) or policy_doc_map.get(clean)
+        doc = _attached_policy_document(principal, clean, policy_doc_map)
         if doc:
             all_docs.append(doc)
 
@@ -1550,7 +1550,7 @@ def get_effective_identity_policy_documents(
             g_pnames = g_obj.get("attachedPolicies", []) + g_obj.get("policies", [])
             for pname in g_pnames:
                 clean = pname.replace("[inline] ", "")
-                doc = policy_doc_map.get(pname) or policy_doc_map.get(clean)
+                doc = _attached_policy_document(g_obj, clean, policy_doc_map)
                 if doc:
                     all_docs.append(doc)
             for in_doc in g_obj.get("inlinePolicyDocuments", {}).values():
@@ -1558,6 +1558,18 @@ def get_effective_identity_policy_documents(
                     all_docs.append(in_doc)
 
     return all_docs
+
+
+def _attached_policy_document(principal: Dict[str, Any], policy_name: str, policy_doc_map: Dict[str, str]) -> Any:
+    """Resolve a managed policy by its attached ARN before falling back to its name.
+
+    AWS managed and customer managed policies can share a name. The ARN stored
+    on the attachment is the identity of the policy and must win over a
+    potentially ambiguous name-only inventory entry.
+    """
+    attached_arns = principal.get("attachedPolicyArns") or principal.get("attached_policy_arns") or {}
+    arn = attached_arns.get(policy_name) if isinstance(attached_arns, dict) else None
+    return (policy_doc_map.get(arn) if arn else None) or policy_doc_map.get(policy_name)
 
 
 class AssumeRolePermResult(tuple):

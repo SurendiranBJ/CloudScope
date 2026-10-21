@@ -91,7 +91,8 @@ def compare_attack_paths(
 ) -> Dict[str, Any]:
     """Compare current and desired attack path lists.
 
-    Uses (source, destination) as the path identity key.
+    Uses the complete ordered node chain as identity. Two different routes to
+    the same target are distinct attack paths and must not be collapsed.
 
     Returns:
         {
@@ -102,7 +103,12 @@ def compare_attack_paths(
         }
     """
     def path_key(p: dict) -> str:
-        return f"{p.get('source', '')}|{p.get('destination', '')}"
+        nodes = p.get("ordered_nodes") or p.get("nodes") or []
+        node_ids = [str(n.get("id", n.get("label", ""))) if isinstance(n, dict) else str(n) for n in nodes]
+        rels = p.get("ordered_relationships") or p.get("orderedRelationships") or []
+        if node_ids:
+            return "|".join(node_ids) + "::" + "|".join(map(str, rels))
+        return f"{p.get('source', '')}|{p.get('destination', p.get('target', ''))}|{p.get('id', '')}"
 
     current_map: Dict[str, Dict[str, Any]] = {path_key(p): p for p in current_paths}
     desired_map: Dict[str, Dict[str, Any]] = {path_key(p): p for p in desired_paths}
@@ -122,7 +128,7 @@ def compare_attack_paths(
     for k in common_keys:
         cp = current_map[k]
         dp = desired_map[k]
-        if cp.get("riskScore", 0) != dp.get("riskScore", 0) or cp.get("severity") != dp.get("severity"):
+        if cp.get("riskScore", cp.get("risk_score", 0)) != dp.get("riskScore", dp.get("risk_score", 0)) or cp.get("severity") != dp.get("severity"):
             changed_paths.append({
                 "current": cp,
                 "desired": dp,

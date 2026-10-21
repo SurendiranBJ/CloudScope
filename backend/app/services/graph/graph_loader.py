@@ -95,13 +95,28 @@ def load_graph_from_neo4j() -> nx.DiGraph:
     return G
 
 
-def build_local_graph(inventory: Any) -> nx.DiGraph:
+def build_local_graph(inventory: Any, policy_doc_map: Optional[Dict[str, str]] = None) -> nx.DiGraph:
     """Build a NetworkX directed graph directly from scan inventory using the exact same
 
     stable unique IDs and policy evaluator rules as Neo4j.
     """
     G = nx.DiGraph()
     logger.info("Building local NetworkX graph from scan inventory using policy evaluator")
+    policy_name_counts: Dict[str, int] = {}
+    for item in getattr(inventory, "policies", []) or []:
+        policy_name_counts[item.get("name", "")] = policy_name_counts.get(item.get("name", ""), 0) + 1
+
+    def policy_node_id(name: str, arn: str = "") -> str:
+        if policy_name_counts.get(name, 0) > 1 and arn:
+            return get_node_id("Policy", f"{name}@{arn}")
+        return get_node_id("Policy", name)
+
+    def attached_policy_node_id(principal: Dict[str, Any], name: str) -> str:
+        arn_map = principal.get("attachedPolicyArns") or principal.get("attached_policy_arns") or {}
+        arn = arn_map.get(name, "") if isinstance(arn_map, dict) else ""
+        if not arn:
+            arn = next((p.get("arn", "") for p in (getattr(inventory, "policies", []) or []) if p.get("name") == name), "")
+        return policy_node_id(name, arn)
 
     if isinstance(inventory, dict):
         inv = AWSInventory()
@@ -292,7 +307,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
 
     # 4. Add Policy nodes
     for p in inventory.policies:
-        p_id = get_node_id("Policy", p['name'])
+        p_id = policy_node_id(p['name'], p.get('arn', ''))
         register_node(
             p_id, [p.get('arn')],
             type='Policy',
@@ -454,7 +469,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             raw_policies = [p['name'] if isinstance(p, dict) else p for p in (u.get('attached_policies') or u.get('attachedPolicies') or [])]
         for p_name in raw_policies:
             clean_name = p_name.replace('[inline] ', '')
-            p_id = get_node_id("Policy", clean_name)
+            p_id = attached_policy_node_id(u, clean_name)
             safe_add_edge(
                 u_id, p_id, 'HAS_POLICY',
                 edge_type='HAS_POLICY',
@@ -473,7 +488,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         clean_policies = [p['name'] if isinstance(p, dict) else p for p in raw_policies]
         for p_name in clean_policies:
             clean_name = p_name.replace('[inline] ', '')
-            p_id = get_node_id("Policy", clean_name)
+            p_id = attached_policy_node_id(g, clean_name)
             safe_add_edge(
                 g_id, p_id, 'HAS_POLICY',
                 edge_type='HAS_POLICY',
@@ -492,7 +507,7 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
         clean_policies = [p['name'] if isinstance(p, dict) else p for p in raw_policies]
         for p_name in clean_policies:
             clean_name = p_name.replace('[inline] ', '')
-            p_id = get_node_id("Policy", clean_name)
+            p_id = attached_policy_node_id(r, clean_name)
             safe_add_edge(
                 r_id, p_id, 'HAS_POLICY',
                 edge_type='HAS_POLICY',
@@ -572,10 +587,12 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
             )
 
     # 7. AssumeRole Trust: Users/Roles -> CAN_ASSUME -> Role
-    _policy_doc_map = {}
+    _policy_doc_map = dict(policy_doc_map or {})
     for _p in inventory.policies:
         if _p.get('name') and _p.get('document'):
-            _policy_doc_map[_p['name']] = _p['document']
+            if _p.get('arn'):
+                _policy_doc_map[_p['arn']] = _p['document']
+            _policy_doc_map.setdefault(_p['name'], _p['document'])
 
     for r in inventory.roles:
         r_id = get_node_id("Role", r['name'])
@@ -656,9 +673,9 @@ def build_local_graph(inventory: Any) -> nx.DiGraph:
     from app.services.attack.policy_evaluator import parse_policy_document, match_action
 
     for p in inventory.policies:
-        p_id = get_node_id("Policy", p['name'])
-        doc = p.get('document', '{}')
         p_arn = p.get('arn', '')
+        p_id = policy_node_id(p['name'], p_arn)
+        doc = (policy_doc_map or {}).get(p_arn) or p.get('document', '{}')
         allowed_res, prov_map, deny_map = evaluate_policy_allows_resources_with_provenance(
             p['name'], p_arn, doc, all_resources, account_id=account_id
         )

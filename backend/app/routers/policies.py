@@ -12,6 +12,7 @@ Two-level design (matching iam_service):
 
 import json
 import logging
+import threading
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Optional
 from datetime import datetime
@@ -19,6 +20,7 @@ from datetime import datetime
 from app.schemas import APIResponse, PolicyCatalogEntry, PaginatedPolicyCatalog
 from app.cache import cache
 from app.services.attack.policy_evaluator import evaluate_policy_document_risk
+from app.services.aws.iam_service import fetch_policy_catalog
 from app.services.scanner.scan_manager import scan_manager
 from app.services.scanner.current_snapshot import (
     get_published_snapshot,
@@ -34,6 +36,8 @@ from app.services.scanner.current_snapshot import (
 from app.security.dependencies import require_viewer
 
 logger = logging.getLogger("scanner")
+_complete_catalog_lock = threading.Lock()
+_COMPLETE_CATALOG_TTL_SECONDS = 60 * 60
 
 router = APIRouter(tags=["Policies"], dependencies=[Depends(require_viewer)])
 
@@ -54,7 +58,28 @@ def get_policy_catalog(
     # Use only data attached to the request's pinned published snapshot.
     snapshot = get_published_snapshot()
     scan_policies = list(snapshot.policies) if snapshot else get_current_policies()
-    catalog_cached = None if snapshot else cache.get("v1:policy_catalog")
+    # The scanned inventory contains policies already attached to identities;
+    # it is not a complete list of policies that an administrator can attach.
+    # Load and cache IAM's full AWS + account managed-policy catalog on demand.
+    catalog_cached = cache.get("v1:complete_policy_catalog")
+    if not catalog_cached:
+        with _complete_catalog_lock:
+            catalog_cached = cache.get("v1:complete_policy_catalog")
+            if not catalog_cached:
+                try:
+                    catalog_cached = fetch_policy_catalog()
+                    if catalog_cached:
+                        cache.set("v1:complete_policy_catalog", catalog_cached, _COMPLETE_CATALOG_TTL_SECONDS)
+                        # Keep existing consumers (e.g. simulation name resolution) aligned.
+                        cache.set("v1:policy_catalog", catalog_cached, _COMPLETE_CATALOG_TTL_SECONDS)
+                        logger.info("Loaded complete IAM policy catalog with %d attachable and non-attachable entries", len(catalog_cached))
+                except Exception as exc:
+                    logger.warning("Could not load the full IAM policy catalog: %s", exc)
+
+    # Retain scanned policies as a fallback for environments whose IAM ListPolicies
+    # permission is restricted. Those rows are merged below, but may not be complete.
+    if not catalog_cached:
+        catalog_cached = cache.get("v1:policy_catalog") or []
 
     # Only trigger an initial scan if genuinely NO snapshot ever existed
     if not scan_policies and catalog_cached is None and not has_published_snapshot():

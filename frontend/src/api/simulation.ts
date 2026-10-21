@@ -16,6 +16,15 @@ export interface SimulationChangePayload {
   policy_arn: string;
 }
 
+export interface SimulationChangeBatchPayload {
+  changes: SimulationChangePayload[];
+}
+
+export const getSimulationGroups = async (): Promise<{ name: string; attachedPolicies?: string[]; attachedPolicyArns?: Record<string, string> }[]> => {
+  const res = await apiClient.get<APIResponse<{ groups: { name: string; attachedPolicies?: string[]; attachedPolicyArns?: Record<string, string> }[] }>>('/simulation/groups');
+  return res.data.data.groups || [];
+};
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 export const getSimulationState = async (): Promise<SimulationState> => {
@@ -30,8 +39,18 @@ export const addSimulationChange = async (change: SimulationChangePayload): Prom
   return res.data.data;
 };
 
+export const addSimulationChanges = async (changes: SimulationChangePayload[]): Promise<SimulationChange[]> => {
+  const res = await apiClient.post<APIResponse<{ changes: SimulationChange[] }>>('/simulation/changes/batch', { changes });
+  return res.data.data.changes || [];
+};
+
 export const removeSimulationChange = async (changeId: string): Promise<void> => {
   await apiClient.delete(`/simulation/changes/${changeId}`);
+};
+
+export const updateSimulationChange = async (changeId: string, change: SimulationChangePayload): Promise<SimulationChange> => {
+  const res = await apiClient.put<APIResponse<SimulationChange>>(`/simulation/changes/${changeId}`, change);
+  return res.data.data;
 };
 
 export const resetSimulation = async (): Promise<void> => {
@@ -41,7 +60,7 @@ export const resetSimulation = async (): Promise<void> => {
 // ── Preview (POST, does NOT persist) ─────────────────────────────────────────
 
 export const previewSimulationChange = async (
-  change: SimulationChangePayload
+  change: SimulationChangePayload | SimulationChangeBatchPayload
 ): Promise<SimulationAnalysis> => {
   const res = await apiClient.post<APIResponse<SimulationAnalysis>>(
     '/simulation/preview',

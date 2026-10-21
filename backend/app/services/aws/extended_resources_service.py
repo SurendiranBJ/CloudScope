@@ -2,7 +2,9 @@
 
 import concurrent.futures
 import logging
+import time
 from typing import Any, Dict, List
+from botocore.config import Config
 
 from app.services.aws.region_cache import RegionalCollectionResult, get_all_regions, make_region_sessions
 from app.services.aws.session import get_boto_config, get_account_id
@@ -98,53 +100,107 @@ def collect_messaging_and_workflow_resources() -> Dict[str, RegionalCollectionRe
     This deliberately collects configuration and policy documents only; it never
     reads queue messages, topic payloads, state-machine input, or key material.
     """
-    def collect_kind(kind: str) -> RegionalCollectionResult:
-        def collect(session, region):
-            client_name = {"SQS": "sqs", "SNS": "sns", "KMS": "kms", "EKS": "eks", "StepFunctions": "stepfunctions"}[kind]
-            client = session.client(client_name, region_name=region, config=get_boto_config())
-            result = []
-            if kind == "SQS":
-                urls = [url for page in client.get_paginator("list_queues").paginate() for url in page.get("QueueUrls", [])]
-                for url in urls:
-                    attrs = client.get_queue_attributes(QueueUrl=url, AttributeNames=["All"]).get("Attributes", {})
-                    name = url.rsplit("/", 1)[-1]
-                    result.append({"id": attrs.get("QueueArn", url), "name": name, "type": kind, "arn": attrs.get("QueueArn", ""), "region": region, "owner": attrs.get("QueueArn", "").split(":")[4] if attrs.get("QueueArn") else "", "details": {"queue_url": url, "resource_policy": attrs.get("Policy"), "resource_policy_status": "COLLECTED" if attrs.get("Policy") else "NO_POLICY", "kms_master_key_id": attrs.get("KmsMasterKeyId")}})
-            elif kind == "SNS":
-                topics = [arn for page in client.get_paginator("list_topics").paginate() for arn in page.get("Topics", [])]
-                for arn in topics:
-                    attrs = client.get_topic_attributes(TopicArn=arn).get("Attributes", {})
-                    result.append({"id": arn, "name": arn.rsplit(":", 1)[-1], "type": kind, "arn": arn, "region": region, "owner": attrs.get("Owner", ""), "details": {"resource_policy": attrs.get("Policy"), "resource_policy_status": "COLLECTED" if attrs.get("Policy") else "NO_POLICY", "kms_master_key_id": attrs.get("KmsMasterKeyId")}})
-            elif kind == "KMS":
-                key_ids = [item["KeyId"] for page in client.get_paginator("list_keys").paginate() for item in page.get("Keys", [])]
-                for key_id in key_ids:
-                    meta = client.describe_key(KeyId=key_id).get("KeyMetadata", {})
-                    if meta.get("KeyManager") != "CUSTOMER":
-                        continue
-                    arn = meta.get("Arn", "")
-                    policy = None
-                    policy_status = "ERROR"
-                    try:
-                        policy = client.get_key_policy(KeyId=key_id, PolicyName="default").get("Policy")
-                        policy_status = "COLLECTED" if policy else "NO_POLICY"
-                    except Exception as exc:
-                        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
-                        policy_status = "ACCESS_DENIED" if code in {"AccessDeniedException", "AccessDenied"} else "ERROR"
-                    result.append({"id": arn or key_id, "name": meta.get("Description") or key_id, "type": kind, "arn": arn, "region": region, "owner": meta.get("AWSAccountId", ""), "details": {"key_id": key_id, "key_state": meta.get("KeyState"), "key_usage": meta.get("KeyUsage"), "resource_policy": policy, "resource_policy_status": policy_status}})
-            elif kind == "EKS":
-                names = [name for page in client.get_paginator("list_clusters").paginate() for name in page.get("clusters", [])]
-                for name in names:
-                    cluster = client.describe_cluster(name=name).get("cluster", {})
-                    result.append({"id": cluster.get("arn", name), "name": name, "type": kind, "arn": cluster.get("arn", ""), "region": region, "owner": cluster.get("arn", "").split(":")[4] if cluster.get("arn") else "", "details": {"status": cluster.get("status"), "version": cluster.get("version"), "role_arn": cluster.get("roleArn"), "endpoint": cluster.get("endpoint")}})
-            else:
-                arns = [arn for page in client.get_paginator("list_state_machines").paginate() for arn in page.get("stateMachines", []) if arn.get("stateMachineArn")]
-                for item in arns:
-                    arn = item["stateMachineArn"]
-                    machine = client.describe_state_machine(stateMachineArn=arn)
-                    result.append({"id": arn, "name": machine.get("name", arn.rsplit(":", 1)[-1]), "type": kind, "arn": arn, "region": region, "owner": arn.split(":")[4] if len(arn.split(":")) > 4 else "", "details": {"state_machine_type": machine.get("type"), "status": machine.get("status"), "role_arn": machine.get("roleArn")}})
-            return result
-        return _collect_by_region(kind, collect)
+    started_at = time.perf_counter()
+    regions = get_all_regions()
+    sessions = make_region_sessions(regions)
+    kinds = ("SQS", "SNS", "KMS", "EKS", "StepFunctions")
+    results = {kind: [] for kind in kinds}
+    statuses = {kind: {} for kind in kinds}
+    failures = {kind: [] for kind in kinds}
+    successes = {kind: [] for kind in kinds}
 
-    return {kind: collect_kind(kind) for kind in ("SQS", "SNS", "KMS", "EKS", "StepFunctions")}
+    def collect(kind: str, region: str):
+        session = sessions[region]
+        client_name = {"SQS": "sqs", "SNS": "sns", "KMS": "kms", "EKS": "eks", "StepFunctions": "stepfunctions"}[kind]
+        client = session.client(
+            client_name,
+            region_name=region,
+            config=Config(connect_timeout=2, read_timeout=5, retries={"total_max_attempts": 1}),
+        )
+        found = []
+        if kind == "SQS":
+            urls = [url for page in client.get_paginator("list_queues").paginate() for url in page.get("QueueUrls", [])]
+            for url in urls:
+                attrs = client.get_queue_attributes(QueueUrl=url, AttributeNames=["All"]).get("Attributes", {})
+                name = url.rsplit("/", 1)[-1]
+                arn = attrs.get("QueueArn", "")
+                found.append({"id": arn or url, "name": name, "type": kind, "arn": arn, "region": region, "owner": arn.split(":")[4] if arn else "", "details": {"queue_url": url, "resource_policy": attrs.get("Policy"), "resource_policy_status": "COLLECTED" if attrs.get("Policy") else "NO_POLICY", "kms_master_key_id": attrs.get("KmsMasterKeyId")}})
+        elif kind == "SNS":
+            topics = [arn for page in client.get_paginator("list_topics").paginate() for arn in page.get("Topics", [])]
+            for arn in topics:
+                attrs = client.get_topic_attributes(TopicArn=arn).get("Attributes", {})
+                found.append({"id": arn, "name": arn.rsplit(":", 1)[-1], "type": kind, "arn": arn, "region": region, "owner": attrs.get("Owner", ""), "details": {"resource_policy": attrs.get("Policy"), "resource_policy_status": "COLLECTED" if attrs.get("Policy") else "NO_POLICY", "kms_master_key_id": attrs.get("KmsMasterKeyId")}})
+        elif kind == "KMS":
+            key_ids = [item["KeyId"] for page in client.get_paginator("list_keys").paginate() for item in page.get("Keys", [])]
+            for key_id in key_ids:
+                meta = client.describe_key(KeyId=key_id).get("KeyMetadata", {})
+                if meta.get("KeyManager") != "CUSTOMER":
+                    continue
+                arn = meta.get("Arn", "")
+                policy, policy_status = None, "ERROR"
+                try:
+                    policy = client.get_key_policy(KeyId=key_id, PolicyName="default").get("Policy")
+                    policy_status = "COLLECTED" if policy else "NO_POLICY"
+                except Exception as exc:
+                    code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+                    policy_status = "ACCESS_DENIED" if code in {"AccessDeniedException", "AccessDenied"} else "ERROR"
+                found.append({"id": arn or key_id, "name": meta.get("Description") or key_id, "type": kind, "arn": arn, "region": region, "owner": meta.get("AWSAccountId", ""), "details": {"key_id": key_id, "key_state": meta.get("KeyState"), "key_usage": meta.get("KeyUsage"), "resource_policy": policy, "resource_policy_status": policy_status}})
+        elif kind == "EKS":
+            names = [name for page in client.get_paginator("list_clusters").paginate() for name in page.get("clusters", [])]
+            for name in names:
+                cluster = client.describe_cluster(name=name).get("cluster", {})
+                arn = cluster.get("arn", "")
+                found.append({"id": arn or name, "name": name, "type": kind, "arn": arn, "region": region, "owner": arn.split(":")[4] if arn else "", "details": {"status": cluster.get("status"), "version": cluster.get("version"), "role_arn": cluster.get("roleArn"), "endpoint": cluster.get("endpoint")}})
+        else:
+            machines = [item for page in client.get_paginator("list_state_machines").paginate() for item in page.get("stateMachines", []) if item.get("stateMachineArn")]
+            for item in machines:
+                arn = item["stateMachineArn"]
+                machine = client.describe_state_machine(stateMachineArn=arn)
+                found.append({"id": arn, "name": machine.get("name", arn.rsplit(":", 1)[-1]), "type": kind, "arn": arn, "region": region, "owner": arn.split(":")[4] if len(arn.split(":")) > 4 else "", "details": {"state_machine_type": machine.get("type"), "status": machine.get("status"), "role_arn": machine.get("roleArn")}})
+        return found
+
+    def collect_region(region: str):
+        region_results = {}
+        for kind in kinds:
+            try:
+                found = collect(kind, region)
+                region_results[kind] = (found, None)
+            except Exception as exc:
+                region_results[kind] = ([], exc)
+        return region, region_results
+
+    # Keep the five service checks for each region together. This lets all
+    # regions progress at once instead of queuing 90 separate service-region
+    # jobs through a small pool.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(18, max(1, len(regions)))) as executor:
+        futures = {executor.submit(collect_region, region): region for region in regions}
+        for future in concurrent.futures.as_completed(futures):
+            region = futures[future]
+            try:
+                region, region_results = future.result()
+                for kind, (found, error) in region_results.items():
+                    if error:
+                        logger.warning("%s inventory failed in %s: %s", kind, region, error)
+                        statuses[kind][region] = "failed"
+                        failures[kind].append(region)
+                        continue
+                    results[kind].extend(found)
+                    statuses[kind][region] = "success" if found else "empty"
+                    successes[kind].append(region)
+            except Exception as exc:
+                logger.warning("Extended AWS inventory failed in %s: %s", region, exc)
+                for kind in kinds:
+                    statuses[kind][region] = "failed"
+                    failures[kind].append(region)
+
+    collected = {kind: RegionalCollectionResult(results[kind], statuses[kind], successes[kind], failures[kind]) for kind in kinds}
+    logger.info(
+        "Extended AWS inventory completed in %.2fs across %d region(s) (%s)",
+        time.perf_counter() - started_at,
+        len(regions),
+        ", ".join(f"{kind}: {len(collected[kind].items)}" for kind in kinds),
+    )
+    return collected
 
 
 def collect_ecs_tasks() -> RegionalCollectionResult:

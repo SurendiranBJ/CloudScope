@@ -8,6 +8,8 @@ import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
 import { SecurityNoticeBanner } from './components/SecurityNoticeBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { SnapshotViewProvider } from './context/SnapshotViewContext';
+import { SnapshotViewBanner } from './components/SnapshotViewBanner';
 
 const Dashboard = lazy(async () => ({ default: (await import('./pages/Dashboard')).Dashboard }));
 const Resources = lazy(async () => ({ default: (await import('./pages/Resources')).Resources }));
@@ -30,6 +32,7 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
+        <SnapshotViewProvider>
         <AuthProvider>
           <ScanLifecycleProvider>
             <Router>
@@ -41,6 +44,7 @@ function App() {
               <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
                 {/* Top Navigation */}
                 <Navbar onSearchChange={setSearchQuery} />
+                <SnapshotViewBanner />
 
                 {/* Global Security Notices (Rate limit countdown, 403 alerts, 500 error request_id) */}
                 <SecurityNoticeBanner />
@@ -71,6 +75,7 @@ function App() {
           </Router>
         </ScanLifecycleProvider>
       </AuthProvider>
+        </SnapshotViewProvider>
     </ThemeProvider>
   </QueryClientProvider>
   );

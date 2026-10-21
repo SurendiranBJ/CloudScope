@@ -140,10 +140,31 @@ async def prometheus_metrics_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def published_snapshot_middleware(request: Request, call_next):
-    """Keep security-data reads in one request on one published version."""
+    """Pin each request to one published version, optionally in historical view mode."""
     if not request.url.path.startswith("/api/v1/"):
         return await call_next(request)
-    return await call_next(request)
+    selected_id = request.headers.get("X-CloudScope-Snapshot-ID", "").strip()
+    if selected_id and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "detail": "Historical snapshot view is read-only. Exit snapshot view to make changes."},
+        )
+    if selected_id and request.url.path.startswith("/api/v1/simulation/"):
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "detail": "What-If analysis uses the active scan. Exit historical view before opening simulation data."},
+        )
+    from app.services.scanner.current_snapshot import pin_request_snapshot, reset_request_snapshot
+    token = pin_request_snapshot(selected_id or None)
+    if selected_id:
+        from app.services.scanner.snapshot_store import snapshot_store
+        if snapshot_store.get_snapshot(selected_id) is None:
+            reset_request_snapshot(token)
+            return JSONResponse(status_code=404, content={"success": False, "detail": "Snapshot not found in this account or retention window."})
+    try:
+        return await call_next(request)
+    finally:
+        reset_request_snapshot(token)
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +273,8 @@ from app.routers import (
     audit,
     operations,
     health,
-    session
+    session,
+    snapshots
 )
 
 # Mount Routers under /api/v1
@@ -276,6 +298,7 @@ api_v1_router.include_router(audit.router)
 api_v1_router.include_router(operations.router)
 api_v1_router.include_router(health.router)
 api_v1_router.include_router(session.router)
+api_v1_router.include_router(snapshots.router)
 
 app.include_router(api_v1_router)
 

@@ -26,6 +26,7 @@ from app.services.attack.policy_evaluator import (
     evaluate_assume_role_trust_with_evidence,
     check_resource_explicitly_denied,
     get_effective_identity_policy_documents,
+    _attached_policy_document,
 )
 from app.services.attack.constants import MAX_ROLE_HOPS
 
@@ -73,7 +74,7 @@ def compute_effective_access(
         # 1a. Direct user policies
         for pname in user.get("policies", []):
             clean_name = pname.replace("[inline] ", "")
-            doc = policy_doc_map.get(pname) or policy_doc_map.get(clean_name)
+            doc = _attached_policy_document(user, clean_name, policy_doc_map)
             if not doc:
                 continue
             parn = (user.get("attachedPolicyArns") or {}).get(clean_name, "")
@@ -95,7 +96,7 @@ def compute_effective_access(
 
         # Evaluate each source against all resources
         for pname, parn, chain, rel_chain in access_sources:
-            doc = policy_doc_map.get(pname) or policy_doc_map.get(pname.replace("[inline] ", ""))
+            doc = _attached_policy_document(user, pname.replace("[inline] ", ""), policy_doc_map)
             if not doc:
                 continue
             matched, prov_map, _ = evaluate_policy_allows_resources_with_provenance(
@@ -536,7 +537,7 @@ def _build_group_policy_map(
         entries = []
         for pname in g.get("attachedPolicies", []):
             clean = pname.replace("[inline] ", "")
-            doc = policy_doc_map.get(pname) or policy_doc_map.get(clean, "")
+            doc = _attached_policy_document(g, clean, policy_doc_map) or ""
             parn = (g.get("attachedPolicyArns") or {}).get(clean, "")
             if doc:
                 entries.append((pname, doc, parn))
@@ -556,7 +557,7 @@ def _build_role_policy_map(
         entries = []
         for pname in r.get("attachedPolicies", []):
             clean = pname.replace("[inline] ", "")
-            doc = policy_doc_map.get(pname) or policy_doc_map.get(clean, "")
+            doc = _attached_policy_document(r, clean, policy_doc_map) or ""
             parn = (r.get("attachedPolicyArns") or {}).get(clean, "")
             if doc:
                 entries.append((pname, doc, parn))

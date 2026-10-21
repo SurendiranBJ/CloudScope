@@ -2,14 +2,26 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, Trash2, RotateCcw, Plus, Minus,
-  Activity, Shield, ChevronRight, RefreshCw, ArrowRight,
-  TrendingUp, TrendingDown, Minus as MdMinus
+  AlertTriangle, Trash2, RotateCcw, Plus, Minus, Activity, Shield, ChevronRight, RefreshCw, ArrowRight,
+  TrendingUp, TrendingDown, Minus as MdMinus, Check, Pencil, Play, X
 } from 'lucide-react';
 import {
-  getSimulationState, resetSimulation, removeSimulationChange, getSimulationRisk
+  getSimulationState, resetSimulation, removeSimulationChange, getSimulationRisk, addSimulationChange,
+  getSimulationGroups, previewSimulationChange, updateSimulationChange, type SimulationChangePayload
 } from '../api/simulation';
-import type { SimulationChange } from '../types';
+import { getIAMUsers } from '../api/users';
+import { getIAMRoles } from '../api/roles';
+import { getPolicyCatalog } from '../api/policies';
+import type { SimulationAnalysis, SimulationChange } from '../types';
+import { useState } from 'react';
+
+function getErrorText(error: unknown): string {
+  const value = error as { response?: { data?: { detail?: unknown } }; message?: string };
+  const detail = value.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map((item) => typeof item === 'object' && item && 'msg' in item ? String(item.msg) : String(item)).join('; ');
+  return value.message || 'The request failed. Check the server connection and try again.';
+}
 
 function DeltaBadge({ delta }: { delta: number }) {
   if (delta > 0) return (
@@ -83,6 +95,28 @@ function ChangeRow({ change, onRemove }: { change: SimulationChange; onRemove: (
 
 export const Changes: React.FC = () => {
   const qc = useQueryClient();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState<SimulationChangePayload | null>(null);
+  const [analysis, setAnalysis] = useState<SimulationAnalysis | null>(null);
+  const [analysisError, setAnalysisError] = useState('');
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [addValue, setAddValue] = useState<SimulationChangePayload>({ action: 'ATTACH_POLICY', principal_type: 'USER', principal_id: '', policy_arn: '' });
+  const [policySearch, setPolicySearch] = useState('');
+
+  const { data: editInputs } = useQuery({
+    queryKey: ['simulation-edit-inputs'],
+    queryFn: async () => {
+      const first = await getPolicyCatalog({ page: 1, page_size: 1000 });
+      const rest = first.total_pages > 1
+        ? await Promise.all(Array.from({ length: first.total_pages - 1 }, (_, i) => getPolicyCatalog({ page: i + 2, page_size: 1000 })))
+        : [];
+      const [users, roles, groups] = await Promise.all([getIAMUsers(), getIAMRoles(), getSimulationGroups()]);
+      return { policies: [...first.items, ...rest.flatMap((page) => page.items)].filter((p) => p.isAttachable && p.arn), users, roles, groups };
+    },
+    enabled: !!editingId || adding,
+    staleTime: 60_000,
+  });
 
   const { data: simState, isLoading } = useQuery({
     queryKey: ['simulation-state'],
@@ -100,6 +134,7 @@ export const Changes: React.FC = () => {
   const resetMutation = useMutation({
     mutationFn: resetSimulation,
     onSuccess: () => {
+      setAnalysis(null); setAnalysisError('');
       qc.invalidateQueries({ queryKey: ['simulation-state'] });
       qc.invalidateQueries({ queryKey: ['simulation-risk'] });
     },
@@ -108,6 +143,25 @@ export const Changes: React.FC = () => {
   const removeMutation = useMutation({
     mutationFn: removeSimulationChange,
     onSuccess: () => {
+      setAnalysis(null); setAnalysisError('');
+      qc.invalidateQueries({ queryKey: ['simulation-state'] });
+      qc.invalidateQueries({ queryKey: ['simulation-risk'] });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, change }: { id: string; change: SimulationChangePayload }) => updateSimulationChange(id, change),
+    onSuccess: () => {
+      setEditingId(null); setEditValue(null); setAnalysis(null);
+      qc.invalidateQueries({ queryKey: ['simulation-state'] });
+      qc.invalidateQueries({ queryKey: ['simulation-risk'] });
+    },
+  });
+
+  const addMutation = useMutation({
+    mutationFn: addSimulationChange,
+    onSuccess: () => {
+      setAdding(false); setAddValue({ action: 'ATTACH_POLICY', principal_type: 'USER', principal_id: '', policy_arn: '' }); setAnalysis(null);
       qc.invalidateQueries({ queryKey: ['simulation-state'] });
       qc.invalidateQueries({ queryKey: ['simulation-risk'] });
     },
@@ -115,6 +169,27 @@ export const Changes: React.FC = () => {
 
   const changes: SimulationChange[] = simState?.changes ?? [];
   const pendingCount = simState?.pending_changes ?? 0;
+  const identityOptions = [
+    ...(editInputs?.users ?? []).map((x) => ({ type: 'USER' as const, id: x.name, label: `User · ${x.name}` })),
+    ...(editInputs?.roles ?? []).map((x) => ({ type: 'ROLE' as const, id: x.name, label: `Role · ${x.name}` })),
+    ...(editInputs?.groups ?? []).map((x) => ({ type: 'GROUP' as const, id: x.name, label: `Group · ${x.name}` })),
+  ];
+  const matchingEditPolicies = (editInputs?.policies ?? []).filter((policy) => {
+    const q = policySearch.trim().toLowerCase();
+    return !q || `${policy.name} ${policy.arn} ${policy.type}`.toLowerCase().includes(q);
+  });
+  const runSavedAnalysis = async () => {
+    if (!changes.length) return;
+    if (changes.length > 50) { setAnalysisError('This saved set has more than 50 changes. Remove or split changes before running one preview.'); return; }
+    setAnalysisLoading(true); setAnalysisError('');
+    try {
+      setAnalysis(await previewSimulationChange({ changes: changes.map(({ action, principal_type, principal_id, policy_arn }) => ({ action, principal_type, principal_id, policy_arn })) }));
+    } catch (error) {
+      const value = error as { response?: { data?: { detail?: unknown } }; message?: string };
+      const detail = value.response?.data?.detail;
+      setAnalysisError(typeof detail === 'string' ? detail : value.message || 'The saved change set could not be analyzed.');
+    } finally { setAnalysisLoading(false); }
+  };
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -134,16 +209,24 @@ export const Changes: React.FC = () => {
             <div>
               <h1 className="text-xl font-bold text-white flex items-center gap-2">
                 <Activity className="w-5 h-5 text-amber-400" />
-                Pending Simulation Changes
+                Saved Changes
               </h1>
               <p className="text-xs text-enterprise-subtext mt-0.5">
-                {pendingCount} pending change{pendingCount !== 1 ? 's' : ''} — 
-                {pendingCount === 0 ? ' application reflects real AWS current state' : ' desired state diverges from real AWS'}
+                {pendingCount} saved change{pendingCount !== 1 ? 's' : ''} in this draft set — edit and re-run the analysis at any time
               </p>
             </div>
 
-            {pendingCount > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {pendingCount > 0 && <button
+                onClick={runSavedAnalysis}
+                disabled={analysisLoading}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-enterprise-accent text-white text-sm font-semibold disabled:opacity-50"
+              ><Play className="w-4 h-4" />{analysisLoading ? 'Analyzing…' : 'Run analysis'}</button>}
               <button
+                onClick={() => { setAdding((value) => !value); setEditingId(null); setEditValue(null); setPolicySearch(''); }}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-enterprise-accent/40 text-enterprise-accent text-sm font-semibold hover:bg-enterprise-accent/10"
+              ><Plus className="w-4 h-4" />Add change</button>
+              {pendingCount > 0 && <button
                 id="reset-simulation-btn"
                 onClick={() => resetMutation.mutate()}
                 disabled={resetMutation.isPending}
@@ -151,8 +234,8 @@ export const Changes: React.FC = () => {
               >
                 <RotateCcw className="w-4 h-4" />
                 Reset Simulation
-              </button>
-            )}
+              </button>}
+            </div>
           </div>
 
           {/* Risk comparison */}
@@ -206,6 +289,26 @@ export const Changes: React.FC = () => {
             </motion.div>
           )}
 
+          {analysisError && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{analysisError}</div>}
+          {analysis && <section className="rounded-xl border border-enterprise-accent/30 bg-enterprise-card p-4 space-y-3">
+            <div className="flex items-center justify-between"><div><h2 className="font-semibold text-white">Latest saved-set analysis</h2><p className="text-xs text-enterprise-subtext">Recalculated against the current scan · simulation only</p></div><button onClick={() => setAnalysis(null)} aria-label="Dismiss analysis" className="p-1 text-enterprise-subtext hover:text-white"><X className="h-4 w-4" /></button></div>
+            {analysis.risk_comparison && <div className="grid gap-2 sm:grid-cols-3"><div className="rounded-lg bg-enterprise-bg p-3 text-sm">Current posture <strong className="float-right">{analysis.risk_comparison.current_score}/100</strong></div><div className="rounded-lg bg-enterprise-bg p-3 text-sm">Projected posture <strong className="float-right">{analysis.risk_comparison.desired_score}/100</strong></div><div className="rounded-lg bg-enterprise-bg p-3 text-sm">Posture change <strong className="float-right">{analysis.risk_comparison.delta > 0 ? '+' : ''}{analysis.risk_comparison.delta}</strong></div></div>}
+            <div className="flex flex-wrap gap-4 text-xs"><span className="text-red-300">{analysis.attack_path_comparison?.new_paths?.length ?? 0} added paths</span><span className="text-emerald-300">{analysis.attack_path_comparison?.removed_paths?.length ?? 0} removed paths</span><span className="text-amber-200">{analysis.new_reachable_resources?.length ?? 0} newly reachable assets</span></div>
+            {analysis.analysis_warnings?.map((warning) => <p key={warning} className="text-xs text-amber-200">{warning}</p>)}
+          </section>}
+
+          {adding && <section className="rounded-xl border border-enterprise-accent/30 bg-enterprise-card p-4">
+            <h2 className="mb-3 font-semibold text-white">Add a change to this saved set</h2>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-enterprise-subtext">Change type<select value={addValue.action} onChange={(e) => setAddValue({ ...addValue, action: e.target.value as SimulationChangePayload['action'] })} className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white"><option value="ATTACH_POLICY">Attach policy</option><option value="DETACH_POLICY">Detach policy</option></select></label>
+              <label className="text-xs text-enterprise-subtext">Identity<select value={`${addValue.principal_type}:${addValue.principal_id}`} onChange={(e) => { const target = identityOptions.find((x) => `${x.type}:${x.id}` === e.target.value); if (target) setAddValue({ ...addValue, principal_type: target.type, principal_id: target.id }); }} className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white"><option value="">Choose an identity</option>{identityOptions.map((x) => <option key={`${x.type}:${x.id}`} value={`${x.type}:${x.id}`}>{x.label}</option>)}</select></label>
+              <label className="text-xs text-enterprise-subtext sm:col-span-2">Find a policy<input value={policySearch} onChange={(e) => setPolicySearch(e.target.value)} placeholder="Search policy name or ARN" className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white placeholder:text-enterprise-subtext" /></label>
+              <label className="text-xs text-enterprise-subtext sm:col-span-2">Policy<select value={addValue.policy_arn} onChange={(e) => setAddValue({ ...addValue, policy_arn: e.target.value })} className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white"><option value="">Choose a policy ({matchingEditPolicies.length} matches)</option>{matchingEditPolicies.map((policy) => <option key={policy.arn} value={policy.arn}>{policy.name} · {policy.type}</option>)}</select></label>
+              <div className="flex gap-2 sm:col-span-2"><button onClick={() => addMutation.mutate(addValue)} disabled={addMutation.isPending || !addValue.principal_id || !addValue.policy_arn} className="inline-flex items-center gap-2 rounded-lg bg-enterprise-accent px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Check className="h-4 w-4" />{addMutation.isPending ? 'Adding…' : 'Add to saved set'}</button><button onClick={() => { setAdding(false); addMutation.reset(); }} className="rounded-lg border border-enterprise-border px-3 py-2 text-xs text-enterprise-subtext">Cancel</button></div>
+              {addMutation.isError && <p role="alert" className="text-xs text-red-300 sm:col-span-2">{getErrorText(addMutation.error)}</p>}
+            </div>
+          </section>}
+
           {/* Changes list */}
           {isLoading ? (
             <div className="flex items-center justify-center h-32 text-enterprise-subtext">
@@ -216,9 +319,8 @@ export const Changes: React.FC = () => {
               <Shield className="w-10 h-10" />
               <p className="text-sm font-medium">No simulation changes</p>
               <p className="text-xs text-center max-w-xs">
-                Application reflects real AWS current state. Go to{' '}
-                <Link to="/policies" className="text-enterprise-accent hover:underline">Policies</Link>{' '}
-                to attach/detach policies and simulate changes.
+                Saved change sets will appear here for later review. Start in{' '}
+                <Link to="/simulation" className="text-enterprise-accent hover:underline">What‑If Analysis</Link>.
               </p>
             </div>
           ) : (
@@ -226,11 +328,18 @@ export const Changes: React.FC = () => {
               <p className="text-xs text-enterprise-subtext uppercase tracking-wider">Simulation Changes</p>
               <AnimatePresence mode="popLayout">
                 {changes.map(change => (
-                  <ChangeRow
-                    key={change.change_id}
-                    change={change}
-                    onRemove={() => removeMutation.mutate(change.change_id)}
-                  />
+                  <div key={change.change_id} className="space-y-2">
+                    <ChangeRow change={change} onRemove={() => removeMutation.mutate(change.change_id)} />
+                    {editingId === change.change_id && editValue && <div className="grid gap-3 rounded-xl border border-enterprise-accent/25 bg-enterprise-card p-4 sm:grid-cols-2">
+                      <label className="text-xs text-enterprise-subtext">Change type<select value={editValue.action} onChange={(e) => setEditValue({ ...editValue, action: e.target.value as SimulationChangePayload['action'] })} className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white"><option value="ATTACH_POLICY">Attach policy</option><option value="DETACH_POLICY">Detach policy</option></select></label>
+                      <label className="text-xs text-enterprise-subtext">Identity<select value={`${editValue.principal_type}:${editValue.principal_id}`} onChange={(e) => { const target = identityOptions.find((x) => `${x.type}:${x.id}` === e.target.value); if (target) setEditValue({ ...editValue, principal_type: target.type, principal_id: target.id }); }} className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white">{identityOptions.map((x) => <option key={`${x.type}:${x.id}`} value={`${x.type}:${x.id}`}>{x.label}</option>)}</select></label>
+                      <label className="text-xs text-enterprise-subtext sm:col-span-2">Find a policy<input value={policySearch} onChange={(e) => setPolicySearch(e.target.value)} placeholder="Search policy name or ARN" className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white placeholder:text-enterprise-subtext" /></label>
+                      <label className="text-xs text-enterprise-subtext sm:col-span-2">Policy<select value={editValue.policy_arn} onChange={(e) => setEditValue({ ...editValue, policy_arn: e.target.value })} className="mt-1 block w-full rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-sm text-white">{!matchingEditPolicies.some((policy) => policy.arn === editValue.policy_arn) && <option value={editValue.policy_arn}>{change.policy_name} · currently saved</option>}{matchingEditPolicies.map((policy) => <option key={policy.arn} value={policy.arn}>{policy.name} · {policy.type}</option>)}</select></label>
+                      <div className="flex gap-2 sm:col-span-2"><button onClick={() => updateMutation.mutate({ id: change.change_id, change: editValue })} disabled={updateMutation.isPending || !editValue.policy_arn || !editValue.principal_id} className="inline-flex items-center gap-2 rounded-lg bg-enterprise-accent px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"><Check className="h-4 w-4" />{updateMutation.isPending ? 'Saving…' : 'Save edit'}</button><button onClick={() => { setEditingId(null); setEditValue(null); }} className="rounded-lg border border-enterprise-border px-3 py-2 text-xs text-enterprise-subtext">Cancel</button></div>
+                      {updateMutation.isError && <p role="alert" className="text-xs text-red-300 sm:col-span-2">{getErrorText(updateMutation.error)}</p>}
+                    </div>}
+                    {editingId !== change.change_id && <button onClick={() => { setEditingId(change.change_id); setEditValue({ action: change.action, principal_type: change.principal_type, principal_id: change.principal_id, policy_arn: change.policy_arn }); }} className="ml-12 inline-flex items-center gap-1 text-xs text-enterprise-accent hover:underline"><Pencil className="h-3 w-3" />Edit saved change</button>}
+                  </div>
                 ))}
               </AnimatePresence>
             </div>

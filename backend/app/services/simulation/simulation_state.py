@@ -215,6 +215,36 @@ class SimulationStateManager:
         logger.warning(f"[SIMULATION] Change not found for removal: {change_id}")
         return False
 
+    def update_change(self, change_id: str, action: str, principal_type: str, principal_id: str,
+                      policy_arn: str, policy_name: Optional[str] = None,
+                      owner_id: str = "default") -> Optional[dict]:
+        """Edit one saved simulation change without applying it to AWS."""
+        updated = SimulationChange(action, principal_type, principal_id, policy_arn, policy_name)
+        updated.change_id = change_id
+        if self._persistent:
+            from app.persistence.database import get_db_session
+            from app.persistence.models import SimulationChangeModel
+            from app.services.project_context import get_project_id
+            with get_db_session() as db:
+                row = db.query(SimulationChangeModel).filter_by(
+                    change_id=change_id, owner_id=owner_id, project_id=get_project_id()
+                ).one_or_none()
+                if row is None:
+                    return None
+                row.action = updated.action
+                row.principal_type = updated.principal_type
+                row.principal_id = updated.principal_id
+                row.policy_arn = updated.policy_arn
+                row.policy_name = updated.policy_name
+                row.timestamp = updated.timestamp
+                return updated.to_dict()
+        with self._lock:
+            old = self._changes.get(change_id)
+            if old is None or self._change_owners.get(change_id, "default") != owner_id:
+                return None
+            self._changes[change_id] = updated
+            return updated.to_dict()
+
     def reset(self, owner_id: str = "default"):
         """Clear only the current analyst's pending simulation changes."""
         if self._persistent:
@@ -301,6 +331,11 @@ class SimulationStateManager:
         desired.secrets = copy.deepcopy(current_inventory.secrets)
         desired.rds = copy.deepcopy(current_inventory.rds)
         desired.dynamodb = copy.deepcopy(current_inventory.dynamodb)
+        # Preserve every scanned service in the projected state. If these
+        # lists are omitted, simulations make the assets disappear from the
+        # desired graph and can report false removals / lost reachability.
+        for field in ("ecs", "ecr", "codecommit", "sqs", "sns", "kms", "eks", "stepfunctions"):
+            setattr(desired, field, copy.deepcopy(getattr(current_inventory, field, [])))
         desired.findings = copy.deepcopy(current_inventory.findings)
         desired.alerts = copy.deepcopy(current_inventory.alerts)
 

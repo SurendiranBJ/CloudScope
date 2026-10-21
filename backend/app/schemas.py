@@ -384,12 +384,18 @@ class SimulationChangeRequest(BaseModel):
     policy_arn: str
 
 
+class SimulationChangeBatchRequest(BaseModel):
+    """Multiple local attach/detach changes saved as one draft set."""
+    changes: List[SimulationChangeRequest]
+
+
 class SimulationPreviewRequest(BaseModel):
     """Request body for POST /simulation/preview — does NOT persist the change."""
-    action: str
-    principal_type: str
-    principal_id: str
-    policy_arn: str
+    action: Optional[str] = None
+    principal_type: Optional[str] = None
+    principal_id: Optional[str] = None
+    policy_arn: Optional[str] = None
+    changes: Optional[List[SimulationChangeRequest]] = None
 
 
 # ─── Graph Diff ──────────────────────────────────────────────────────────────

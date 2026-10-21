@@ -140,6 +140,7 @@ export interface AttackPath {
   description: string;
   reason?: string;
   source?: string;
+  source_asset?: string;
   destination?: string;
   target?: string;
   diffStatus?: 'new' | 'removed' | 'changed' | 'unchanged' | string;
@@ -469,14 +470,27 @@ export interface SimulationAnalysis {
   simulation_active: boolean;
   pending_changes?: number;
   graph_diff?: GraphDiff;
+  current_elements?: any[];
   desired_elements?: any[];
+  current_attack_paths?: AttackPath[];
+  desired_attack_paths?: AttackPath[];
+  proposed_change?: { action: string; principal_type: string; principal_id: string; policy_arn: string; policy_name?: string }[];
+  analysis_warnings?: string[];
   risk_comparison?: RiskComparison;
   attack_path_comparison?: AttackPathComparison;
   blast_radius_comparison?: BlastRadiusComparison;
-  new_reachable_resources?: { id?: string; name?: string; type?: string; riskScore?: number; identity?: string; identity_type?: string; resource_id?: string }[];
-  removed_reachable_resources?: { id?: string; name?: string; type?: string; riskScore?: number; identity?: string; identity_type?: string; resource_id?: string }[];
+  new_reachable_resources?: SimulationResourceDelta[];
+  removed_reachable_resources?: SimulationResourceDelta[];
   summary?: string;
   simulation_note?: string;
+}
+
+export interface SimulationResourceDelta {
+  id?: string; name?: string; type?: string; riskScore?: number;
+  identity?: string; identity_type?: string; resource_id?: string;
+  arn?: string; region?: string; policy_names?: string[]; access_path?: string[];
+  decision?: string; matched_action?: string; access_reason?: string;
+  access_details?: { policy: string; action?: string | string[]; reason?: string; access_path?: string[] }[];
 }
 
 // ─── Relationships ────────────────────────────────────────────────────────────

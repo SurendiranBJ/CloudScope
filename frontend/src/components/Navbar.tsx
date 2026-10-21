@@ -4,6 +4,10 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useScanLifecycle } from '../hooks/useScanLifecycle.ts';
 import { useAuth } from '../context/AuthContext';
 import { ThemeToggle } from './ThemeToggle';
+import { useQuery } from '@tanstack/react-query';
+import { Clock3, Check, X } from 'lucide-react';
+import { getSnapshotHistory } from '../api/snapshots';
+import { useSnapshotView } from '../context/SnapshotViewContext';
 
 interface NavbarProps {
   onSearchChange?: (val: string) => void;
@@ -14,6 +18,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
   const location = useLocation();
   const isDashboard = location.pathname === '/' || location.pathname === '/dashboard';
   const [showProfile, setShowProfile] = useState(false);
+  const [showSnapshots, setShowSnapshots] = useState(false);
+  const { snapshotId, selectSnapshot, exitSnapshot } = useSnapshotView();
+  const { data: snapshots = [], isLoading: snapshotsLoading, isError: snapshotsError } = useQuery({ queryKey: ['snapshot-history'], queryFn: getSnapshotHistory, staleTime: 60_000 });
   const { currentUser, isAuthenticated } = useAuth();
   const roleLabel = isAuthenticated ? 'Signed in' : 'Not authenticated';
 
@@ -41,7 +48,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
       {/* Right Controls */}
       <div className="flex items-center gap-4">
         {/* Global Scan Status Indicator: shown on subpages only to prevent duplicate on Dashboard */}
-        {!isDashboard && isScanning ? (
+        <div className="relative">
+          <button type="button" onClick={() => setShowSnapshots((value) => !value)} className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors ${snapshotId ? 'border-amber-400/40 bg-amber-400/10 text-amber-200' : 'border-enterprise-border text-enterprise-subtext hover:bg-enterprise-bg hover:text-white'}`}><Clock3 className="h-3.5 w-3.5" />Snapshots <span className="rounded bg-black/15 px-1.5 py-0.5">{snapshots.length}/10</span></button>
+          {showSnapshots && <div className="absolute right-0 top-full z-50 mt-2 w-[min(24rem,90vw)] overflow-hidden rounded-xl border border-enterprise-border bg-enterprise-card shadow-2xl"><div className="flex items-center justify-between border-b border-enterprise-border px-3 py-2.5"><div><p className="text-sm font-semibold text-white">Snapshot history</p><p className="text-[10px] text-enterprise-subtext">Choose a saved scan to browse the app as it was then.</p></div><button type="button" aria-label="Close snapshot history" onClick={() => setShowSnapshots(false)} className="rounded p-1 text-enterprise-subtext hover:text-white"><X className="h-4 w-4" /></button></div><div className="max-h-[65vh] overflow-y-auto p-1.5">{snapshotsLoading ? <p className="p-4 text-xs text-enterprise-subtext">Loading snapshots…</p> : snapshotsError ? <p className="p-4 text-xs text-rose-300">Snapshot history could not be loaded.</p> : snapshots.length ? snapshots.map((snapshot) => <button key={snapshot.snapshot_id} type="button" onClick={() => { if (snapshot.is_current) exitSnapshot(); else selectSnapshot(snapshot.snapshot_id); setShowSnapshots(false); }} className={`block w-full rounded-lg px-3 py-2.5 text-left hover:bg-enterprise-bg ${snapshotId === snapshot.snapshot_id ? 'bg-amber-400/10' : ''}`}><span className="flex items-center justify-between gap-2"><code className="font-mono text-xs font-bold text-white">{snapshot.snapshot_id}</code><span className="flex items-center gap-1 text-[10px] text-emerald-300">{snapshot.is_current ? 'Current · live' : snapshot.status}{snapshotId === snapshot.snapshot_id && <Check className="h-3 w-3" />}</span></span><span className="mt-1 block text-[10px] text-enterprise-subtext">{new Date(snapshot.published_at).toLocaleString()} · {Object.values(snapshot.resource_counts || {}).reduce((a, b) => a + (Number(b) || 0), 0)} resources</span></button>) : <p className="p-4 text-xs text-enterprise-subtext">No retained snapshots are available yet.</p>}</div>{snapshotId && <button type="button" onClick={() => { exitSnapshot(); setShowSnapshots(false); }} className="w-full border-t border-enterprise-border px-3 py-2.5 text-left text-xs font-semibold text-amber-200 hover:bg-amber-400/10">Exit historical view and return to live data</button>}</div>}
+        </div>
+        {!snapshotId && !isDashboard && isScanning ? (
           <button
             type="button"
             onClick={() => navigate('/')}
@@ -54,7 +65,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onSearchChange }) => {
             </span>
             <span>Scanning</span>
           </button>
-        ) : !isDashboard && (hasCompletedSnapshot || scanJustCompleted) ? (
+        ) : !snapshotId && !isDashboard && (hasCompletedSnapshot || scanJustCompleted) ? (
           <button
             type="button"
             onClick={() => navigate('/')}
