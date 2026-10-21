@@ -63,6 +63,15 @@ def reset_region_cache_state(monkeypatch):
     clear_region_cache()
 
 
+@pytest.fixture(autouse=True)
+def mock_extended_scan_collectors():
+    """New inventory collectors are mocked in scanner orchestration tests."""
+    with patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecs_tasks", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecr_repositories", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_codecommit_repositories", return_value=[]):
+        yield
+
+
 # 1. empty SCAN_REGIONS triggers dynamic DescribeRegions discovery
 def test_1_empty_scan_regions_triggers_dynamic_discovery(monkeypatch):
     monkeypatch.setattr(settings, "SCAN_REGIONS", "")

@@ -6,7 +6,14 @@ export interface SnapshotHistoryItem {
   published_at: string;
   status: string;
   duration_seconds?: number;
-  regions: Record<string, unknown>;
+  regions: {
+    scan_mode?: string;
+    scanned_regions?: string[];
+    resolved_regions?: string[];
+    successful_regions?: string[];
+    failed_regions?: string[];
+    [key: string]: unknown;
+  };
   resource_counts: Record<string, number>;
   finding_counts: Record<string, number>;
   metadata: Record<string, unknown>;

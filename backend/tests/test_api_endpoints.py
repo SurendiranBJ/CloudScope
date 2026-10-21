@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 from app.main import app
@@ -187,7 +188,7 @@ def test_risk_assessment_endpoint():
 def test_alerts_and_correlated_risks_endpoints():
     cache.set("v1:alerts", [{
         "id": "alert-1",
-        "timestamp": "2026-08-29T12:00:00Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "severity": "critical",
         "resource": "AdminRole",
         "description": "AssumeRole executed by alice",

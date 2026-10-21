@@ -443,6 +443,9 @@ class TestIdentityGraphResources:
              patch("app.services.aws.secrets_service.collect_secrets", return_value=[]), \
              patch("app.services.aws.rds_service.collect_rds_instances", return_value=[]), \
              patch("app.services.aws.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecs_tasks", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecr_repositories", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_codecommit_repositories", return_value=[]), \
              patch("app.services.aws.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
              patch("app.services.aws.cloudtrail_service.collect_recent_alerts", return_value=[]):
 
@@ -529,6 +532,9 @@ class TestIdentityGraphResources:
              patch("app.services.aws.secrets_service.collect_secrets", return_value=[]), \
              patch("app.services.aws.rds_service.collect_rds_instances", return_value=[]), \
              patch("app.services.aws.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecs_tasks", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecr_repositories", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_codecommit_repositories", return_value=[]), \
              patch("app.services.aws.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
              patch("app.services.aws.cloudtrail_service.collect_recent_alerts", return_value=[]):
 
@@ -657,6 +663,9 @@ class TestIdentityGraphResources:
              patch("app.services.aws.secrets_service.collect_secrets", return_value=[]), \
              patch("app.services.aws.rds_service.collect_rds_instances", return_value=[]), \
              patch("app.services.aws.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecs_tasks", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecr_repositories", return_value=[]), \
+             patch("app.services.scanner.scan_manager.extended_resources_service.collect_codecommit_repositories", return_value=[]), \
              patch("app.services.aws.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
              patch("app.services.aws.cloudtrail_service.collect_recent_alerts", return_value=[]):
 

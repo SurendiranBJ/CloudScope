@@ -192,7 +192,7 @@ class TestGeminiProvider:
                     security_context={}
                 ))
 
-    def test_invalid_json_raises_validation_error(self):
+    def test_plain_text_model_response_is_preserved_with_limitation(self):
         provider = GeminiProvider(api_key="test_key_mock")
 
         mock_response = MagicMock()
@@ -204,11 +204,13 @@ class TestGeminiProvider:
             mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
             mock_get_client.return_value = mock_client
 
-            with pytest.raises(AIResponseValidationError):
-                asyncio.run(provider.generate_security_response(
-                    prompt="Analyze",
-                    security_context={}
-                ))
+            result = asyncio.run(provider.generate_security_response(
+                prompt="Analyze",
+                security_context={}
+            ))
+
+        assert result.analysis == "This is not JSON at all."
+        assert result.limitations
 
 
 class TestProviderFactory:

@@ -43,7 +43,18 @@ def get_security_alerts(
         raise HTTPException(status_code=400, detail="page_size must be between 1 and 200.")
 
     raw_alerts = get_current_alerts()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    # Historical snapshots must be evaluated against their own publication time,
+    # otherwise their alerts disappear as they age beyond the live seven-day window.
+    reference_time = datetime.now(timezone.utc)
+    snapshot_published_at = get_current_snapshot_published_at()
+    if snapshot_published_at:
+        try:
+            reference_time = datetime.fromisoformat(str(snapshot_published_at).replace("Z", "+00:00"))
+            if reference_time.tzinfo is None:
+                reference_time = reference_time.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            reference_time = datetime.now(timezone.utc)
+    cutoff = reference_time - timedelta(days=7)
     data = []
     if raw_alerts:
         import json
@@ -63,7 +74,7 @@ def get_security_alerts(
                     event_time = datetime.fromisoformat(str(norm.get("timestamp", "")).replace("Z", "+00:00"))
                     if event_time.tzinfo is None:
                         event_time = event_time.replace(tzinfo=timezone.utc)
-                    if event_time < cutoff:
+                    if event_time < cutoff or event_time > reference_time:
                         continue
                 except (TypeError, ValueError):
                     pass

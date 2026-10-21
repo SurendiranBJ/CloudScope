@@ -34,6 +34,15 @@ def clean_cache():
     cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def mock_extended_scan_collectors():
+    """Keep scan orchestration tests isolated from developer AWS credentials."""
+    with patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecs_tasks", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecr_repositories", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_codecommit_repositories", return_value=[]):
+        yield
+
+
 class TestScanIAMReconciliation:
 
     @patch("app.services.scanner.scan_manager.get_aws_diagnostic_info", return_value={"authenticated": True, "account_id": "160198386750", "arn": "arn:aws:iam::160198386750:root", "region": "us-east-1"})

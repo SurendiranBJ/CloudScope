@@ -143,7 +143,10 @@ async def published_snapshot_middleware(request: Request, call_next):
     """Pin each request to one published version, optionally in historical view mode."""
     if not request.url.path.startswith("/api/v1/"):
         return await call_next(request)
-    selected_id = request.headers.get("X-CloudScope-Snapshot-ID", "").strip()
+    # Keep history reachable even when the browser has a stale selected ID.
+    # Otherwise the middleware rejects the history request itself, preventing
+    # users from selecting a retained snapshot or exiting historical mode.
+    selected_id = "" if request.url.path == "/api/v1/snapshots/history" else request.headers.get("X-CloudScope-Snapshot-ID", "").strip()
     if selected_id and request.method not in {"GET", "HEAD", "OPTIONS"}:
         return JSONResponse(
             status_code=409,
@@ -155,7 +158,7 @@ async def published_snapshot_middleware(request: Request, call_next):
             content={"success": False, "detail": "What-If analysis uses the active scan. Exit historical view before opening simulation data."},
         )
     from app.services.scanner.current_snapshot import pin_request_snapshot, reset_request_snapshot
-    token = pin_request_snapshot(selected_id or None)
+    token = pin_request_snapshot(selected_id) if selected_id else pin_request_snapshot()
     if selected_id:
         from app.services.scanner.snapshot_store import snapshot_store
         if snapshot_store.get_snapshot(selected_id) is None:

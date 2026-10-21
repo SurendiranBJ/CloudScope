@@ -48,7 +48,10 @@ class TestAuditLogging:
         token = create_token(sub="admin-audit-user", roles=["ADMINISTRATOR"])
         headers = {"Authorization": f"Bearer {token}"}
 
-        with patch("app.services.scanner.scan_coordinator.scan_coordinator.request_scan"):
+        with patch(
+            "app.services.scanner.scan_coordinator.scan_coordinator.request_scan",
+            return_value={"status": "STARTED", "scan_id": "scan-region-test"},
+        ):
             resp = client.post(
                 "/api/v1/settings/scan-region",
                 json={"mode": "single", "region": "us-west-2"},

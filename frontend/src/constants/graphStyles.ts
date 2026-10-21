@@ -61,7 +61,9 @@ export const normalizeGraphType = (type?: string): CanonicalGraphType => {
   if (clean === 'rds' || clean === 'aurora' || clean === 'auroradbuser' || clean === 'database' || clean === 'rdbms' || clean === 'aws:rds' || clean.includes('rds') || clean.includes('aurora')) return 'RDS';
   if (clean === 'dynamodb' || clean === 'dynamo' || clean === 'table' || clean === 'dynamodbtable' || clean === 'aws:dynamodb' || clean.includes('dynamo')) return 'DynamoDB';
   if (clean === 'ecs' || clean.includes('ecs')) return 'ECS';
-  if (clean === 'ecr' || clean.includes('ecr')) return 'ECR';
+  // Match ECR as a service token, not any word containing the letters "ecr"
+  // (for example, "secret" contains that substring).
+  if (clean === 'ecr' || clean === 'aws:ecr' || clean.includes('ecrrepository') || /(^|[^a-z0-9])ecr([^a-z0-9]|$)/.test(clean)) return 'ECR';
   if (clean === 'codecommit' || clean.includes('codecommit')) return 'CodeCommit';
   if (clean === 'sqs' || clean.includes('sqs')) return 'SQS';
   if (clean === 'sns' || clean.includes('sns')) return 'SNS';

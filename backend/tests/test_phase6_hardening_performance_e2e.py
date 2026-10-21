@@ -51,6 +51,15 @@ from app.services.attack.cloudtrail_correlator import correlate_activity_with_gr
 from app.routers.reports import _compute_reports_from_cache
 
 
+@pytest.fixture(autouse=True)
+def mock_extended_scan_collectors():
+    """Avoid contacting AWS for newly registered collectors in scan unit tests."""
+    with patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecs_tasks", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecr_repositories", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_codecommit_repositories", return_value=[]):
+        yield
+
+
 @pytest.fixture
 def client():
     return TestClient(app)

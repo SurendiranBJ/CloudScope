@@ -146,6 +146,8 @@ def update_scan_region(
             trigger_type="REGION_CHANGE",
             created_by=current_user.subject,
         )
+        if not isinstance(scan_result, dict):
+            scan_result = {}
         if scan_result.get("status") != "STARTED":
             previous_mode = previous.get("mode")
             if previous_mode == "single" and previous.get("selected_region"):
@@ -158,7 +160,10 @@ def update_scan_region(
                     status_code=409,
                     detail="Another scan started at the same time. Wait for it to finish, then change the scan region.",
                 )
-            raise HTTPException(status_code=503, detail=scan_result.get("message", "Could not start a scan for the selected region."))
+            message = scan_result.get("message")
+            if not isinstance(message, str) or not message:
+                message = "Could not start a scan for the selected region."
+            raise HTTPException(status_code=503, detail=message)
     except Exception as e:
         if isinstance(e, HTTPException):
             raise

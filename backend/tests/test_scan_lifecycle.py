@@ -55,6 +55,9 @@ def mock_scan_environment(users=None, roles=None, regions=None, failed_regions=N
          patch("app.services.aws.secrets_service.collect_secrets", return_value=[]), \
          patch("app.services.aws.rds_service.collect_rds_instances", return_value=[]), \
          patch("app.services.aws.dynamodb_service.collect_dynamodb_tables", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecs_tasks", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_ecr_repositories", return_value=[]), \
+         patch("app.services.scanner.scan_manager.extended_resources_service.collect_codecommit_repositories", return_value=[]), \
          patch("app.services.aws.access_analyzer_service.collect_access_analyzer_findings", return_value=[]), \
          patch("app.services.aws.cloudtrail_service.collect_recent_alerts", return_value=[]):
         yield
@@ -73,7 +76,7 @@ def test_1_2_3_4_scan_starts_generates_id_and_sets_scanning_discovery():
         assert status["scan_id"] == res["scan_id"]
         assert status["scan_status"] == "SCANNING"
         assert status["active_phase"] == "INITIALIZING"
-        assert status["total_collectors"] == 12
+        assert status["total_collectors"] == len(ALL_COLLECTOR_NAMES)
         assert status["completed_collectors"] == 0
         assert status["collector_status"]["IAM_Users"] == "PENDING"
 

@@ -1,5 +1,6 @@
 import pytest
 import time
+from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 
@@ -55,7 +56,16 @@ def _reset_scan_manager():
 def clean_state():
     cache.clear()
     _reset_scan_manager()
-    yield
+    catalog = [{
+        "arn": "arn:aws:iam::123456789012:policy/SecurityAuditPolicy",
+        "name": "SecurityAuditPolicy",
+        "type": "customer-managed",
+        "isAttachable": True,
+        "attachmentCount": 2,
+        "riskScore": 25,
+    }]
+    with patch("app.routers.policies.fetch_policy_catalog", return_value=catalog):
+        yield
     cache.clear()
     _reset_scan_manager()
 
@@ -157,10 +167,13 @@ def seed_published_snapshot(
             "riskScore": 95,
         }
     ]
+    alert_timestamp = (
+        datetime.fromisoformat(published_at.replace("Z", "+00:00")) - timedelta(minutes=2)
+    ).isoformat().replace("+00:00", "Z")
     alerts = alerts_list if alerts_list is not None else [
         {
             "id": "alert-snap-100-1",
-            "timestamp": "2026-09-26T11:58:00Z",
+            "timestamp": alert_timestamp,
             "resource": "arn:aws:iam::123456789012:user/audit-user",
             "description": "Unauthorized Access Attempt Observed in CloudTrail",
             "severity": "high",
