@@ -12,6 +12,7 @@ import type { CytoscapeElement, EffectiveAccessRecord } from '../api/graph';
 import { formatRegion } from '../utils/regionNames';
 import type { NodeData, EdgeData } from './NodeDetailsPanel';
 import { ENTITY_STYLES, CANONICAL_FILTER_COLORS, normalizeGraphType } from '../constants/graphStyles';
+import { useTheme } from '../context/ThemeContext';
 
 // Register dagre layout extension
 cytoscape.use(dagre);
@@ -124,6 +125,10 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
   activeAttackPath = [],
   onClearFocus
 }) => {
+  const { isDark } = useTheme();
+  const graphBackground = isDark ? '#0B1120' : '#F8FAFC';
+  const graphLabelColor = isDark ? '#F3F4F6' : '#1E293B';
+  const graphEdgeLabelColor = isDark ? '#CBD5E1' : '#475569';
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
 
@@ -620,7 +625,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
             'font-family': 'Inter, sans-serif',
             'font-size': '11px',
             'font-weight': 'bold',
-            'color': '#F3F4F6',
+            'color': graphLabelColor,
             'text-valign': 'bottom',
             'text-margin-y': 8,
             'background-color': '#1E293B',
@@ -630,7 +635,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
             'height': '42px',
             'transition-property': 'background-color, border-color, border-width, opacity, width, height',
             'transition-duration': 0.25,
-            'text-background-color': '#0F172A',
+            'text-background-color': graphBackground,
             'text-background-opacity': 0.85,
             'text-background-padding': '3px',
             'text-background-shape': 'roundrectangle'
@@ -783,8 +788,8 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
             'font-family': 'Inter, monospace',
             'font-size': '9px',
             'font-weight': 'bold',
-            'color': '#CBD5E1',
-            'text-background-color': '#0F172A',
+            'color': graphEdgeLabelColor,
+            'text-background-color': graphBackground,
             'text-background-opacity': 0.85,
             'text-background-padding': '2px',
             'text-background-shape': 'roundrectangle',
@@ -1064,7 +1069,7 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [transformedGraph]);
+  }, [transformedGraph, isDark, graphBackground, graphEdgeLabelColor, graphLabelColor]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // 4. APPLY FOCUS & DIMMING SYSTEM (Synchronized across selection)
@@ -1205,12 +1210,12 @@ export const IdentityGraph: FC<IdentityGraphProps> = ({
 
   const handleExportPNG = useCallback(() => {
     if (!cyRef.current) return;
-    const png = cyRef.current.png({ full: true, bg: '#0B0F19', scale: 2 });
+    const png = cyRef.current.png({ full: true, bg: graphBackground, scale: 2 });
     const a = document.createElement('a');
     a.href = png;
     a.download = `cloudscope-identity-graph-${new Date().toISOString().slice(0, 10)}.png`;
     a.click();
-  }, []);
+  }, [graphBackground]);
 
   const toggleFilter = (type: string) => {
     setActiveFilters(prev => ({ ...prev, [type]: !prev[type] }));

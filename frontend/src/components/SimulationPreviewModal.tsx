@@ -82,7 +82,7 @@ export const SimulationPreviewModal: React.FC<SimulationPreviewModalProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 10 }}
           transition={{ duration: 0.2 }}
-          className="relative w-full max-w-3xl bg-[#0F172A] border border-gray-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col my-8 max-h-[90vh]"
+          className="relative w-full max-w-3xl bg-enterprise-card border border-enterprise-border rounded-2xl shadow-2xl overflow-hidden flex flex-col my-8 max-h-[90vh]"
         >
           {/* TOP BANNER: SIMULATION ONLY */}
           <div className="bg-amber-500/15 border-b border-amber-500/30 px-6 py-2.5 flex items-center justify-between text-amber-300 text-xs font-semibold uppercase tracking-wider">

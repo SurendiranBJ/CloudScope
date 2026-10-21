@@ -1,25 +1,28 @@
 # Secret Management and Data Handling
 
-## AWS access
+## AWS credentials
 
-CloudScope application collection is designed to use AWS read APIs. Configure the backend's AWS principal as read-only; code-level intent is not an IAM boundary. The deployment scans the account returned by the configured profile or default AWS credential chain. Avoid long-lived access keys where workload roles or short-lived profiles are available. Never commit AWS credentials.
+CloudScope uses the AWS credentials configured on the backend and analyzes the account returned by that identity. Prefer workload identity, federation or short-lived profiles over long-lived IAM user keys. Do not place credentials in frontend variables, source control, screenshots or issue attachments. For local Compose, the AWS credentials directory is mounted read-only; use a dedicated read-only scanner principal and verify its account with STS.
 
-## What-if simulation
+The UI does not currently register accounts or assume a user-selected role. Separate accounts require separate backend deployments and independently protected credential sources.
 
-Simulation drafts are persisted in relational storage and scoped by authenticated issuer and subject. They are application-side what-if changes only. They are not executed against AWS and do not update the AWS graph. Protect the database and its backups because drafts can reveal intended permission changes.
+## What-If Analysis
+
+Simulation changes are persisted in SQL and scoped to the authenticated analyst. They may reveal intended permission changes, identity names and policy ARNs, so protect the database, exports and backups. They are proposals only: simulation does not send IAM mutation requests to AWS or change the published live graph.
 
 ## AI provider data
 
-AI explanations send selected cloud inventory/finding/attack-path context to the configured Gemini provider. Do not enable the feature for sensitive customer data until the organization has approved provider terms, retention, residency, consent, and data-minimization behavior. The AI response is advisory and must be checked against source evidence.
+When an AI explanation is requested, selected scan inventory/finding/attack-path/alert context is sent by the backend to the configured Gemini provider. Do not enable the feature for sensitive customer data until provider terms, retention, residency, consent, minimization and organizational policy have been reviewed. AI output is advisory.
 
-## Credential and secret redaction
+## Redaction and logging
 
-The sanitizer attempts to detect common AWS access keys, tokens, Gemini keys, private keys, and sensitive dictionary fields before logging or AI dispatch. Redaction is defense in depth, not a guarantee that every possible secret format is caught. Do not store secret values in resource tags, policy descriptions, logs, or finding notes.
+Application sanitizers try to identify common AWS keys/tokens, Gemini credentials, private keys and sensitive dictionary fields before logging or AI dispatch. This is defense in depth, not a guarantee for every possible value or encoding. Keep secret values out of resource tags, descriptions, finding notes, prompts and audit metadata.
 
 ## Operational handling
 
-- Inject secrets from a managed secret store for deployed environments.
-- Keep .env files local and excluded from Git.
-- Rotate credentials if they may have appeared in logs or working copies.
-- Restrict access to SQL snapshots, audit records, project ExternalIds, Redis, Neo4j, and backups.
-- Verify actual IAM permissions and network access independently of CloudScope.
+- Inject secrets from a managed secret store in deployed environments.
+- Keep `.env` local and excluded from Git; replace every example value.
+- Rotate any credential suspected to have appeared in logs or a working copy.
+- Restrict access to SQL snapshots, Redis, Neo4j, logs, exports and backups.
+- Protect user identity data and resource metadata under the organization's data retention and residency rules.
+- Recheck actual AWS permissions and network controls independently of CloudScope.

@@ -56,7 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.2 }}
-                className="font-bold text-lg bg-gradient-to-r from-white via-gray-200 to-enterprise-accent bg-clip-text text-transparent truncate"
+                className="font-bold text-lg bg-gradient-to-r from-enterprise-text via-enterprise-subtext to-enterprise-accent bg-clip-text text-transparent truncate"
               >
                 CloudScope
               </motion.span>

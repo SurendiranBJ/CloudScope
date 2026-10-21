@@ -1,114 +1,197 @@
 # CloudScope
 
-CloudScope is an AWS cloud security posture and identity analysis application. It collects cloud configuration through AWS APIs, evaluates a supported subset of IAM policy semantics, builds an identity and resource graph, and presents findings, attack paths, and evidence in a React web interface.
+CloudScope is an AWS security analysis application for inventorying selected cloud resources, modeling IAM access relationships, identifying configuration-based attack paths, tracking findings, and comparing proposed IAM policy changes. It combines a FastAPI backend, a React/TypeScript single-page application, AWS read APIs, relational snapshots, Redis coordination/cache, and graph analysis with NetworkX and Neo4j.
 
-> **Project status:** CloudScope is an actively developed academic and portfolio prototype. It is not currently certified or validated for production or shared multi-customer hosting. See Industry readiness and the current audit for verified capabilities and open work.
+> **Project status:** CloudScope is an actively developed security-analysis prototype and portfolio project. It has not been independently security-certified or validated as a production managed service. It does not cover every AWS service or every AWS authorization rule. See [Industry readiness](docs/industry-readiness.md), [Current audit](docs/final-audit.md), and [Release readiness](docs/release-readiness.md) before evaluating it for deployment.
 
-## What it does
+## Product purpose
 
-- Scans the AWS account available to the backend through its configured AWS profile or default credential chain.
-- Collects IAM identities, policies, and supported cloud resources; scan results include partial/failure information where available.
-- Builds a graph of identities, policies, relationships, and reachable resources.
-- Reports potential static attack paths separately from activity corroborated by CloudTrail data.
-- Displays finding evidence, lifecycle status, remediation guidance, scan provenance, and risk summaries.
-- Provides what-if IAM policy simulations. Drafts are stored in the application database, scoped to an analyst, and are never applied to AWS.
-- Offers optional evidence-based AI explanations through the configured Gemini provider. Selected scan context is sent to this provider; use it only where your data policy permits.
-- Stores scan snapshots and operational records in relational storage, uses Redis for coordination/cache, and uses Neo4j with NetworkX graph analysis.
+CloudScope is intended to help a cloud administrator answer questions such as:
 
-## Architecture
+- Which IAM users, groups, roles, policies, and supported AWS resources were collected?
+- Which modeled permissions connect an identity to a resource, and what action evidence supports that connection?
+- Can a principal reach a sensitive asset through a role chain or a workload control path?
+- Which security findings need review, and what evidence and remediation context are available?
+- How might attaching or detaching several managed policies change posture, reachability, and attack paths?
+- What did the application know at the time of a retained scan snapshot?
 
-AWS account and regions -> read-only collection -> inventory and scan evidence -> supported IAM/security analysis -> identity/resource graph -> attack paths and blast radius -> findings and API -> React dashboard and graph UI.
+CloudScope describes **potential configuration capability** separately from **CloudTrail-observed activity**. A static path is not proof of compromise. An absent event is not proof that an action did not happen.
 
-Relational storage holds snapshots and workflow records. Redis coordinates scans and caches data. Neo4j stores graph topology. The exact role of each store and its failure behavior should be validated for a target deployment.
+## Main features
 
-## Technical overview
+| Area | What it provides |
+| --- | --- |
+| Dashboard | Scan state, security posture, resource/finding summaries, scan-region selection, and quick report actions. |
+| Cloud Resources | Inventory of collected resource metadata for the configured AWS account and scanned regions. |
+| Cloud Graph | Interactive identity, policy, workload, and resource relationships with filters, search, evidence details, and path focus. |
+| Attack Paths | Ranked and grouped candidate paths, target/blast-radius summaries, relationship evidence, and optional AI explanations. |
+| Security Findings | Finding evidence and lifecycle workflow such as acknowledge, resolve, suppress, assign, and reopen where authorized. |
+| Policies | Scanned policy details, policy risk signals, attachment evidence, and searchable AWS/account managed policy catalog data where IAM permits. |
+| What-If Analysis | Add multiple managed-policy attach/detach proposals for users, groups, and roles; compare current and proposed analysis without changing AWS. |
+| Saved Changes | Reopen and edit an analyst's stored simulation change set for later comparison. |
+| Snapshot History | Browse up to ten retained published scans, including region metadata; exit historical view to return to live data. |
+| Alerts | Review selected CloudTrail security events and correlated findings with event details and optional AI explanation. |
+| Reports | Export supported security summary data as CSV/JSON and the graph as SVG; backend report APIs provide summary and bounded JSON export. |
+| Settings and Operations | Scan interval, account/region diagnostics, service health, scan status, and operational information according to role. |
 
-### Scan and analysis lifecycle
+Projects and per-account role onboarding are not part of the current UI workflow. A deployment scans the account selected by the backend's configured AWS credentials. To analyze separate accounts, use separately configured deployments and storage boundaries.
 
-1. The backend resolves AWS credentials from `AWS_PROFILE` when configured, otherwise from the standard AWS SDK credential chain. Configure those credentials on the backend host/container.
-2. A manual or scheduled scan collects supported IAM and AWS resource metadata in the configured regions using AWS read APIs. Collection is best-effort: unavailable permissions or services may yield partial results and should be reviewed in scan status and diagnostics.
-3. The scanner normalizes collected records, evaluates supported security checks and IAM relationships, persists a snapshot, and refreshes graph and finding views for the configured account.
-5. Graph analysis models identity-to-policy-to-resource reachability. Attack paths are configuration-based possibilities; event-backed observations are distinct and depend on the CloudTrail event window and permissions.
+## System architecture
 
-Simulation is a local what-if workflow: analyst changes are saved as drafts and compared with the current analysis. It does not call AWS write APIs. Explain with AI is optional; the backend sends selected finding or path context to the configured Gemini provider and returns a generated explanation. Do not send data to an external provider unless permitted by your organization's data policy.
+```mermaid
+flowchart LR
+  AWS[AWS APIs: selected inventory, IAM, Access Analyzer, CloudTrail] --> COL[FastAPI scanner and collectors]
+  COL --> NORM[Normalize inventory and scan evidence]
+  NORM --> ANALYZE[Policy evaluator, graph builder, risk and path engines]
+  ANALYZE --> SNAP[Immutable published scan snapshot]
+  SNAP --> API[FastAPI versioned API]
+  API --> UI[React and TypeScript application]
+  COL <--> REDIS[Redis cache and scan coordination]
+  SNAP <--> SQL[(SQLite or configured SQL database)]
+  ANALYZE <--> NEO[(Neo4j graph persistence)]
+  ANALYZE --> NX[NetworkX path and reachability analysis]
+  UI -->|optional selected context| AI[Configured Gemini provider]
+```
 
-### Components and code map
+### Request and scan flow
 
-| Area | Main implementation | Responsibility |
-| --- | --- | --- |
-| API and application lifecycle | `backend/app/main.py`, `backend/app/routers/` | FastAPI setup, lifecycle hooks, API route groups, health and readiness endpoints. |
-| Authentication and roles | `backend/app/security/` | JWT/OIDC validation, principal construction, development identity mode, role dependencies. |
-| AWS access | `backend/app/services/aws/session.py` | AWS profile and default credential-chain resolution. |
-| Collection and snapshots | `backend/app/services/scanner/` | Scan coordination, collection snapshots, current snapshot selection and cache invalidation. |
-| Persistence | `backend/app/persistence/` | SQLAlchemy models, database initialization, scan and workflow repositories. Legacy project columns are retained for stored-data compatibility and are not used by the UI or scan credential selection. |
-| Graph analysis | `backend/app/tools/`, `backend/app/services/attack/` | Graph diagnostics, IAM trust and policy analysis, attack path generation. |
-| Web interface | `frontend/src/pages/`, `frontend/src/components/` | Dashboard, findings, graph exploration and reports. |
-| API client | `frontend/src/api/` | Typed feature-level API wrappers on the shared Axios client. |
+1. The backend resolves AWS credentials from `AWS_PROFILE` or the AWS SDK credential chain and uses STS to identify the caller account.
+2. A startup, scheduled, manual, or region-change trigger requests a scan. Redis-backed locking coordinates one scan at a time in a deployment; local development can fall back to process-local behavior if Redis is unavailable.
+3. The scanner resolves the active region set and runs sixteen collector status groups concurrently. Collectors report data, successful empty results, or failures. A failed critical collector prevents an incomplete result from being published as a clean empty inventory.
+4. Collected records are normalized into an inventory. CloudTrail activity and AWS Access Analyzer output are included where collection succeeds.
+5. CloudScope builds relationships, evaluates supported policy constructs, identifies findings, calculates risk summaries, and searches bounded candidate paths.
+6. A successful or partial completed scan is persisted with scan ID, status, region results, collection completeness, and snapshot time. Reads for a request use one pinned published snapshot so pages do not mix versions.
+7. The frontend displays that evidence. An optional AI request sends a bounded selection of context to the configured Gemini provider.
 
-### API areas
+Scheduled scans use a **fixed delay**: the scheduler waits for the current scan to finish, then waits the configured interval before starting another scan. A scan taking five minutes followed by a five-minute interval therefore does not cause an immediate overlap.
 
-The API is rooted at `/api/v1` (interactive local documentation at `/docs`). Route groups cover scans, dashboard, resources, IAM users and roles, policies, relationships, graph, attack paths, findings, risks, alerts, reports, simulation, Copilot, audit, settings, operations, and health. Authentication and minimum role requirements vary by endpoint; see [RBAC](docs/rbac.md). Health/readiness probes are separate from authenticated operational diagnostics.
+## AWS coverage and collection limits
 
-### Persistence and isolation model
+The scanner has collectors for IAM users, groups, roles and policies; EC2; S3; Lambda; Secrets Manager; RDS; DynamoDB; ECS running tasks; ECR repositories; CodeCommit repositories; SQS; SNS; customer-managed KMS keys; EKS clusters; Step Functions state machines; IAM Access Analyzer findings; and recent CloudTrail security events. The status panel groups SQS, SNS, KMS, EKS, and Step Functions under `ExtendedAWS`.
 
-SQL storage keeps scan metadata, snapshots, findings workflow state, audit records, and simulation drafts. Redis is used for coordination and cache functions; Neo4j stores graph topology. Local Compose defaults to SQLite for relational storage, which is suitable for development but does not establish a production database, backup, migration, or recovery strategy. CloudScope analyzes the account available through the backend's configured AWS credentials; all signed-in users of the same deployment share this account data.
+This is a defined subset of AWS, not an all-services inventory. Collected record detail varies by service. Some service collectors read metadata or policy documents but never retrieve payloads, such as queue messages, topic messages, state-machine input, secret values, or key material. Review [AWS coverage and analysis model](docs/phase3-architecture.md) and [AWS collection setup](aws/templates/deployment_guide.md).
 
-### Trust and analysis boundaries
+Region behavior:
 
-- The AWS role's IAM policy is the actual collection permission boundary. The sample policy has wildcard resources for AWS list/describe APIs; review it against the selected collectors and your own constraints.
-- IAM semantics are implemented by CloudScope and do not represent every AWS policy layer, condition, resource policy, or service-specific rule. Treat unsupported semantics as uncertain.
-- A graph edge records a modeled relationship; it is not proof of exploitation. A path is a possible sequence under the model, not a confirmed incident.
-- Risk ranking is application-specific. AI explanations are generated content, not authoritative remediation instructions.
-- The configured AWS principal's IAM policy determines collection coverage. Keep it read-only and limit access to the intended account.
+- The UI can request one AWS region or a global sweep of enabled regions.
+- A non-empty `SCAN_REGIONS` setting supplies a fixed configured region set unless the UI explicitly requests global mode.
+- With no configured set, the backend discovers enabled regions through EC2 `DescribeRegions`; if discovery fails, it falls back to the session/default region.
+- Regional errors and collector status must be checked before treating a missing resource as absent.
+- Runtime UI region selection is held in process memory; review the scan's recorded regions after restarts or deployment changes.
 
-## Getting started
+The AWS principal should be dedicated and read-only. The sample policy is a starting point, not proof that every enabled collector has all required permissions. See [configuration reference](docs/configuration-reference.md) and [AWS connection guide](aws/templates/deployment_guide.md).
 
-### Docker Compose development stack
+## How access paths are modeled
 
-1. Copy .env.example to .env.
-2. Set a strong local NEO4J_PASSWORD and JWT_SECRET. For a local-only development stack, set ENVIRONMENT=development, AUTH_ENABLED=false, AUTH_REQUIRED=false, and DEV_AUTH_MODE=true. Never use development authentication settings in a deployed environment.
-3. Configure AWS_PROFILE, AWS_DEFAULT_REGION, and AWS_CREDENTIALS_DIR for the read-only AWS principal/profile you want to use. Docker mounts the credentials directory read-only.
-4. From the repository root, run: docker compose -f compose.yaml up --build
-5. Open http://localhost:8080. The backend is at http://localhost:8000 and API docs are at http://localhost:8000/docs.
+CloudScope's custom evaluator and graph pipeline model selected identity-policy, group-membership, role-trust/assumption, workload-role, resource-policy, database-connection, and resource relationships. Path transitions are checked against allowed relationship types; graph connectivity alone is not authorization evidence. The engine distinguishes action categories such as read, write, execute, access, and administrative capability and includes the matched policy/action evidence when available.
 
-For frontend development with Vite, start the backend and its Neo4j/Redis dependencies first, then run npm install and npm run dev inside frontend. Vite uses http://localhost:8000/api/v1 unless VITE_API_BASE_URL is set.
+Workload compromise pivots are deliberately conditional. For example, a user who can **read EC2 metadata** is not automatically modeled as able to run code on that EC2 instance. A control-capable permission such as SSM command/session access or EC2 Instance Connect may create a potential execution pivot, but static inventory cannot verify every runtime prerequisite (such as SSM agent state, network access, credentials, or host configuration). Similar guarded logic exists for selected Lambda, ECS, and Step Functions transitions. Read the path evidence and limitations before acting.
 
-### Configure AWS scanning
+Attack path generation is bounded (maximum six role hops and up to 200 emitted paths). Large graphs or unsupported authorization features may yield incomplete analysis. CloudScope risk scores are product-specific prioritization values, not AWS verdicts or compliance certifications.
 
-Set `AWS_PROFILE` and make that profile available to the backend process, or provide credentials through the AWS SDK's default credential chain (such as workload identity). CloudScope scans the account returned by those credentials. Use a read-only principal with only the inventory permissions needed for your enabled collectors. The Projects screen and per-account role onboarding have been removed.
+### Capability and event evidence are different
 
-## Security and analysis boundaries
+| Evidence label | Meaning |
+| --- | --- |
+| Possible capability | Static configuration and supported policy semantics suggest the identity may perform the modeled transition. |
+| Observed activity | A relevant CloudTrail event was collected. It records an AWS event, not necessarily malicious intent. |
+| Correlated activity | An observed event matches a modeled capability or path transition according to the correlator. |
+| Observed attack activity | A collected event matches an identified path transition under the product's correlation rules. |
 
-- Configure AWS IAM permissions as read-only. Application behavior is not a substitute for an AWS permission boundary.
-- IAM evaluation is custom and does not reproduce every AWS authorization layer or condition-key behavior. Treat unsupported/incomplete cases as uncertain and validate important decisions in AWS.
-- A potential attack path means the modeled configuration permits a graph transition; it does not prove an attacker used it. CloudTrail correlation depends on collected events and configured coverage.
-- Risk scores are CloudScope model outputs, not AWS or regulatory verdicts.
-- AI output is generated by an external model and may be incomplete. Validate recommendations against source evidence before acting.
-- Simulation drafts and remediation guidance do not perform AWS changes.
-- A CloudScope deployment uses the single AWS account configured on its backend. If separate AWS accounts are required, run separate deployments with independently configured credentials.
+CloudTrail coverage depends on event history availability, permissions, regions, event types, and retention. Lack of an event is inconclusive. See [Security analysis architecture](docs/phase3-architecture.md).
 
-## Technology
+## What-If Analysis and saved changes
 
-- Backend: Python, FastAPI, SQLAlchemy, Boto3, NetworkX, Neo4j driver, Redis, APScheduler.
-- Frontend: React, TypeScript, Vite, TanStack Query, Cytoscape.js, Recharts, Tailwind CSS.
-- Optional AI: Google Gemini through the server-side Google GenAI SDK.
+The simulation engine supports **managed policy attachment and detachment** for IAM users, groups, and roles. A change set may contain multiple changes; the application builds a desired-state copy, reruns the same analysis pipeline, and compares current and proposed posture, graph, reachable resources, blast radius, and attack paths. The before/after graph and added/removed paths are simulation results.
 
-## Verification commands
+Changes can be previewed without saving, stored as a draft, edited or removed in Saved Changes, recalculated, or reset. Draft changes are persisted in SQL and scoped to the authenticated analyst identity. CloudScope does not call AWS IAM mutation APIs or write the proposed state into the live AWS inventory. The model is only as accurate as the evaluator, inventory and policy documents available in the current snapshot.
 
-From the repository root:
-- Backend: cd backend; python -m pytest -q
-- Frontend tests: cd frontend; npm run test
-- Frontend lint: cd frontend; npm run lint
-- Frontend build: cd frontend; npm run build
+The simulation does not currently model arbitrary AWS API changes, inline policy editing, creation of a new IAM role, every policy type, or every authorization layer. It should not be treated as AWS IAM Policy Simulator output or change approval.
 
-See docs/final-verification.md for checks and limits from the latest local verification. Passing local tests does not certify production readiness.
+## Snapshots and persistence
 
-## Documentation
+Each published snapshot contains the scan identifier/time/status, region metadata and completeness, plus the collected identities, policies, resources, findings, risks, attack paths, graph data, and dashboard summary. The application retains up to `SNAPSHOT_RETENTION_COUNT` snapshots (default 10); the history endpoint returns up to ten. Historical mode is read-only and should be exited before interpreting the live account state.
 
-- docs/industry-readiness.md - capabilities and open milestones
-- docs/final-audit.md - current source review
-- docs/release-readiness.md - release decision and evidence
-- docs/deployment.md and docs/configuration-reference.md - setup
-- docs/authentication.md, docs/rbac.md, docs/security.md, docs/secrets.md - security
-- docs/operations.md, docs/observability.md, docs/audit-logging.md - operations
-- docs/real-aws-validation.md - AWS validation record
+- **SQL database:** durable scan runs and snapshots, finding lifecycle/history, audit records, simulation drafts, and application records. Local default is SQLite; PostgreSQL can be configured but production migration and restore procedures have not been validated.
+- **Redis:** cache and scan-lock coordination. It is not the authoritative snapshot store.
+- **Neo4j:** graph persistence and graph-loading support.
+- **NetworkX:** in-process graph reasoning, reachability and attack-path calculations.
+
+Schema setup currently uses SQLAlchemy table creation and compatibility column additions rather than a versioned migration system. Back up and rehearse restore/upgrade before using important data.
+
+## Application structure
+
+| Path | Responsibility |
+| --- | --- |
+| `backend/app/main.py` | FastAPI app lifecycle, middleware and API router registration. |
+| `backend/app/routers/` | Feature APIs for scan, snapshots, graph, attack paths, policies, findings, alerts, reports, simulation, auth, audit, settings, health and operations. |
+| `backend/app/services/aws/` | AWS session/identity handling and per-service read collectors. |
+| `backend/app/services/scanner/` | Scan coordinator, region resolution, distributed lock, scan manager and immutable published snapshots. |
+| `backend/app/services/attack/` | Policy evaluation, graph traversal, risk scoring, blast radius and CloudTrail correlation. |
+| `backend/app/services/simulation/` | Desired-state policy changes, access computation, analysis comparison and graph/path diff. |
+| `backend/app/persistence/` | SQLAlchemy models and repositories for durable application state. |
+| `frontend/src/App.tsx` | Provider composition and page routing. |
+| `frontend/src/pages/` | Dashboard, inventory, graph, attack-path, findings, policy, simulation, alert, report and settings screens. |
+| `frontend/src/components/` | Shared navigation, graph, scan status, region, evidence and detail panels. |
+| `frontend/src/api/` | Typed API adapters using the shared HTTP client. |
+
+## API and user roles
+
+The API is rooted at `/api/v1`; OpenAPI UI is available at `/docs` in a local deployment. API families cover dashboard; users, roles, policies and resources; graph and effective access; relationships and attack paths; findings, risks and alerts; reports; scans and snapshots; simulation; Copilot; audit; settings; operations; authentication/session; and health.
+
+The backend defines `VIEWER`, `ANALYST`, `SECURITY_OFFICER`, and `ADMINISTRATOR`. Route guards enforce the minimum role server-side. Frontend visibility is not a security boundary. See [Authentication](docs/authentication.md) and [Roles and access control](docs/rbac.md).
+
+## Local development
+
+### Run backend and frontend separately
+
+Requirements: Python version supported by `backend/requirements.txt`, Node.js/npm versions supported by the frontend lockfile, and AWS credentials if performing a live scan.
+
+```powershell
+# Terminal 1
+cd backend
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2
+cd frontend
+npm ci
+npm run dev -- --host 127.0.0.1
+```
+
+Open `http://127.0.0.1:5173/`. The backend defaults to `http://127.0.0.1:8000`; the frontend's local API base can be changed with `VITE_API_BASE_URL`. Configure development authentication deliberately. A common isolated local setup uses `DEV_AUTH_MODE=true`; never expose development headers to an untrusted network.
+
+The backend starts the scheduler on startup, which also requests a scan. Configure AWS credentials before startup to avoid expected credential/collector failures. Check the caller with `aws sts get-caller-identity` using the same profile/environment as the backend.
+
+### Run the Compose development stack
+
+1. Copy `.env.example` to `.env` and replace development passwords/secrets.
+2. Configure `AWS_PROFILE`, `AWS_CREDENTIALS_DIR`, and any region settings for a read-only principal.
+3. Run `docker compose -f compose.yaml up --build` from the repository root.
+4. Open `http://localhost:8080`; API docs are at `http://localhost:8000/docs`.
+
+See [Deployment](docs/deployment.md) for service ports, volumes, release Compose, and operational limits.
+
+## Verification
+
+```powershell
+cd backend
+python -m pytest -q
+python -m compileall -q app tests
+
+cd ..\frontend
+npm test
+npm run lint
+npm run build
+```
+
+These are local checks only. The current verification record states exactly which subsets passed and which long-running or hosted checks remain unverified: [Final verification](docs/final-verification.md). Passing local checks does not establish a passing hosted workflow or production readiness.
+
+## Documentation map
+
+- [AWS coverage and analysis model](docs/phase3-architecture.md) — what CloudScope collects, how paths and evidence are computed, and analysis limits.
+- [Industry readiness](docs/industry-readiness.md), [current audit](docs/final-audit.md), [release readiness](docs/release-readiness.md) — implementation status and open work.
+- [Deployment](docs/deployment.md), [configuration reference](docs/configuration-reference.md), [operations](docs/operations.md), [observability](docs/observability.md) — running and operating the services.
+- [Authentication](docs/authentication.md), [RBAC](docs/rbac.md), [security](docs/security.md), [secrets and data handling](docs/secrets.md) — security configuration and boundaries.
+- [Audit logging](docs/audit-logging.md), [real AWS validation](docs/real-aws-validation.md), [security release checklist](docs/security-release-checklist.md) — evidence, testing and release process.
+- [Documentation review](docs/documentation-verification.md), [verification notes](docs/final-verification.md) — review scope and check results.

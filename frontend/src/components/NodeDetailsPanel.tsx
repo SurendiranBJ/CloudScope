@@ -127,7 +127,7 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, edgeData
         : [];
 
     return (
-      <div className="w-96 border-l border-gray-800 bg-[#0F172A] h-full flex flex-col justify-between select-none relative z-30 overflow-y-auto shrink-0 shadow-2xl animate-in slide-in-from-right duration-200">
+      <div className="w-96 border-l border-enterprise-border bg-enterprise-card h-full flex flex-col justify-between select-none relative z-30 overflow-y-auto shrink-0 shadow-2xl animate-in slide-in-from-right duration-200">
         {/* Header */}
         <div className="p-4 border-b border-gray-800 flex items-center justify-between bg-gray-900/50">
           <div className="flex items-center gap-2">
@@ -308,7 +308,7 @@ export const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ nodeData, edgeData
   const type = (nodeData?.type || '').toLowerCase();
 
   return (
-    <div className="w-96 border-l border-gray-800 bg-[#0F172A] h-full flex flex-col justify-between select-none relative z-30 overflow-y-auto shrink-0 shadow-2xl animate-in slide-in-from-right duration-200">
+    <div className="w-96 border-l border-enterprise-border bg-enterprise-card h-full flex flex-col justify-between select-none relative z-30 overflow-y-auto shrink-0 shadow-2xl animate-in slide-in-from-right duration-200">
       {/* Header */}
       <div className="p-4 border-b border-gray-800 flex items-center justify-between bg-gray-900/50">
         <div className="flex items-center gap-2">

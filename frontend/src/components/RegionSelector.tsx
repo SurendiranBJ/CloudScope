@@ -132,7 +132,7 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
                 <option
                   key={r.code}
                   value={r.code}
-                  className="bg-[#1e293b] text-white"
+                  className="bg-enterprise-surface text-enterprise-text"
                 >
                   {r.code === 'global'
                     ? r.friendly_name

@@ -36,6 +36,7 @@ import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import type { AttackPath, AttackPathNode, DownstreamReachableAsset } from '../types';
 import { ENTITY_STYLES, normalizeGraphType, getGraphEntityStyle } from '../constants/graphStyles';
+import { useTheme } from '../context/ThemeContext';
 
 // Register dagre layout
 cytoscape.use(dagre);
@@ -64,6 +65,10 @@ export interface ConsolidatedAttackPathGroup {
 
 export const AttackPaths: FC = () => {
   const navigate = useNavigate();
+  const { isDark } = useTheme();
+  const graphBackground = isDark ? '#0B1120' : '#F8FAFC';
+  const graphLabelColor = isDark ? '#F3F4F6' : '#1E293B';
+  const graphEdgeLabelColor = isDark ? '#CBD5E1' : '#475569';
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -556,7 +561,7 @@ export const AttackPaths: FC = () => {
             'font-family': 'Inter, sans-serif',
             'font-size': '11px',
             'font-weight': 'bold',
-            'color': '#F3F4F6',
+            'color': graphLabelColor,
             'text-valign': 'bottom',
             'text-margin-y': 8,
             'background-color': '#1E293B',
@@ -566,7 +571,7 @@ export const AttackPaths: FC = () => {
             'height': '42px',
             'transition-property': 'background-color, border-color, border-width, opacity, width, height',
             'transition-duration': 0.25,
-            'text-background-color': '#0F172A',
+            'text-background-color': graphBackground,
             'text-background-opacity': 0.85,
             'text-background-padding': '3px',
             'text-background-shape': 'roundrectangle'
@@ -671,8 +676,8 @@ export const AttackPaths: FC = () => {
             'font-family': 'Inter, monospace',
             'font-size': '9px',
             'font-weight': 'bold',
-            'color': '#CBD5E1',
-            'text-background-color': '#0F172A',
+            'color': graphEdgeLabelColor,
+            'text-background-color': graphBackground,
             'text-background-opacity': 0.85,
             'text-background-padding': '2px',
             'text-background-shape': 'roundrectangle',
@@ -796,7 +801,7 @@ export const AttackPaths: FC = () => {
       cy.destroy();
       cyRef.current = null;
     };
-  }, [treeElements, consolidatedGroups]);
+  }, [treeElements, consolidatedGroups, isDark, graphBackground, graphEdgeLabelColor, graphLabelColor]);
 
   // Apply Branch Highlighting on selectedGroup or focusedSource change
   useEffect(() => {
@@ -872,7 +877,7 @@ export const AttackPaths: FC = () => {
 
   const handleExportPNG = () => {
     if (!cyRef.current) return;
-    const png = cyRef.current.png({ bg: '#0B1120', full: true });
+    const png = cyRef.current.png({ bg: graphBackground, full: true });
     const a = document.createElement('a');
     a.href = png;
     a.download = 'consolidated-attack-dag-tree.png';
@@ -1018,7 +1023,7 @@ export const AttackPaths: FC = () => {
 
       {/* INTERACTIVE BRANCHING ATTACK DAG TREE VISUALIZER */}
       {isTreeExpanded && (
-        <div className="attack-path-graph-panel bg-[#0F172A] border border-enterprise-border rounded-xl p-4 shadow-2xl relative overflow-hidden flex flex-col h-[480px]">
+        <div className="attack-path-graph-panel bg-enterprise-card border border-enterprise-border rounded-xl p-4 shadow-2xl relative overflow-hidden flex flex-col h-[480px]">
           <div className="flex items-center justify-between mb-2 z-10 pb-2 border-b border-gray-800">
             <div className="flex items-center gap-2">
               <GitMerge className="w-4 h-4 text-enterprise-accent" />
@@ -1041,7 +1046,7 @@ export const AttackPaths: FC = () => {
           </div>
 
           {/* Cytoscape Canvas */}
-          <div ref={containerRef} className="w-full flex-1 relative bg-[#0B1120] rounded-lg" />
+          <div ref={containerRef} className="attack-path-canvas w-full flex-1 relative rounded-lg" />
 
           {/* Canvas Helper Legend */}
           <div className="graph-legend absolute bottom-6 left-6 z-10 bg-gray-900/90 backdrop-blur-md border border-gray-700 rounded-lg px-3 py-1.5 text-[10px] flex items-center gap-3 text-gray-300 flex-wrap max-w-2xl">
@@ -1106,7 +1111,7 @@ export const AttackPaths: FC = () => {
                 onClick={() => { setSelectedGroupId(group.groupId); setFocusedSourceId(null); }}
                 className={`bg-enterprise-card border rounded-2xl p-6 transition-all shadow-xl flex flex-col gap-5 cursor-pointer ${
                   isSelected
-                    ? 'border-red-500/80 bg-[#141B2D] ring-1 ring-red-500/50 shadow-red-500/10'
+                    ? 'border-red-500/80 bg-enterprise-surface ring-1 ring-red-500/50 shadow-red-500/10'
                     : group.diffStatus === 'NEW'
                     ? 'border-emerald-500/50 bg-emerald-950/10 hover:border-emerald-500'
                     : group.diffStatus === 'REMOVED'
@@ -1365,7 +1370,7 @@ export const AttackPaths: FC = () => {
                 )}
 
                 {/* EXACT REFERENCE DESIGN: VERTICAL HIERARCHICAL BRANCHING DIAGRAM */}
-                <div className="bg-[#0B1120]/80 rounded-xl p-5 border border-enterprise-border/80 flex flex-col items-center select-none shadow-inner">
+                <div className="bg-enterprise-card/80 rounded-xl p-5 border border-enterprise-border/80 flex flex-col items-center select-none shadow-inner">
                   
                   {/* LAYER 1: MULTIPLE SOURCE IDENTITIES / WORKLOADS (CONVERGING AT TOP) */}
                   <div className="w-full flex flex-col items-center">
@@ -1481,7 +1486,7 @@ export const AttackPaths: FC = () => {
                       {group.targets.length > 1 ? (
                         <div className="w-full flex flex-col items-center">
                           <div className="w-3/4 max-w-2xl h-[2px] bg-gradient-to-r from-red-500/20 via-red-500 to-red-500/20 my-1 relative">
-                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-[#0B1120] px-2 text-[8px] font-mono font-bold text-red-400 uppercase tracking-widest border border-red-500/40 rounded">
+                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-enterprise-card px-2 text-[8px] font-mono font-bold text-red-400 uppercase tracking-widest border border-red-500/40 rounded">
                               {group.targets.length} Target Branches
                             </div>
                           </div>
@@ -1534,7 +1539,7 @@ export const AttackPaths: FC = () => {
                       {/* Distribution Line with Downstream Impact Badge */}
                       <div className="w-full flex flex-col items-center">
                         <div className="w-3/4 max-w-2xl h-[2px] bg-gradient-to-r from-purple-500/20 via-purple-500 to-purple-500/20 my-1 relative">
-                          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-[#0B1120] px-2.5 py-0.5 text-[8px] font-mono font-bold text-purple-300 uppercase tracking-widest border border-purple-500/50 rounded-full shadow-sm flex items-center gap-1.5">
+                          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-enterprise-card px-2.5 py-0.5 text-[8px] font-mono font-bold text-purple-300 uppercase tracking-widest border border-purple-500/50 rounded-full shadow-sm flex items-center gap-1.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
                             Downstream Reachable Assets ({group.downstreamAssets.length})
                           </div>
@@ -1663,7 +1668,7 @@ export const AttackPaths: FC = () => {
 
                 {/* Step-by-step Transition Evidence Accordion */}
                 {representativeEvidence.length > 0 && (
-                  <div className="border border-enterprise-border/80 bg-[#0B1120]/60 rounded-xl p-4">
+                  <div className="border border-enterprise-border/80 bg-enterprise-card/60 rounded-xl p-4">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1731,7 +1736,7 @@ export const AttackPaths: FC = () => {
           onClick={() => setInspectedAsset(null)}
         >
           <div
-            className="bg-[#0B1120] border border-gray-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative"
+            className="bg-enterprise-card border border-enterprise-border rounded-2xl max-w-lg w-full p-6 shadow-2xl relative"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between border-b border-gray-800 pb-3">

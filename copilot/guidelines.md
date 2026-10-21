@@ -24,6 +24,8 @@ This reference supports CloudScope's configuration analysis. It is defensive gui
 ## 4. Interpret CloudScope evidence carefully
 
 - A static attack path indicates a modeled possible configuration transition, not evidence of an actual intrusion.
+- CloudScope distinguishes static possible capability from CloudTrail-observed activity and correlated activity. A configured path is not proof of privilege escalation or exploitation; missing CloudTrail events are not proof that activity did not occur.
+- Workload pivots such as EC2-to-SSM, Lambda-to-resource, or ECS task-role access require the relevant identity permissions and service prerequisites. Do not infer that read access to a compute resource grants code execution.
 - Collection failures and unsupported policy conditions must remain visible as uncertainty. Absence from an incomplete scan is not proof that a resource or permission does not exist.
 - Use source evidence, account/region provenance, scan ID, and snapshot ID when validating a finding. Confirm remediation against the AWS account before changing policy.
 - What-if simulations and AI explanations are advisory workflows. They do not replace AWS policy validation, change approval, or a controlled rollout.

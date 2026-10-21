@@ -61,48 +61,55 @@ body {
 }
 
 /* Shared component colors for the legacy gray utility classes. */
-.light .text-white:not(.attack-path-graph-panel *):not(:is([class*="bg-blue-"], [class*="bg-indigo-"], [class*="bg-violet-"], [class*="bg-purple-"], [class*="bg-red-"], [class*="bg-rose-"], [class*="bg-pink-"], [class*="bg-orange-"], [class*="bg-amber-"], [class*="bg-yellow-"], [class*="bg-green-"], [class*="bg-emerald-"], [class*="bg-teal-"], [class*="bg-cyan-"], [class*="bg-sky-"], [class*="bg-enterprise-accent"])) { color: var(--color-enterprise-text) !important; }
-.light .text-gray-100:not(.attack-path-graph-panel *),
-.light .text-gray-200:not(.attack-path-graph-panel *),
-.light .text-gray-300:not(.attack-path-graph-panel *) { color: #1E293B !important; }
-.light .text-gray-400:not(.attack-path-graph-panel *),
-.light .text-gray-500:not(.attack-path-graph-panel *) { color: #475569 !important; }
+.light .text-white:not(:is([class*="bg-blue-"], [class*="bg-indigo-"], [class*="bg-violet-"], [class*="bg-purple-"], [class*="bg-red-"], [class*="bg-rose-"], [class*="bg-pink-"], [class*="bg-orange-"], [class*="bg-amber-"], [class*="bg-yellow-"], [class*="bg-green-"], [class*="bg-emerald-"], [class*="bg-teal-"], [class*="bg-cyan-"], [class*="bg-sky-"], [class*="bg-enterprise-accent"])) { color: var(--color-enterprise-text) !important; }
+.light .text-gray-100,
+.light .text-gray-200,
+.light .text-gray-300 { color: #1E293B !important; }
+.light .text-gray-400,
+.light .text-gray-500 { color: #475569 !important; }
 
-.light .bg-gray-950:not(.attack-path-graph-panel *),
-.light .bg-gray-900:not(.attack-path-graph-panel *),
-.light .bg-gray-900\/50:not(.attack-path-graph-panel *),
-.light .bg-gray-900\/60:not(.attack-path-graph-panel *),
-.light .bg-gray-900\/80:not(.attack-path-graph-panel *),
-.light .bg-gray-900\/95:not(.attack-path-graph-panel *) { background-color: var(--color-enterprise-surface-muted) !important; }
-.light .bg-gray-850:not(.attack-path-graph-panel *),
-.light .bg-gray-850\/50:not(.attack-path-graph-panel *),
-.light .bg-gray-800:not(.attack-path-graph-panel *),
-.light .bg-gray-800\/80:not(.attack-path-graph-panel *),
-.light .bg-gray-800\/50:not(.attack-path-graph-panel *) { background-color: var(--color-enterprise-surface) !important; }
-.light .hover\:bg-gray-800:not(.attack-path-graph-panel *):hover,
-.light .hover\:bg-gray-800\/50:not(.attack-path-graph-panel *):hover,
-.light .hover\:bg-gray-800\/30:not(.attack-path-graph-panel *):hover,
-.light .hover\:bg-gray-700:not(.attack-path-graph-panel *):hover { background-color: var(--color-enterprise-hover) !important; }
-.light .border-gray-900:not(.attack-path-graph-panel *),
-.light .border-gray-800:not(.attack-path-graph-panel *),
-.light .border-gray-800\/50:not(.attack-path-graph-panel *),
-.light .border-gray-700:not(.attack-path-graph-panel *),
-.light .border-gray-700\/60:not(.attack-path-graph-panel *) { border-color: var(--color-enterprise-border) !important; }
+.light .bg-gray-950,
+.light .bg-gray-950\/40,
+.light .bg-gray-950\/70,
+.light .bg-gray-900,
+.light .bg-gray-900\/50,
+.light .bg-gray-900\/60,
+.light .bg-gray-900\/80,
+.light .bg-gray-900\/90,
+.light .bg-gray-900\/95 { background-color: var(--color-enterprise-surface-muted) !important; }
+.light .bg-gray-850,
+.light .bg-gray-850\/50,
+.light .bg-gray-800,
+.light .bg-gray-800\/10,
+.light .bg-gray-800\/20,
+.light .bg-gray-800\/30,
+.light .bg-gray-800\/40,
+.light .bg-gray-800\/80,
+.light .bg-gray-800\/50 { background-color: var(--color-enterprise-surface) !important; }
+.light .bg-gray-700\/50,
+.light .bg-gray-700\/80 { background-color: var(--color-enterprise-hover) !important; }
+.light .hover\:bg-gray-800:hover,
+.light .hover\:bg-gray-800\/50:hover,
+.light .hover\:bg-gray-800\/30:hover,
+.light .hover\:bg-gray-700:hover { background-color: var(--color-enterprise-hover) !important; }
+.light .border-gray-900,
+.light .border-gray-800,
+.light .border-gray-800\/50,
+.light .border-gray-800\/60,
+.light .border-gray-800\/80,
+.light .border-gray-700,
+.light .border-gray-700\/40,
+.light .border-gray-700\/50,
+.light .border-gray-700\/60,
+.light .border-gray-600,
+.light .border-gray-500\/25,
+.light .border-gray-500\/30 { border-color: var(--color-enterprise-border) !important; }
+.light .text-gray-600,
+.light .text-gray-700 { color: #64748B !important; }
 
-/* The attack-path canvas deliberately stays dark so its colored nodes remain legible. */
-.light .attack-path-graph-panel .text-white {
-  color: #F8FAFC !important;
-}
-
-.light .attack-path-graph-panel .text-gray-400,
-.light .attack-path-graph-panel .text-gray-300 {
-  color: #CBD5E1 !important;
-}
-
-.light .attack-path-graph-panel .graph-legend {
-  background-color: rgba(15, 23, 42, 0.96) !important;
-  border-color: #334155 !important;
-}
+/* Graph canvas colors are theme-aware; graph nodes retain their semantic service colors. */
+.cytoscape-container,
+.attack-path-canvas { background-color: var(--color-enterprise-bg); }
 
 .light .shadow-lg,
 .light .shadow-xl,

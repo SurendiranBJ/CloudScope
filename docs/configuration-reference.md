@@ -1,76 +1,79 @@
 # CloudScope Configuration Reference
 
-This reference describes settings read by `backend/app/config.py` and important Compose overrides. Environment variables and `.env` values override application defaults. The direct backend, `compose.yaml`, and `compose.release.yaml` may resolve different values; inspect the final runtime environment and `docker compose ... config` before deployment. The repository `.env.example` is the local template, not a production secret store.
+**Updated:** 2026-10-22
+This reference is based on `backend/app/config.py`, `.env.example`, Compose files and the current frontend API client. Environment variables and `.env` values may override defaults. Inspect the resolved runtime environment and `docker compose ... config` for the deployment in use. Never print secrets while doing so.
 
-## Runtime, authentication, and browser access
+## Runtime, authentication and browser access
 
-| Setting | Application default | Function and deployment notes |
+| Setting | Backend default | Purpose and notes |
 | --- | --- | --- |
-| `ENVIRONMENT` | `development` | Runtime label. Exact `production` enables stricter auth and scan-lock behavior. |
-| `AUTH_ENABLED` | `false` | Legacy/related auth switch. Review together with `AUTH_REQUIRED` and the actual route dependency behavior. |
-| `AUTH_REQUIRED` | `false` | Requires authentication outside production. Production requires it regardless. |
-| `DEV_AUTH_MODE` | `false` | Enables local dev identity headers outside production. Never enable in production or expose on untrusted networks. |
-| `JWT_SECRET` | empty | HMAC verification secret. Supply a strong random secret through managed secret injection; do not commit it. |
-| `JWT_ALGORITHM` | `HS256` | Token signature algorithm supported by verifier. Match the issuer configuration and do not accept weaker/unknown algorithms. |
-| `OIDC_ISSUER_URL` | empty | Expected `iss` value; production validation requires a real issuer. |
-| `OIDC_AUDIENCE` | empty | Expected token audience; production validation requires a configured value. |
-| `OIDC_JWKS_URL` | empty | Optional JWKS endpoint for asymmetric verification. Must use HTTPS in production. |
-| `CORS_ORIGINS` | localhost origins | Allowed browser origins. Set exact UI origins in deployment; never use a wildcard for a credentialed app. |
-| `TRUSTED_PROXIES` | empty | Trusted proxy configuration used for client/request metadata. Set only known proxy addresses when deployed behind a proxy. |
+| `ENVIRONMENT` | `development` | Exact `production` activates stricter auth and scan-lock checks. Compose may override it. |
+| `AUTH_ENABLED` | `false` | Legacy/related flag; evaluate with `AUTH_REQUIRED`, `DEV_AUTH_MODE` and route dependencies. |
+| `AUTH_REQUIRED` | `false` | Requires authentication outside production. Production always requires authentication. |
+| `DEV_AUTH_MODE` | `false` | Enables local `X-Dev-Role` / `X-Dev-Subject` headers outside production. Never expose it to an untrusted network. |
+| `JWT_SECRET` | empty | HMAC token verification secret. Supply a strong random value through secret injection. |
+| `JWT_ALGORITHM` | `HS256` | Must match the trusted token issuer and accepted verifier configuration. |
+| `OIDC_ISSUER_URL` | empty | Expected token issuer. Required by production configuration validation. |
+| `OIDC_AUDIENCE` | empty | Expected token audience. Required by production configuration validation. |
+| `OIDC_JWKS_URL` | empty | Optional key-set endpoint for asymmetric signature verification; use HTTPS in production. |
+| `CORS_ORIGINS` | localhost origins | Allowed browser origins. Set exact UI origins in deployment; avoid wildcard origins for credentialed use. |
+| `TRUSTED_PROXIES` | empty | Known proxy addresses used to trust forwarded client metadata. Set only the actual proxy layer. |
+| `VITE_API_BASE_URL` | unset | Frontend build-time backend origin. When set, frontend requests append `/api/v1`; configure the value at build time. |
 
-## AWS collection
+## AWS collection and regions
 
-| Setting | Application default | Function and deployment notes |
+| Setting | Backend default | Purpose and notes |
 | --- | --- | --- |
-| `AWS_CREDENTIALS_DIR` | `~/.aws` | Host credential directory; Compose mounts it read-only for profile-based source credentials. |
-| `AWS_PROFILE` | `identityscope-scanner` | Source profile used to establish AWS credentials. Compose may override this default. |
-| `AWS_DEFAULT_REGION` | `ap-south-1` | Default AWS region for SDK/session behavior. |
-| `SCAN_REGIONS` | empty | Optional comma-separated region override. Confirm effective region selection in the scan record. |
-AWS service access is governed by the IAM policies attached to the configured source principal. CloudScope scans the account returned by that principal's credentials and no longer supports account registration or target-role selection in the UI. These configuration values do not grant AWS permissions. See [the AWS connection guide](../aws/templates/deployment_guide.md).
+| `AWS_CREDENTIALS_DIR` | `~/.aws` | Host credential/config directory mounted read-only by development Compose. |
+| `AWS_PROFILE` | `identityscope-scanner` | Named source profile. Compose defaults this to `default` unless overridden. If session construction with the named profile raises an exception, initialization attempts an SDK environment/default-chain fallback; confirm the actual identity with STS from the backend runtime. |
+| `AWS_DEFAULT_REGION` | `ap-south-1` | Boto3 session/default region and fallback region. |
+| `SCAN_REGIONS` | empty | Optional comma-separated fixed region list. Empty allows enabled-region discovery through EC2 `DescribeRegions`; a runtime single/global UI choice changes resolution. |
 
-## SQL, graph, cache, and scan coordination
+AWS permissions are determined by the backend principal's IAM policies. These values do not create or grant AWS permissions. The application scans the single AWS account returned by those credentials. See [AWS connection guide](../aws/templates/deployment_guide.md).
 
-| Setting | Application default | Function and deployment notes |
+## SQL, graph, cache and scan coordination
+
+| Setting | Backend default | Purpose and notes |
 | --- | --- | --- |
-| `DATABASE_URL` | `sqlite:///./cloudscope.db` | SQLAlchemy URL for durable relational state. SQLite is a local default; production DB migration and restore are not yet proven. |
-| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Redis endpoint for cache and scan coordination. Production coordination requires reachable Redis. |
-| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j Bolt endpoint for graph storage. |
-| `NEO4J_USER` / `NEO4J_PASSWORD` | `neo4j` / `password` | Neo4j credentials. Replace defaults, restrict network access, and inject secrets securely. |
-| `SCAN_LOCK_LEASE_SECONDS` | `180` | Redis scan-lock lease duration. Validate heartbeat, expiry, and worker recovery under deployment conditions. |
-| `SNAPSHOT_RETENTION_COUNT` | `10` | Configured snapshot retention count. Verify cleanup behavior and backup requirements before relying on it. |
-| `AUDIT_RETENTION_DAYS` | `90` | Audit retention configuration. Confirm actual cleanup and external retention requirements. |
+| `DATABASE_URL` | `sqlite:///./cloudscope.db` | SQLAlchemy URL for durable snapshots and workflow records. SQLite is a local default. PostgreSQL is configurable but production upgrades/restores are not validated. |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Redis cache and scan coordination endpoint. Compose overrides to the Redis service hostname. Production scan coordination requires reachable Redis. |
+| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j Bolt endpoint. |
+| `NEO4J_USER` / `NEO4J_PASSWORD` | `neo4j` / `password` | Neo4j credentials. Replace defaults, isolate network access and inject secrets safely. |
+| `SCAN_LOCK_LEASE_SECONDS` | `180` | Distributed scan lock lease; current worker heartbeat and recovery need deployment validation. |
+| `SNAPSHOT_RETENTION_COUNT` | `10` | Number of old published snapshots retained by cleanup; history API returns at most ten. |
+| `AUDIT_RETENTION_DAYS` | `90` | Audit-retention configuration. Confirm cleanup path and external retention requirements before relying on it. |
 
-Legacy project columns may remain in existing databases for compatibility; they are not used to choose AWS credentials.
+Relational schema setup currently uses table creation and compatibility column additions; it is not backed by a versioned migration framework. Legacy project schema fields may remain in old databases but do not provide active account selection in the UI.
 
-## Server, logs, and build metadata
+## Server, scheduler and logs
 
-| Setting | Application default | Function and deployment notes |
+| Setting | Backend default | Purpose and notes |
 | --- | --- | --- |
-| `BACKEND_PORT` | `8000` | Backend listener/application port; Compose can publish a host mapping separately. |
-| `SCAN_INTERVAL_MINUTES` | `5` | Scheduled scan interval for the configured AWS account. |
-| `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | Structured log encoding and severity threshold. Review log sinks and redaction. |
+| `BACKEND_PORT` | `8000` | Application port; Compose host mappings are configured separately. |
+| `SCAN_INTERVAL_MINUTES` | `5` | Idle delay after a scan finishes before the next scheduled scan. The scanner waits for a terminal result before scheduling that delay. |
+| `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | Structured logging format and severity. Review log destinations and redaction. |
 | `APP_VERSION` | `1.0.0` | Application version label. |
-| `BUILD_VERSION`, `GIT_COMMIT`, `COMMIT_SHA`, `IMAGE_TAG` | unset | Optional build provenance fields for identifying the deployed artifact. |
+| `BUILD_VERSION`, `GIT_COMMIT`, `COMMIT_SHA`, `IMAGE_TAG` | unset | Optional build provenance values for diagnostics. |
 
 ## Rate limits
 
-Each `RATE_LIMIT_<FEATURE>_MAX` is a request count and `RATE_LIMIT_<FEATURE>_WINDOW` is its window in seconds. Defaults: scan `5/600`, Copilot `30/60`, simulation `30/60`, finding `60/60`, audit `60/60`, export `20/60`, general `300/60`. Check the implementation's storage and proxy behavior before treating these as a distributed abuse-control boundary.
+Feature limits use `RATE_LIMIT_<FEATURE>_MAX` and `RATE_LIMIT_<FEATURE>_WINDOW` seconds. Current defaults are scan `5/600`, Copilot `30/60`, simulation `30/60`, finding `60/60`, audit `60/60`, export `20/60`, and general `300/60`. Confirm storage behavior and proxy identity handling before treating these as a distributed abuse-control boundary.
 
 ## Optional AI provider
 
-| Setting | Application default | Function and deployment notes |
+| Setting | Backend default | Purpose and notes |
 | --- | --- | --- |
-| `AI_PROVIDER` | `gemini` | Provider selection; Gemini is the currently supported provider. |
-| `GEMINI_API_KEY` | unset | Server-side credential; optional when AI features are not used. Do not expose to the frontend. |
-| `GEMINI_MODEL` | `gemini-3.8-flash` | Model identifier; confirm availability and terms with the provider. Gemini 3+ uses thinking levels and ignores legacy sampling settings. |
-| `GEMINI_FALLBACK_MODELS` | configured list | Candidate fallback model names. Verify current provider availability. |
+| `AI_PROVIDER` | `gemini` | Current supported provider selection. |
+| `GEMINI_API_KEY` | unset | Server-side credential; optional if AI is disabled. Never expose in the frontend bundle. |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Model identifier; confirm current provider availability and terms before deployment. |
+| `GEMINI_FALLBACK_MODELS` | configured list | Candidate fallback model identifiers; validate current availability. |
 | `AI_MAX_OUTPUT_TOKENS` | `4096` | Maximum generated output budget. |
-| `AI_TEMPERATURE` | `0.2` | Sampling setting for model output. |
-| `AI_CONTEXT_MAX_CHARS` | `24000` | Application context length cap; not a privacy filter. |
-| `AI_TIMEOUT_SECONDS` | `30` | Provider request timeout. |
+| `AI_TEMPERATURE` | `0.2` | Provider generation setting. |
+| `AI_CONTEXT_MAX_CHARS` | `24000` | Application context length cap, not a privacy filter. |
+| `AI_TIMEOUT_SECONDS` | `30` | Provider call timeout. |
 
-AI requests can transmit selected scan evidence to the external model provider. Apply the organization's data-handling and customer-consent policy before enabling it.
+AI requests can transmit selected cloud inventory/finding/path context outside the deployment. Obtain data-handling approval before enabling it for sensitive data.
 
-## Sources of truth
+## Source of truth
 
-Check `backend/app/config.py`, `.env.example`, `compose.yaml`, `compose.release.yaml`, and `backend/app/security/config_validator.py` together. Confirm resolved values in the actual deployment without printing secrets into logs or tickets.
+Check `backend/app/config.py`, `.env.example`, `compose.yaml`, `compose.release.yaml`, `backend/app/security/config_validator.py` and the frontend build environment together. Confirm actual deployed values without copying credentials to logs or tickets.

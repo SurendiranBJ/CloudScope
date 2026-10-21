@@ -1,31 +1,34 @@
 # CloudScope Release Readiness
 
-**Reviewed:** 2026-10-15
+**Reviewed:** 2026-10-22
 **Decision:** NOT READY for production or shared customer hosting.
 
-This is a current status note, not a certification. Older real-account metrics and release claims are not current evidence for this working tree.
+This is an implementation/evidence status, not a certification. A passing local build does not establish a safe production release.
 
 ## Evidence checked
 
 | Check | Result | Scope |
 | --- | --- | --- |
-| Backend regression | PASS: 564 passed, 0 failed in 395.11s. | Full `python -m pytest -q`; remaining warnings are from Google GenAI type aliases and Starlette's test client. |
-| Frontend tests | PASS: 33 passed, 0 failed. | `npm test`. |
-| Frontend production build | PASS | `npm run build` including TypeScript project build. |
-| Frontend lint | PASS with warnings | `npm run lint` exits 0; 13 non-blocking Fast Refresh export warnings remain. |
-| Diff whitespace check | PASS | `git diff --check`; Git printed line-ending normalization warnings for Windows working files. |
-| Production Compose runtime | NOT VERIFIED | No deployment smoke test or Docker runtime validation was performed in this review. |
-| Hosted CI for release commit | NOT VERIFIED | Workflow definitions and local runs do not establish hosted GitHub Actions outcomes. |
-| Real AWS validation for release commit | NOT VERIFIED | Historical report contains contradictory/incomplete results; see real-aws-validation.md. |
+| Frontend build and TypeScript | PASS | `npm run build`, current workspace, 2026-10-22. |
+| Frontend lint | PASS with warnings | `npm run lint` exited 0; existing warnings remain. |
+| Focused backend checks | PASS: 47 tests | Four API/snapshot/AI/audit modules, 2026-10-21. |
+| Frontend unit tests | PASS: 33 tests | Last run 2026-10-21, prior to current theme changes. |
+| Full backend regression | NOT VERIFIED | The long scanner/snapshot group did not complete in the latest attempt. |
+| Hosted CI | NOT VERIFIED | No green hosted run was confirmed for the current workspace. |
+| Fresh AWS validation | NOT VERIFIED | No current account/regions/scan record was captured for this review. |
+| Production Compose and recovery | NOT VERIFIED | No deployment, migration, backup/restore or rollback rehearsal was performed. |
 
 ## Release blockers
 
-- One deployment scans the single AWS account identified by its backend credentials. Use separately secured deployments for separate accounts.
-- Credential expiration/refresh during long scans and across worker restarts is not validated.
-- Database migrations are not managed through a versioned migration system; backup/restore and upgrade paths need rehearsal.
-- The custom IAM evaluator and graph/risk models do not cover every AWS authorization semantic.
-- Production PostgreSQL, Redis, and Neo4j deployment, recovery, alerting, and rollback have not been verified for this release candidate.
-- External AI provider data handling needs a documented customer data policy.
-- Hosted CI must pass on the exact commit before release. Local backend/frontend checks are green for this working tree, but must be repeated or tied to the final release SHA.
+- Define production identity, tenant/deployment boundaries, supported-user lifecycle and security responsibility.
+- Verify the AWS principal is least-privilege and read-only; validate every enabled collector's required permissions.
+- Document and test unsupported AWS authorization layers and ensure partial scans/path truncation remain visible.
+- Implement versioned SQL migrations and exercise upgrade, restore, backup and rollback.
+- Validate production PostgreSQL, Redis, Neo4j, container networking, secret injection and restart/failover behavior.
+- Configure alert delivery, incident procedures, log/metrics access, retention and data residency.
+- Approve Gemini provider data handling if AI explanations are enabled.
+- Pass full local and hosted CI on the exact release SHA, then complete a production-like deployment test and independent security review.
 
-Do not tag or advertise a production release until the blockers above are addressed, full checks pass on the release SHA, deployment/restore rehearsals are recorded, and a security review approves the deployment boundaries and AWS authorization limitations.
+## Release decision rule
+
+Do not tag, advertise or deploy a production release until every blocker has an owner and evidence, and all checks are tied to the exact immutable artifact. See [industry readiness](industry-readiness.md), [security release checklist](security-release-checklist.md), and [final verification](final-verification.md).

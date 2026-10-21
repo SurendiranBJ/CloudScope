@@ -1,20 +1,29 @@
-# Roles and access control
+# Roles and Access Control
 
-CloudScope defines four ordered roles. A higher role inherits checks that require a lower minimum role, but endpoint coverage is route-specific; this is not a fine-grained permission matrix.
+CloudScope defines four ordered roles. A higher role satisfies checks for a lower minimum role, but actual route guards vary by endpoint. The table summarizes the permission registry and representative protected routes; always check the deployed OpenAPI schema and router dependency for exact behavior.
 
-| Role | Typical use | Current access summary |
+| Role | Typical use | Permission intent / representative APIs |
 | --- | --- | --- |
-| `VIEWER` | Read-only review | Read dashboard, resources, policies, graph, attack paths, findings, alerts, and reports. |
-| `ANALYST` | Investigation | Viewer access plus simulations and AI Copilot endpoints. |
-| `SECURITY_OFFICER` | Finding workflow | Analyst access plus finding state changes, audit log, and report export where routed. |
-| `ADMINISTRATOR` | Application administration | Security-officer access plus scan triggers, settings, health diagnostics, and operations. |
+| `VIEWER` | Review current security state | Read dashboard, resources, policies, relationships, graph, attack paths, risks, alerts, reports and findings; read scan status and snapshot history. |
+| `ANALYST` | Investigate and model changes | Viewer access plus simulation actions and Copilot; read finding evidence. |
+| `SECURITY_OFFICER` | Triage findings and export | Analyst access plus finding acknowledge/resolve/suppress/reopen, audit endpoints guarded by `require_security_officer`, finding triage, and report export. |
+| `ADMINISTRATOR` | Operate the deployment | Security-officer access plus manual scan triggers, scan interval/region configuration, settings, AWS diagnostics and operations overview. |
 
-The backend is authoritative: API routers use role dependencies and return 401 when identity is required but absent/invalid, or 403 when the principal lacks the minimum role. Some feature pages may be visible in the frontend even when the API denies access; UI visibility alone does not grant permission. Authentication claims and the external identity provider must be configured by the operator (see [authentication.md](authentication.md)).
+Some endpoints have distinct dependencies. For example, `/health` diagnostics and `/api/v1/operations/overview` require administrator; the audit router uses the security-officer minimum. The permission registry and route guard should both be reviewed because a registry entry does not automatically protect a route unless its dependency checks it.
 
-## AWS account scope
+## Enforcement behavior
 
-AWS identity is configured on the backend, and all signed-in users of a deployment view analysis for that configured account. CloudScope no longer provides per-user account projects or target-role onboarding. Use separate deployments with independently configured credentials to analyze separate accounts.
+- A valid bearer JWT is resolved to an authenticated principal and role set.
+- Missing/invalid authentication returns 401 when auth is required.
+- A principal below a route's minimum role returns 403.
+- Non-production development mode may accept `X-Dev-Role` and `X-Dev-Subject`; it is not suitable for untrusted networks.
+- Production must disable development auth and configure a trusted identity provider.
+- Frontend navigation/visibility is a usability feature only; server route dependencies enforce access.
 
-## Local development
+## Account and data boundaries
 
-The development role headers are a local testing convenience only. They are not a production identity mechanism. Production configuration must disable `DEV_AUTH_MODE` and require valid JWT/OIDC verification.
+One backend deployment scans the AWS account identified by its configured credential chain. There is no current Projects/account registration UI. AWS inventory and snapshots are shared within that deployment for authenticated users; durable simulation changes are additionally scoped to analyst identity. This is not a general multi-tenant guarantee. Use separate deployments, credentials, databases and network controls where separation is required.
+
+Legacy `cloud_projects` tables and `project_id` columns may remain in database schema for compatibility. Their presence does not enable project selection in the current UI or scanner credential flow.
+
+See [authentication](authentication.md), [security overview](security.md), and [release readiness](release-readiness.md).

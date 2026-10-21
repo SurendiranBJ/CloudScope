@@ -1,24 +1,45 @@
 # Verification Notes
 
-**Review date:** 2026-10-15
-**Purpose:** Record checks performed during the current implementation/documentation pass. This is not a production certification.
+**Updated:** 2026-10-22
+**Purpose:** Keep local checks and their limits explicit. This record is not a production certification.
 
-## Current local checks
+## Checks recorded for the current work
 
-- Backend full suite: `python -m pytest -q` completed with 564 passed and 0 failed in 395.11 seconds. The earlier `datetime.utcnow()` warnings are gone; remaining warnings come from Google GenAI type aliases and Starlette's test client.
-- Frontend tests: `npm test` completed with 33 passed and 0 failed.
-- Frontend production build and TypeScript check: `npm run build` passed.
-- Frontend lint: `npm run lint` exited successfully with 13 non-blocking Fast Refresh export warnings; unstable hook-dependency, unused-import, and regex-escape warnings were fixed.
-- Backend compile check: `python -m compileall -q backend/app` passed in the implementation pass.
-- Git whitespace check: `git diff --check` passed after Markdown cleanup; Git still reports Windows line-ending normalization notices.
+| Check | Result | Scope and timing |
+| --- | --- | --- |
+| Frontend TypeScript and production build | PASS | `npm run build`, 2026-10-22, after theme changes. |
+| Frontend lint | PASS with warnings | `npm run lint` exited 0 on 2026-10-22. Non-blocking Fast Refresh warnings and an existing hook dependency warning remain in the repository. |
+| Focused backend tests | PASS: 47 passed | Snapshot consistency, AI provider, API endpoints and audit logging; 2026-10-21. |
+| Frontend unit tests | PASS: 33 passed | Last run 2026-10-21, before the latest theme source changes. |
+| Diff whitespace check | PASS before this documentation edit | `git diff --check`; repeat after all documentation changes. |
 
-## Not verified in this pass
+## Not verified for this workspace
 
-- Hosted GitHub Actions for the final commit.
-- Production Docker runtime, PostgreSQL migration/upgrade, Redis/Neo4j recovery, backup restore, or rollback.
-- A fresh real AWS scan on the final commit.
-- Security penetration testing, large-account performance, or independent review of project isolation and AWS policy semantics.
+- Full backend regression suite after the latest changes.
+- Complete scanner/snapshot CI group. A long attempt was interrupted before finishing; do not treat it as a pass.
+- Frontend unit suite after the theme source updates.
+- Hosted GitHub Actions result for the current local workspace.
+- Fresh real AWS scan, exact regional/service coverage, throttling behavior, or credential refresh during a long scan.
+- Production Compose startup, OIDC login, PostgreSQL migration, Redis/Neo4j recovery, backup restore, or rollback.
+- Penetration test, large-account performance test, or independent AWS authorization-model review.
 
-## Historical reports
+## Reproduction commands
 
-The 2026-10-09 report described a real AWS run and a 502-test pass. Those are historical results for an earlier code state and are not current release evidence. The old real-AWS report also contains inconsistent scan and endpoint statuses; see real-aws-validation.md.
+Run from the repository root or the corresponding folder:
+
+```powershell
+cd backend
+python -m pytest -q
+python -m compileall -q app tests
+
+cd ..\frontend
+npm test
+npm run lint
+npm run build
+```
+
+For a release decision, run all applicable checks on the same pinned commit and attach the hosted CI and deployment evidence to that release record. Local checks on a modified working tree do not certify a pushed artifact.
+
+## Historical verification
+
+Earlier reports of 564 backend tests, 502 backend tests, or real-AWS inventory counts refer to earlier code and environments. They are not evidence for the current workspace. See [real AWS validation](real-aws-validation.md) for the handling of the older AWS artifact.

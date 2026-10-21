@@ -587,7 +587,7 @@ export const IdentityGraphPage: FC = () => {
 
         {/* COLLAPSIBLE RIGHT SIDEBAR */}
         {!isFullscreen && isSidebarOpen && (
-          <aside className="w-80 bg-[#111827] border-l border-gray-800 flex flex-col overflow-y-auto shrink-0 custom-scrollbar z-10 animate-in slide-in-from-right duration-200">
+          <aside className="w-80 bg-enterprise-card border-l border-enterprise-border flex flex-col overflow-y-auto shrink-0 custom-scrollbar z-10 animate-in slide-in-from-right duration-200">
             {/* Recommended Fixes */}
             <div className="p-5 border-b border-gray-800">
               <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
