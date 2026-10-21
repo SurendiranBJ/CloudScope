@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter, Depends, Request, HTTPException, status
+from fastapi import FastAPI, APIRouter, Request, HTTPException, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -140,11 +140,9 @@ async def prometheus_metrics_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def published_snapshot_middleware(request: Request, call_next):
-    """Keep all security-data reads in one request on one published version."""
+    """Keep security-data reads in one request on one published version."""
     if not request.url.path.startswith("/api/v1/"):
         return await call_next(request)
-    # API v1 project scope is validated by a FastAPI dependency first; that
-    # dependency then pins the correct project snapshot for the request.
     return await call_next(request)
 
 
@@ -232,9 +230,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # ---------------------------------------------------------------------------
 # API Routers Mount
 # ---------------------------------------------------------------------------
-from app.security.project_scope import project_scope
-
-api_v1_router = APIRouter(prefix="/api/v1", dependencies=[Depends(project_scope)])
+api_v1_router = APIRouter(prefix="/api/v1")
 
 from app.routers import (
     dashboard,
@@ -256,8 +252,7 @@ from app.routers import (
     audit,
     operations,
     health,
-    session,
-    projects
+    session
 )
 
 # Mount Routers under /api/v1
@@ -281,7 +276,6 @@ api_v1_router.include_router(audit.router)
 api_v1_router.include_router(operations.router)
 api_v1_router.include_router(health.router)
 api_v1_router.include_router(session.router)
-api_v1_router.include_router(projects.router)
 
 app.include_router(api_v1_router)
 

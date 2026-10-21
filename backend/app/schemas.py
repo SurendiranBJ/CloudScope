@@ -322,6 +322,9 @@ class ExplainAttackPathRequest(BaseModel):
     attack_path_id: str
     supplementary_metadata: Optional[Dict[str, Any]] = None
 
+class ExplainAlertRequest(BaseModel):
+    alert_id: str
+
 
 # ─── Policy Catalog ─────────────────────────────────────────────────────────
 
@@ -345,6 +348,10 @@ class PolicyCatalogEntry(BaseModel):
     riskScore: int = 0
     severity: str = "low"
     findings: List[PolicyFinding] = []
+    attachedTo: List[dict] = []
+    attachmentDetailsUnavailable: bool = False
+    usedByResources: List[dict] = []
+    allowedResources: List[dict] = []
 
 
 class PaginatedPolicyCatalog(BaseModel):

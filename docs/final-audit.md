@@ -6,7 +6,7 @@
 
 ## Executive assessment
 
-CloudScope has meaningful AWS collection, graph analysis, finding workflow, account-project, simulation, and user-interface capabilities. The project-scoped manual scan foundation and durable simulation work are implemented and have focused tests. Several important production requirements remain open. Do not describe this revision as fully industry-ready or production-certified.
+CloudScope has meaningful AWS collection, graph analysis, finding workflow, simulation, and user-interface capabilities. AWS scanning uses the single credential source configured for the backend. Several important production requirements remain open. Do not describe this revision as fully industry-ready or production-certified.
 
 ## Component status
 
@@ -16,8 +16,8 @@ CloudScope has meaningful AWS collection, graph analysis, finding workflow, acco
 | IAM authorization | PARTIAL | A custom evaluator handles supported policy constructs and evidence. It is not the complete AWS authorization engine; boundaries, session policies, SCPs, resource policies, conditions, and service-specific context require explicit coverage tests. |
 | Graph and attack paths | IMPLEMENTED WITH LIMITS | Identity/resource graph, evidence-bearing relationships, path ranking, and UI tracing are present. Traversal is bounded and may omit paths at scale; static capability is not proof of exploitation. |
 | Findings | IMPLEMENTED WITH LIMITS | SQL-backed finding status/history and transitions exist. Reconciliation and multi-store consistency require deployment-backed failure testing. |
-| AWS account projects | IMPLEMENTED FOUNDATION | Projects are owner-scoped; roles are verified with an ExternalId; manual scans assume the selected project's verified role; requests pin project snapshots. Independent tenant isolation review has not been completed. |
-| Simulation | IMPLEMENTED | Drafts persist in SQL and are scoped by principal/project. The what-if engine does not apply changes to AWS. Policy evaluation accuracy remains subject to evaluator limits. |
+| AWS account selection | SINGLE CONFIGURED ACCOUNT | The Projects interface, API, and target-role assumption flow are removed. Scans use the backend's configured AWS profile/default credential chain. Use separate deployments for separate accounts. |
+| Simulation | IMPLEMENTED | Drafts persist in SQL and are scoped by principal. The what-if engine does not apply changes to AWS. Policy evaluation accuracy remains subject to evaluator limits. |
 | Snapshot and SQL state | IMPLEMENTED WITH MIGRATION RISK | Relational snapshots, scan records, audit records, and restart recovery exist. Schema initialization still uses create-all/ad hoc migrations rather than a versioned migration process. |
 | Redis and scan lock | IMPLEMENTED WITH DEPLOYMENT LIMITS | Redis lease/heartbeat coordination exists and production lock acquisition fails closed when Redis is unavailable. Multi-worker failure and recovery need deployment testing. |
 | Authentication and RBAC | IMPLEMENTED WITH CONFIGURATION DEPENDENCE | JWT/OIDC validation and server-side route guards exist; development header auth is intended only for local development. Production IdP provisioning/login and customer lifecycle remain deployment concerns. |
@@ -38,13 +38,12 @@ CloudScope has meaningful AWS collection, graph analysis, finding workflow, acco
 
 ### Release blockers
 
-1. Add project-aware scheduled scanning. Current scheduled/startup scan orchestration does not iterate the registered AWS projects.
-2. Complete endpoint/background-job project-scope review, including operational routes, exports, AI context builders, and error/fallback paths; add cross-owner tests using PostgreSQL and Redis.
-3. Verify temporary AWS credentials expire/refresh safely during long scans and across worker restarts.
-4. Replace ad hoc schema alteration with versioned migrations; exercise upgrade, backup, and restore.
-5. Record supported and unsupported IAM semantics. Do not imply complete effective-access or threat-detection coverage.
-6. Run full tests, hosted CI, production deployment smoke tests, and rollback/restore rehearsal for the exact release SHA.
-7. Establish independent security review, AI data handling policy, alerting, and incident procedures before shared hosting.
+1. Define deployment separation and access controls for organizations that need multiple AWS accounts.
+2. Verify temporary AWS credentials expire/refresh safely during long scans and across worker restarts.
+3. Replace ad hoc schema alteration with versioned migrations; exercise upgrade, backup, and restore.
+4. Record supported and unsupported IAM semantics. Do not imply complete effective-access or threat-detection coverage.
+5. Run full tests, hosted CI, production deployment smoke tests, and rollback/restore rehearsal for the exact release SHA.
+6. Establish independent security review, AI data handling policy, alerting, and incident procedures before shared hosting.
 
 ## Review caveat
 

@@ -26,6 +26,7 @@ from app.services.scanner.current_snapshot import (
     get_current_users,
     get_current_roles,
     get_current_groups,
+    get_current_resources,
     get_current_snapshot_id,
     get_current_snapshot_published_at,
     has_published_snapshot,
@@ -270,7 +271,7 @@ def explain_access(
     )
 
 
-@router.get("/policies/{policy_id}", response_model=APIResponse[dict])
+@router.get("/policies/{policy_id:path}", response_model=APIResponse[dict])
 def get_policy_detail(policy_id: str):
     """Return rich policy details including document and risk analysis (Level 2).
 
@@ -335,7 +336,9 @@ def get_policy_detail(policy_id: str):
         entry["documentParsed"] = None
         entry["documentUnavailable"] = True
 
-    # Find attachment locations across users, roles, and groups from authoritative published snapshot
+    # Find direct policy attachments across users, roles, and groups from the
+    # authoritative published snapshot. AWS IAM list-entities below is the
+    # primary source for managed policies.
     users = get_current_users()
     roles = get_current_roles()
     groups = get_current_groups()
@@ -389,7 +392,95 @@ def get_policy_detail(policy_id: str):
                 seen_attachments.add(key)
                 attached_to.append({"type": "Group", "name": gname, "arn": g.get("arn", "")})
 
+    # IAM is authoritative for managed-policy attachments. Inventory matching
+    # remains as a fallback for inline policies and when ListEntitiesForPolicy
+    # is not permitted by the configured scanner credentials.
+    attachment_details_unavailable = False
+    if pol_arn and ":policy/" in pol_arn:
+        try:
+            from app.services.aws.iam_service import fetch_policy_attachments_by_arn
+            attached_to = fetch_policy_attachments_by_arn(pol_arn)
+        except Exception as e:
+            logger.warning("Could not load IAM attachment entities for %s: %s", pol_arn, e)
+            attachment_details_unavailable = not bool(attached_to)
+
+    scanned_arns = {
+        (entity_type, str(entity.get("name", "")).lower()): entity.get("arn", "")
+        for entity_type, entities in (("User", users), ("Role", roles), ("Group", groups))
+        for entity in entities
+    }
+    for entity in attached_to:
+        entity["arn"] = entity.get("arn") or scanned_arns.get((entity.get("type"), str(entity.get("name", "")).lower()), "")
+
     entry["attachedTo"] = attached_to
+    entry["attachmentDetailsUnavailable"] = attachment_details_unavailable
+
+    # A policy attaches to IAM principals, not directly to services. Show the
+    # compute resources that consume an attached role separately, and show
+    # inventory targets whose ARNs/actions match this policy document.
+    resources = get_current_resources()
+    role_names = {item.get("name", "").lower() for item in attached_to if item.get("type") == "Role"}
+    role_arns = {item.get("arn", "").lower() for item in attached_to if item.get("type") == "Role" and item.get("arn")}
+    used_by_resources: List[dict] = []
+    profile_roles: dict[str, list[dict]] = {}
+    for resource in resources:
+        details = resource.get("details") if isinstance(resource.get("details"), dict) else {}
+        candidate_role_refs = []
+        for key in (
+            "role_arn", "execution_role_arn", "task_role_arn", "service_role_arn",
+            "roleArn", "executionRoleArn", "taskRoleArn", "serviceRole",
+            "role_name", "execution_role_name", "task_role_name",
+        ):
+            for source in (resource, details):
+                value = source.get(key)
+                if isinstance(value, str) and value and value.lower() != "none":
+                    candidate_role_refs.append(value)
+
+        resource_type = str(resource.get("type", "")).upper()
+        if resource_type == "EC2":
+            profile_arn = resource.get("iam_profile_arn") or details.get("iam_profile_arn")
+            profile_name = profile_arn.rsplit("/", 1)[-1] if isinstance(profile_arn, str) and profile_arn not in {"", "None"} else ""
+            if profile_name:
+                if profile_name not in profile_roles:
+                    try:
+                        from app.services.aws.iam_service import fetch_roles_for_instance_profile
+                        profile_roles[profile_name] = fetch_roles_for_instance_profile(profile_name)
+                    except Exception as e:
+                        logger.debug("Could not resolve EC2 instance profile %s: %s", profile_name, e)
+                        profile_roles[profile_name] = []
+                candidate_role_refs.extend(
+                    value
+                    for role in profile_roles[profile_name]
+                    for value in (role.get("name", ""), role.get("arn", ""))
+                    if value
+                )
+
+        if any(
+            ref.lower() in role_arns or ref.rsplit("/", 1)[-1].lower() in role_names
+            for ref in candidate_role_refs
+        ):
+            used_by_resources.append({
+                "type": resource.get("type", "AWS resource"),
+                "name": resource.get("name") or resource.get("id") or resource.get("arn", "Unknown"),
+                "arn": resource.get("arn", ""),
+                "region": resource.get("region", ""),
+            })
+    entry["usedByResources"] = used_by_resources
+
+    allowed_resources: List[dict] = []
+    if doc:
+        try:
+            from app.services.attack.policy_evaluator import evaluate_policy_allows_resources
+            for resource in evaluate_policy_allows_resources(doc, resources):
+                allowed_resources.append({
+                    "type": resource.get("type", "AWS resource"),
+                    "name": resource.get("name") or resource.get("id") or resource.get("arn", "Unknown"),
+                    "arn": resource.get("arn", ""),
+                    "region": resource.get("region", ""),
+                })
+        except Exception as e:
+            logger.warning("Could not evaluate policy %s against the current inventory: %s", pol_name, e)
+    entry["allowedResources"] = allowed_resources
 
     return APIResponse(
         success=True,

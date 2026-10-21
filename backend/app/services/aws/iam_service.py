@@ -396,6 +396,45 @@ def _build_catalog_entry(policy_obj: dict, policy_type: str) -> dict:
     }
 
 
+def fetch_policy_attachments_by_arn(policy_arn: str) -> list[dict]:
+    """Read exact managed-policy attachments directly from IAM.
+
+    The policy catalog's AttachmentCount is AWS metadata; inventory-based
+    matching can miss AWS-managed policy attachments when only policy names
+    are present (or when the inventory snapshot is incomplete).
+    """
+    if not policy_arn:
+        return []
+    client = get_aws_session().client("iam", config=get_boto_config())
+    paginator = client.get_paginator("list_entities_for_policy")
+    attached: list[dict] = []
+    for page in paginator.paginate(PolicyArn=policy_arn):
+        for entity_type, key, name_key in (
+            ("User", "PolicyUsers", "UserName"),
+            ("Role", "PolicyRoles", "RoleName"),
+            ("Group", "PolicyGroups", "GroupName"),
+        ):
+            for entity in page.get(key, []):
+                attached.append({
+                    "type": entity_type,
+                    "name": entity.get(name_key, "unknown"),
+                    "arn": entity.get("Arn", ""),
+                })
+    return attached
+
+
+def fetch_roles_for_instance_profile(profile_name: str) -> list[dict]:
+    """Resolve the IAM roles carried by an EC2 instance profile."""
+    if not profile_name:
+        return []
+    client = get_aws_session().client("iam", config=get_boto_config())
+    profile = client.get_instance_profile(InstanceProfileName=profile_name).get("InstanceProfile", {})
+    return [
+        {"name": role.get("RoleName", ""), "arn": role.get("Arn", "")}
+        for role in profile.get("Roles", [])
+    ]
+
+
 def fetch_policy_document_by_arn(policy_arn: str) -> dict | None:
     """Fetch the policy document for a single policy ARN (Level 2 — on demand).
 

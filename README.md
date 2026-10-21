@@ -6,12 +6,12 @@ CloudScope is an AWS cloud security posture and identity analysis application. I
 
 ## What it does
 
-- Scans selected AWS accounts and regions using local AWS credentials or a registered cross-account IAM role.
+- Scans the AWS account available to the backend through its configured AWS profile or default credential chain.
 - Collects IAM identities, policies, and supported cloud resources; scan results include partial/failure information where available.
 - Builds a graph of identities, policies, relationships, and reachable resources.
 - Reports potential static attack paths separately from activity corroborated by CloudTrail data.
 - Displays finding evidence, lifecycle status, remediation guidance, scan provenance, and risk summaries.
-- Provides what-if IAM policy simulations. Drafts are stored in the application database, scoped to an analyst and project, and are never applied to AWS.
+- Provides what-if IAM policy simulations. Drafts are stored in the application database, scoped to an analyst, and are never applied to AWS.
 - Offers optional evidence-based AI explanations through the configured Gemini provider. Selected scan context is sent to this provider; use it only where your data policy permits.
 - Stores scan snapshots and operational records in relational storage, uses Redis for coordination/cache, and uses Neo4j with NetworkX graph analysis.
 
@@ -25,10 +25,9 @@ Relational storage holds snapshots and workflow records. Redis coordinates scans
 
 ### Scan and analysis lifecycle
 
-1. An administrator registers an AWS account project and configures its target role ARN. CloudScope creates a project-specific ExternalId; the target role trust policy must require that value and trust only the intended source principal.
-2. An administrator verifies the role. The backend obtains source credentials from the configured AWS credential chain and calls STS `AssumeRole` for the registered target role.
-3. A manual scan collects supported IAM and AWS resource metadata in the selected regions using AWS read APIs. Collection is best-effort: unavailable permissions or services may yield partial results and should be reviewed in scan status and diagnostics.
-4. The scanner normalizes collected records, evaluates supported security checks and IAM relationships, persists a snapshot, and refreshes graph and finding views. Requests that load account data include the selected project scope.
+1. The backend resolves AWS credentials from `AWS_PROFILE` when configured, otherwise from the standard AWS SDK credential chain. Configure those credentials on the backend host/container.
+2. A manual or scheduled scan collects supported IAM and AWS resource metadata in the configured regions using AWS read APIs. Collection is best-effort: unavailable permissions or services may yield partial results and should be reviewed in scan status and diagnostics.
+3. The scanner normalizes collected records, evaluates supported security checks and IAM relationships, persists a snapshot, and refreshes graph and finding views for the configured account.
 5. Graph analysis models identity-to-policy-to-resource reachability. Attack paths are configuration-based possibilities; event-backed observations are distinct and depend on the CloudTrail event window and permissions.
 
 Simulation is a local what-if workflow: analyst changes are saved as drafts and compared with the current analysis. It does not call AWS write APIs. Explain with AI is optional; the backend sends selected finding or path context to the configured Gemini provider and returns a generated explanation. Do not send data to an external provider unless permitted by your organization's data policy.
@@ -39,21 +38,20 @@ Simulation is a local what-if workflow: analyst changes are saved as drafts and 
 | --- | --- | --- |
 | API and application lifecycle | `backend/app/main.py`, `backend/app/routers/` | FastAPI setup, lifecycle hooks, API route groups, health and readiness endpoints. |
 | Authentication and roles | `backend/app/security/` | JWT/OIDC validation, principal construction, development identity mode, role dependencies. |
-| AWS access | `backend/app/services/aws/session.py` | Source session resolution and project role assumption with ExternalId. |
+| AWS access | `backend/app/services/aws/session.py` | AWS profile and default credential-chain resolution. |
 | Collection and snapshots | `backend/app/services/scanner/` | Scan coordination, collection snapshots, current snapshot selection and cache invalidation. |
-| Project scope | `backend/app/routers/projects.py`, `backend/app/services/project_context.py`, `backend/app/security/project_scope.py` | Project CRUD, access checks, selected-project resolution and request scoping. |
-| Persistence | `backend/app/persistence/` | SQLAlchemy models, database initialization, project and scan repositories. |
+| Persistence | `backend/app/persistence/` | SQLAlchemy models, database initialization, scan and workflow repositories. Legacy project columns are retained for stored-data compatibility and are not used by the UI or scan credential selection. |
 | Graph analysis | `backend/app/tools/`, `backend/app/services/attack/` | Graph diagnostics, IAM trust and policy analysis, attack path generation. |
-| Web interface | `frontend/src/pages/`, `frontend/src/components/` | Dashboard, project workflows, findings, graph exploration and reports. |
+| Web interface | `frontend/src/pages/`, `frontend/src/components/` | Dashboard, findings, graph exploration and reports. |
 | API client | `frontend/src/api/` | Typed feature-level API wrappers on the shared Axios client. |
 
 ### API areas
 
-The API is rooted at `/api/v1` (interactive local documentation at `/docs`). Route groups cover projects, scans, dashboard, resources, IAM users and roles, policies, relationships, graph, attack paths, findings, risks, alerts, reports, simulation, Copilot, audit, settings, operations, and health. Authentication and minimum role requirements vary by endpoint; see [RBAC](docs/rbac.md). Health/readiness probes are separate from authenticated operational diagnostics.
+The API is rooted at `/api/v1` (interactive local documentation at `/docs`). Route groups cover scans, dashboard, resources, IAM users and roles, policies, relationships, graph, attack paths, findings, risks, alerts, reports, simulation, Copilot, audit, settings, operations, and health. Authentication and minimum role requirements vary by endpoint; see [RBAC](docs/rbac.md). Health/readiness probes are separate from authenticated operational diagnostics.
 
 ### Persistence and isolation model
 
-SQL storage keeps project and scan metadata, snapshots, findings workflow state, audit records, and simulation drafts. Redis is used for coordination and cache functions; Neo4j stores graph topology. Local Compose defaults to SQLite for relational storage, which is suitable for development but does not establish a production database, backup, migration, or recovery strategy. Project-aware scan requests resolve the selected project, use its verified role, and filter project-bound data. The scheduler is not project-aware, and independent review of complete tenant isolation remains open.
+SQL storage keeps scan metadata, snapshots, findings workflow state, audit records, and simulation drafts. Redis is used for coordination and cache functions; Neo4j stores graph topology. Local Compose defaults to SQLite for relational storage, which is suitable for development but does not establish a production database, backup, migration, or recovery strategy. CloudScope analyzes the account available through the backend's configured AWS credentials; all signed-in users of the same deployment share this account data.
 
 ### Trust and analysis boundaries
 
@@ -61,7 +59,7 @@ SQL storage keeps project and scan metadata, snapshots, findings workflow state,
 - IAM semantics are implemented by CloudScope and do not represent every AWS policy layer, condition, resource policy, or service-specific rule. Treat unsupported semantics as uncertain.
 - A graph edge records a modeled relationship; it is not proof of exploitation. A path is a possible sequence under the model, not a confirmed incident.
 - Risk ranking is application-specific. AI explanations are generated content, not authoritative remediation instructions.
-- Project scoping is an implementation foundation, not a guarantee of hosted multi-tenant readiness. See [industry readiness](docs/industry-readiness.md) for remaining operational and security work.
+- The configured AWS principal's IAM policy determines collection coverage. Keep it read-only and limit access to the intended account.
 
 ## Getting started
 
@@ -75,11 +73,9 @@ SQL storage keeps project and scan metadata, snapshots, findings workflow state,
 
 For frontend development with Vite, start the backend and its Neo4j/Redis dependencies first, then run npm install and npm run dev inside frontend. Vite uses http://localhost:8000/api/v1 unless VITE_API_BASE_URL is set.
 
-### Register an AWS account project
+### Configure AWS scanning
 
-In Projects, register an AWS account and the cross-account role ARN CloudScope should assume. Verify the role before scanning. CloudScope generates a per-project ExternalId; the AWS role trust policy must use it and grant only the collection permissions required by your environment.
-
-The project selector scopes account data requests to the selected project. If an owner has multiple projects, select one before viewing account data. The scheduler is not yet project-aware; use a manual scan after selecting a verified project.
+Set `AWS_PROFILE` and make that profile available to the backend process, or provide credentials through the AWS SDK's default credential chain (such as workload identity). CloudScope scans the account returned by those credentials. Use a read-only principal with only the inventory permissions needed for your enabled collectors. The Projects screen and per-account role onboarding have been removed.
 
 ## Security and analysis boundaries
 
@@ -89,7 +85,7 @@ The project selector scopes account data requests to the selected project. If an
 - Risk scores are CloudScope model outputs, not AWS or regulatory verdicts.
 - AI output is generated by an external model and may be incomplete. Validate recommendations against source evidence before acting.
 - Simulation drafts and remediation guidance do not perform AWS changes.
-- Project isolation has implementation and regression-test coverage, but has not received an independent security review or deployment-scale tenant-isolation audit.
+- A CloudScope deployment uses the single AWS account configured on its backend. If separate AWS accounts are required, run separate deployments with independently configured credentials.
 
 ## Technology
 

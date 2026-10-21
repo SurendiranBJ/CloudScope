@@ -32,9 +32,9 @@ export interface IAMPolicy {
 
 export interface CloudResource {
   name: string;
-  type: 'User' | 'Role' | 'S3' | 'EC2' | 'Lambda' | 'Secrets' | 'RDS' | 'Policy' | 'DynamoDB';
+  type: string;
   region: string;
-  status: 'active' | 'stopped' | 'configured' | 'warning' | 'critical';
+  status: string;
   owner: string;
   arn: string;
   riskScore: number;
@@ -364,6 +364,9 @@ export interface PolicyCatalogEntry {
   severity: 'critical' | 'high' | 'medium' | 'low' | 'unknown';
   findings: PolicyFinding[];
   attachedTo?: { type: string; name: string; arn: string }[];
+  attachmentDetailsUnavailable?: boolean;
+  usedByResources?: { type: string; name: string; arn: string; region?: string }[];
+  allowedResources?: { type: string; name: string; arn: string; region?: string }[];
 }
 
 export interface PaginatedPolicyCatalog {

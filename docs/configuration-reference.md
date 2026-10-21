@@ -18,7 +18,7 @@ This reference describes settings read by `backend/app/config.py` and important 
 | `CORS_ORIGINS` | localhost origins | Allowed browser origins. Set exact UI origins in deployment; never use a wildcard for a credentialed app. |
 | `TRUSTED_PROXIES` | empty | Trusted proxy configuration used for client/request metadata. Set only known proxy addresses when deployed behind a proxy. |
 
-## AWS collection and account projects
+## AWS collection
 
 | Setting | Application default | Function and deployment notes |
 | --- | --- | --- |
@@ -26,10 +26,7 @@ This reference describes settings read by `backend/app/config.py` and important 
 | `AWS_PROFILE` | `identityscope-scanner` | Source profile used to establish AWS credentials. Compose may override this default. |
 | `AWS_DEFAULT_REGION` | `ap-south-1` | Default AWS region for SDK/session behavior. |
 | `SCAN_REGIONS` | empty | Optional comma-separated region override. Confirm effective region selection in the scan record. |
-| Project `role_arn` | per project | Target account role assumed by manual project scans. Must be verified and trusted by the source AWS principal. |
-| Project `external_id` | generated per project | STS ExternalId used on target role assumption. Install it in that role's trust policy; keep it private and scoped. |
-
-AWS service access is governed by IAM policies attached to the actual source principal and target role. These configuration values do not grant AWS permissions. See [the AWS connection guide](../aws/templates/deployment_guide.md).
+AWS service access is governed by the IAM policies attached to the configured source principal. CloudScope scans the account returned by that principal's credentials and no longer supports account registration or target-role selection in the UI. These configuration values do not grant AWS permissions. See [the AWS connection guide](../aws/templates/deployment_guide.md).
 
 ## SQL, graph, cache, and scan coordination
 
@@ -43,14 +40,14 @@ AWS service access is governed by IAM policies attached to the actual source pri
 | `SNAPSHOT_RETENTION_COUNT` | `10` | Configured snapshot retention count. Verify cleanup behavior and backup requirements before relying on it. |
 | `AUDIT_RETENTION_DAYS` | `90` | Audit retention configuration. Confirm actual cleanup and external retention requirements. |
 
-The scheduler is not project-aware. Do not infer project-specific scheduled scan behavior from global scan settings.
+Legacy project columns may remain in existing databases for compatibility; they are not used to choose AWS credentials.
 
 ## Server, logs, and build metadata
 
 | Setting | Application default | Function and deployment notes |
 | --- | --- | --- |
 | `BACKEND_PORT` | `8000` | Backend listener/application port; Compose can publish a host mapping separately. |
-| `SCAN_INTERVAL_MINUTES` | `5` | Scheduled scan interval. Current scheduling does not iterate through registered projects. |
+| `SCAN_INTERVAL_MINUTES` | `5` | Scheduled scan interval for the configured AWS account. |
 | `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | Structured log encoding and severity threshold. Review log sinks and redaction. |
 | `APP_VERSION` | `1.0.0` | Application version label. |
 | `BUILD_VERSION`, `GIT_COMMIT`, `COMMIT_SHA`, `IMAGE_TAG` | unset | Optional build provenance fields for identifying the deployed artifact. |

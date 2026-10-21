@@ -14,7 +14,9 @@ import {
   AlertTriangle,
   Layers,
   Cloud,
-  Shield
+  Shield,
+  GitBranch,
+  Bell
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getCloudResources } from '../api/resources';
@@ -28,8 +30,8 @@ interface ResourcesProps {
   search?: string;
 }
 
-const CLOUD_TYPES = new Set(['S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB']);
-const IDENTITY_TYPES = new Set(['User', 'Role', 'Policy']);
+const CLOUD_TYPES = new Set(['S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB', 'ECS', 'ECR', 'CodeCommit', 'SQS', 'SNS', 'KMS', 'EKS', 'StepFunctions']);
+const IDENTITY_TYPES = new Set(['User', 'Role', 'Policy', 'Group']);
 
 export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
   const [localSearch, setLocalSearch] = useState('');
@@ -42,7 +44,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
 
   const searchQuery = search || localSearch;
 
-  const { data } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ['cloudResources'],
     queryFn: getCloudResources,
     refetchInterval: 10000
@@ -62,7 +64,15 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     Secrets: { icon: Lock, color: 'text-enterprise-critical bg-enterprise-critical/15 border-enterprise-critical/30' },
     RDS: { icon: Server, color: 'text-indigo-500 bg-indigo-500/15 border-indigo-500/30' },
     DynamoDB: { icon: Database, color: 'text-purple-500 bg-purple-500/15 border-purple-500/30' },
-    Policy: { icon: FileText, color: 'text-teal-500 bg-teal-500/15 border-teal-500/30' }
+    Policy: { icon: FileText, color: 'text-teal-500 bg-teal-500/15 border-teal-500/30' },
+    ECS: { icon: Server, color: 'text-enterprise-success bg-enterprise-success/15 border-enterprise-success/30' },
+    ECR: { icon: Layers, color: 'text-orange-400 bg-orange-400/15 border-orange-400/30' },
+    CodeCommit: { icon: GitBranch, color: 'text-purple-400 bg-purple-400/15 border-purple-400/30' },
+    SQS: { icon: Zap, color: 'text-blue-400 bg-blue-400/15 border-blue-400/30' },
+    SNS: { icon: Bell, color: 'text-yellow-400 bg-yellow-400/15 border-yellow-400/30' },
+    KMS: { icon: Lock, color: 'text-enterprise-warning bg-enterprise-warning/15 border-enterprise-warning/30' },
+    EKS: { icon: Cloud, color: 'text-blue-400 bg-blue-400/15 border-blue-400/30' },
+    StepFunctions: { icon: GitBranch, color: 'text-pink-400 bg-pink-400/15 border-pink-400/30' }
   };
 
   const getStatusBadgeClass = (status: CloudResource['status']) => {
@@ -128,7 +138,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
     return resources.filter((r) => r.type === 'Lambda').length;
   }, [resources]);
 
-  const resourceTypes = ['ALL', 'User', 'Role', 'S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB'];
+  const resourceTypes = ['ALL', 'User', 'Role', 'Group', 'Policy', 'S3', 'EC2', 'Lambda', 'Secrets', 'RDS', 'DynamoDB', 'ECS', 'ECR', 'CodeCommit', 'SQS', 'SNS', 'KMS', 'EKS', 'StepFunctions'];
 
 
   const handleCopy = () => {
@@ -146,7 +156,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">Cloud Resources Ledger</h1>
           <p className="text-xs text-enterprise-subtext mt-1">
-            Browse and search all tracked AWS IAM policies and database storage entities.
+            Browse and search discovered AWS identities, policies, workloads, and cloud resources.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -277,6 +287,10 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
 
       {/* Ledger Table */}
       <div className="bg-enterprise-card border border-enterprise-border rounded-xl overflow-hidden shadow-xl">
+        {isLoading && <div className="p-8 text-center text-sm text-enterprise-subtext">Loading discovered AWS resources…</div>}
+        {isError && <div role="alert" className="p-8 text-center text-sm text-enterprise-critical">Could not load cloud resources. {error instanceof Error ? error.message : 'Check the latest scan and try again.'}</div>}
+        {!isLoading && !isError && data?.length === 0 && <div className="p-8 text-center text-sm text-enterprise-subtext">No resources have been published yet. Start or wait for an AWS scan, then refresh this page.</div>}
+        {!isLoading && !isError && (data?.length ?? 0) > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -364,6 +378,7 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
       {/* JSON Configuration Modal */}

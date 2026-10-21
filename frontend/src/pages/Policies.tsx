@@ -69,6 +69,7 @@ export const Policies: React.FC = () => {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selected, setSelected] = useState<PolicyCatalogEntry | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showAttachments, setShowAttachments] = useState(false);
 
   const {
     isScanning,
@@ -111,14 +112,18 @@ export const Policies: React.FC = () => {
 
   const handleSelectPolicy = async (policy: PolicyCatalogEntry) => {
     setSelected(policy);
-    if (!policy.document) {
-      setDetailLoading(true);
-      try {
-        const detail = await getPolicyById(policy.arn || policy.name);
-        setSelected(detail);
-      } catch { /* keep metadata-only view */ }
-      finally { setDetailLoading(false); }
-    }
+    setShowAttachments(false);
+    // Detail endpoint supplies the full attachment list, even when the
+    // policy document itself was already present in the catalog row.
+    setDetailLoading(true);
+    try {
+      // Policy ARNs contain slashes, which are not matched by the detail
+      // route's ordinary path segment on every ASGI/proxy setup. Names are
+      // accepted by the API and avoid silently falling back to catalog data.
+      const detail = await getPolicyById(policy.name);
+      setSelected(detail);
+    } catch { /* keep catalog metadata available if detail loading fails */ }
+    finally { setDetailLoading(false); }
   };
 
   const handleSort = (field: SortField) => {
@@ -384,9 +389,9 @@ export const Policies: React.FC = () => {
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-gray-800 text-gray-400 border border-gray-700">
                     <Tag className="w-2.5 h-2.5" /> {selected.type}
                   </span>
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-gray-800 text-gray-400 border border-gray-700">
+                  <button type="button" onClick={() => setShowAttachments((visible) => !visible)} aria-expanded={showAttachments} aria-controls="policy-attachments" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-gray-800 text-gray-300 border border-gray-700 hover:border-enterprise-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-enterprise-accent/50">
                     <Users className="w-2.5 h-2.5" /> {selected.attachmentCount} attachment{selected.attachmentCount !== 1 ? 's' : ''}
-                  </span>
+                  </button>
                   {selected.isAttachable && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-green-900/30 text-green-400 border border-green-700/30">
                       <CheckCircle className="w-2.5 h-2.5" /> Attachable
@@ -417,16 +422,60 @@ export const Policies: React.FC = () => {
               )}
 
               {/* Attached to */}
-              {selected.attachedTo && selected.attachedTo.length > 0 && (
-                <div>
+              {showAttachments && (
+                <div id="policy-attachments" aria-live="polite">
                   <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wider">Attached To</p>
-                  <div className="space-y-1">
-                    {selected.attachedTo.map((a, i) => (
-                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-800/50 text-xs">
-                        <span className="text-enterprise-accent font-mono text-[10px]">{a.type}</span>
-                        <span className="text-gray-300">{a.name}</span>
+                  {detailLoading ? (
+                    <div className="flex items-center gap-2 text-enterprise-subtext text-xs"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading attachments…</div>
+                  ) : selected.attachedTo?.length ? (
+                    <div className="space-y-1">
+                      {selected.attachedTo.map((a, i) => (
+                        <div key={`${a.type}-${a.arn || a.name}-${i}`} className="flex flex-col gap-1 rounded-lg bg-gray-800/50 px-3 py-2 text-xs sm:flex-row sm:items-center sm:gap-2">
+                          <span className="shrink-0 text-enterprise-accent font-mono text-[10px]">{a.type}</span>
+                          <span className="break-all text-gray-200">{a.name}</span>
+                          {a.arn && <span className="break-all font-mono text-[10px] text-gray-500">{a.arn}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  ) : selected.attachmentDetailsUnavailable ? (
+                    <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-3 text-xs text-amber-300">AWS reports {selected.attachmentCount} attachment{selected.attachmentCount !== 1 ? 's' : ''}, but CloudScope could not retrieve the attached identities. Check that the configured AWS credentials allow <span className="font-mono">iam:ListEntitiesForPolicy</span>.</p>
+                  ) : selected.attachmentCount > 0 ? (
+                    <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-3 text-xs text-amber-300">AWS reports {selected.attachmentCount} attachment{selected.attachmentCount !== 1 ? 's' : ''}, but IAM returned no attached users, roles, or groups. Refresh the scan and reopen this policy to confirm the latest state.</p>
+                  ) : (
+                    <p className="rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-3 text-xs text-enterprise-subtext">No users, roles, or groups are currently attached to this policy.</p>
+                  )}
+                  {!!selected.usedByResources?.length && (
+                    <div className="mt-4">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">AWS resources using these roles</p>
+                      <div className="space-y-1">
+                        {selected.usedByResources.map((resource, i) => (
+                          <div key={`${resource.type}-${resource.arn || resource.name}-${i}`} className="flex flex-col gap-1 rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-xs sm:flex-row sm:items-center sm:gap-2">
+                            <span className="shrink-0 rounded bg-enterprise-accent/10 px-1.5 py-0.5 font-mono text-[10px] text-enterprise-accent">{resource.type}</span>
+                            <span className="break-all text-gray-200">{resource.name}</span>
+                            {resource.region && <span className="text-[10px] text-gray-500">{resource.region}</span>}
+                            {resource.arn && <span className="break-all font-mono text-[10px] text-gray-500">{resource.arn}</span>}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </div>
+                  )}
+                  <div className="mt-4">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-gray-400">Inventory resources this policy allows</p>
+                    <p className="mb-2 text-[11px] text-enterprise-subtext">Matches this policy’s actions and resource scope to the current scan. This does not by itself confirm effective access or actual use.</p>
+                    {selected.allowedResources?.length ? (
+                      <div className="space-y-1">
+                        {selected.allowedResources.map((resource, i) => (
+                          <div key={`${resource.type}-${resource.arn || resource.name}-${i}`} className="flex flex-col gap-1 rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-2 text-xs sm:flex-row sm:items-center sm:gap-2">
+                            <span className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] text-blue-300">{resource.type}</span>
+                            <span className="break-all text-gray-200">{resource.name}</span>
+                            {resource.region && <span className="text-[10px] text-gray-500">{resource.region}</span>}
+                            {resource.arn && <span className="break-all font-mono text-[10px] text-gray-500">{resource.arn}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="rounded-lg border border-enterprise-border bg-enterprise-bg px-3 py-3 text-xs text-enterprise-subtext">No current inventory resources match this policy’s allowed actions and resource scope.</p>
+                    )}
                   </div>
                 </div>
               )}

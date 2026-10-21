@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Play, RefreshCw, ShieldCheck, Waypoints } from 'lucide-react';
-import { previewSimulationChange, type SimulationChangePayload } from '../api/simulation';
+import { Link } from 'react-router-dom';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, Play, RefreshCw, ShieldCheck, Trash2, Waypoints } from 'lucide-react';
+import { addSimulationChange, previewSimulationChange, type SimulationChangePayload } from '../api/simulation';
 import { getIAMUsers } from '../api/users';
 import { getIAMRoles } from '../api/roles';
 import { getPolicyCatalog } from '../api/policies';
@@ -9,8 +10,11 @@ import type { IAMRole, IAMUser, PolicyCatalogEntry, SimulationAnalysis } from '.
 type Principal = { id: string; name: string; type: 'USER' | 'ROLE'; policyNames: string[] };
 
 const errorMessage = (error: unknown) => {
-  const responseError = error as { response?: { data?: { detail?: string } }; message?: string };
-  return responseError.response?.data?.detail || responseError.message || 'The request could not be completed.';
+  const responseError = error as { response?: { data?: { detail?: unknown } }; message?: string };
+  const detail = responseError.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object') return Object.values(detail as Record<string, unknown>).map(String).join(' ');
+  return responseError.message || 'The request could not be completed.';
 };
 
 export const AttackSimulation: React.FC = () => {
@@ -25,6 +29,8 @@ export const AttackSimulation: React.FC = () => {
   const [analysis, setAnalysis] = useState<SimulationAnalysis | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState('');
+  const [draftSaved, setDraftSaved] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -71,6 +77,7 @@ export const AttackSimulation: React.FC = () => {
     if (!principalType || !principalId || !applicablePolicies.some((policy) => policy.arn === policyArn)) return;
     setRunning(true);
     setRunError('');
+    setDraftSaved(false);
     setAnalysis(null);
     try {
       setAnalysis(await previewSimulationChange({
@@ -86,6 +93,22 @@ export const AttackSimulation: React.FC = () => {
     }
   };
 
+  const saveDraft = async () => {
+    const [principalType, ...idParts] = principalKey.split(':');
+    const principalId = idParts.join(':');
+    if (!analysis || !principalType || !principalId || !policyArn) return;
+    setSavingDraft(true);
+    setRunError('');
+    try {
+      await addSimulationChange({ action, principal_type: principalType as 'USER' | 'ROLE', principal_id: principalId, policy_arn: policyArn });
+      setDraftSaved(true);
+    } catch (error: unknown) {
+      setRunError(errorMessage(error));
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
   const risk = analysis?.risk_comparison;
   const blast = analysis?.blast_radius_comparison;
   const newPaths = analysis?.attack_path_comparison?.new_paths || [];
@@ -97,11 +120,15 @@ export const AttackSimulation: React.FC = () => {
     <main className="flex-1 min-w-0 overflow-y-auto bg-enterprise-bg p-6 space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-white"><Waypoints className="h-6 w-6 text-enterprise-warning" /> IAM Change Preview</h1>
-          <p className="mt-1 max-w-3xl text-sm text-enterprise-subtext">Evaluate how attaching or detaching a policy changes access, risk, attack paths, and reachable resources.</p>
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-white"><Waypoints className="h-6 w-6 text-enterprise-warning" /> What‑If Security Analysis</h1>
+          <p className="mt-1 max-w-3xl text-sm text-enterprise-subtext">Preview how an IAM policy change could affect risk, attack paths, and reachable AWS resources. No changes are made to AWS.</p>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300"><ShieldCheck className="h-4 w-4" /> Analysis only · no AWS changes</div>
+        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300"><ShieldCheck className="h-4 w-4" /> Draft analysis only · no AWS changes</div>
       </header>
+
+      <ol className="grid gap-3 sm:grid-cols-3" aria-label="What-if analysis steps">
+        {['Choose an identity and policy change', 'Review the projected security impact', 'Discard the preview or save it as a draft'].map((step, index) => <li key={step} className="flex items-center gap-3 rounded-lg border border-enterprise-border bg-enterprise-card px-4 py-3 text-xs text-enterprise-subtext"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-enterprise-accent/15 font-bold text-enterprise-accent">{index + 1}</span>{step}</li>)}
+      </ol>
 
       <section className="rounded-xl border border-enterprise-border bg-enterprise-card p-5">
         {loadingCatalog ? <div className="flex items-center gap-2 py-6 text-sm text-enterprise-subtext"><RefreshCw className="h-4 w-4 animate-spin" /> Loading scanned identities and policies…</div> : catalogError ? (
@@ -126,7 +153,7 @@ export const AttackSimulation: React.FC = () => {
               </select>
             </label>
           </div>
-          <div className="mt-5 flex justify-end"><button onClick={runPreview} disabled={running || !principalKey || !policyArn || applicablePolicies.length === 0} className="inline-flex items-center gap-2 rounded-lg bg-enterprise-warning px-5 py-2.5 text-sm font-bold text-enterprise-bg transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">{running ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}{running ? 'Analyzing…' : 'Preview impact'}</button></div>
+          <div className="mt-5 flex justify-end"><button onClick={runPreview} disabled={running || savingDraft || !principalKey || !policyArn || applicablePolicies.length === 0} className="inline-flex items-center gap-2 rounded-lg bg-enterprise-warning px-5 py-2.5 text-sm font-bold text-enterprise-bg transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">{running ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}{running ? 'Analyzing…' : analysis ? 'Run preview again' : 'Preview impact'}</button></div>
         </>}
       </section>
 
@@ -134,6 +161,14 @@ export const AttackSimulation: React.FC = () => {
 
       {analysis && <section aria-live="polite" className="space-y-4">
         <div className="rounded-lg border border-blue-500/25 bg-blue-500/5 px-4 py-3 text-sm text-blue-100">{analysis.summary || analysis.simulation_note || 'This is a non-persistent analysis of the proposed IAM change.'}</div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-enterprise-border bg-enterprise-card p-4">
+          <p className="text-sm text-enterprise-subtext">Review the impact below. Save this proposed change as a draft to compare it with other changes, or discard the preview.</p>
+          <div className="flex shrink-0 gap-2">
+            <button type="button" onClick={() => { setAnalysis(null); setRunError(''); setDraftSaved(false); }} disabled={savingDraft} className="inline-flex items-center gap-2 rounded-lg border border-enterprise-border px-3 py-2 text-sm font-semibold text-enterprise-subtext hover:text-white disabled:opacity-50"><Trash2 className="h-4 w-4" />Discard preview</button>
+            <button type="button" onClick={saveDraft} disabled={savingDraft || draftSaved} className="inline-flex items-center gap-2 rounded-lg bg-enterprise-accent px-3 py-2 text-sm font-semibold text-white hover:brightness-110 disabled:opacity-60">{savingDraft ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{draftSaved ? 'Saved to drafts' : savingDraft ? 'Saving…' : 'Save as draft'}</button>
+          </div>
+        </div>
+        {draftSaved && <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300"><span className="flex items-center gap-2"><Check className="h-4 w-4" />Draft saved. It remains an analysis draft and has not changed AWS.</span><Link to="/changes" className="font-semibold underline underline-offset-2">Review saved changes</Link></div>}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Metric title="Security posture" value={risk ? `${risk.current_score} → ${risk.desired_score}` : 'Unavailable'} detail={risk ? `${risk.delta > 0 ? '+' : ''}${risk.delta} points · ${risk.desired_severity} residual risk` : 'No posture comparison returned'} delta={risk?.delta} higherIsWorse={false} />
           <Metric title="Blast radius" value={blast ? `${blast.current_resource_count} → ${blast.desired_resource_count}` : 'Unavailable'} detail={blast ? `${blast.delta > 0 ? '+' : ''}${blast.delta} score` : 'No blast radius returned'} delta={blast?.delta} />

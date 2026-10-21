@@ -8,6 +8,7 @@ Strictly read-only, deterministic explanation layer.
 import json
 import logging
 import asyncio
+import re
 from typing import Dict, Any, Optional
 from google import genai
 from google.genai import types
@@ -215,6 +216,98 @@ class GeminiProvider(AIProvider):
         # Parse and validate the response
         return self._validate_response(response)
 
+    @staticmethod
+    def _extract_json_object(text: str) -> str:
+        """Extract the first complete JSON object, respecting quoted braces."""
+        start = text.find("{")
+        if start < 0:
+            return ""
+        depth = 0
+        quoted = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+                continue
+            if char == '"':
+                quoted = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        return ""
+
+    @staticmethod
+    def _normalize_response_fields(value: Any) -> dict:
+        """Normalize common model field aliases and scalar/list variations."""
+        if not isinstance(value, dict):
+            return {}
+        for wrapper in ("response", "result", "data", "copilot_response"):
+            if isinstance(value.get(wrapper), dict):
+                value = value[wrapper]
+                break
+        if "summary" not in value and isinstance(value.get("incident_summary"), str):
+            value = {**value, "summary": value["incident_summary"]}
+        aliases = {
+            "summary": ("summary", "headline", "title"),
+            "analysis": ("analysis", "explanation", "text", "answer", "content"),
+            "severity": ("severity", "risk_level", "priority"),
+            "risk_score": ("risk_score", "riskScore", "score"),
+            "affected_entities": ("affected_entities", "affectedEntities", "affected_resources", "impacted_resources"),
+            "evidence": ("evidence", "sources", "facts"),
+            "recommendations": ("recommendations", "remediations", "next_steps", "nextSteps"),
+            "suggested_questions": ("suggested_questions", "suggestedQuestions", "follow_up_questions"),
+            "limitations": ("limitations", "caveats", "uncertainties"),
+        }
+        normalized = {}
+        for field, names in aliases.items():
+            for name in names:
+                if name in value:
+                    normalized[field] = value[name]
+                    break
+        for field in ("affected_entities", "evidence", "recommendations", "suggested_questions", "limitations"):
+            candidate = normalized.get(field)
+            if candidate is None:
+                normalized[field] = []
+            elif not isinstance(candidate, list):
+                normalized[field] = [candidate]
+            normalized[field] = [
+                item if isinstance(item, str) else json.dumps(item, ensure_ascii=False, default=str)
+                for item in normalized[field]
+            ]
+        for field in ("summary", "analysis"):
+            if normalized.get(field) is not None and not isinstance(normalized[field], str):
+                normalized[field] = json.dumps(normalized[field], ensure_ascii=False, default=str)
+        if normalized.get("severity") is not None and not isinstance(normalized["severity"], str):
+            normalized["severity"] = str(normalized["severity"])
+        if not normalized.get("summary"):
+            normalized["summary"] = normalized.get("analysis") or "Cloud security alert analysis"
+        if not normalized.get("analysis"):
+            normalized["analysis"] = normalized["summary"]
+        return normalized
+
+    @staticmethod
+    def _recover_narrative_fields(text: str) -> dict:
+        """Recover summary/analysis strings from a truncated JSON response."""
+        recovered = {}
+        for field, aliases in (("summary", "summary|headline|title"), ("analysis", "analysis|explanation|text|answer|content")):
+            match = re.search(rf'"(?:{aliases})"\s*:\s*"((?:\\.|[^"\\])*)', text, flags=re.IGNORECASE)
+            if match:
+                fragment = match.group(1)
+                try:
+                    recovered[field] = json.loads('"' + fragment + '"')
+                except (TypeError, ValueError):
+                    recovered[field] = fragment.replace("\\n", "\n").replace('\\"', '"')
+        return recovered
+
     def _validate_response(self, response: Any) -> CopilotAIResponse:
         """Validate Gemini output against CopilotAIResponse schema with tolerant recovery."""
         # 1. Check if SDK directly parsed the response schema into Pydantic
@@ -223,14 +316,19 @@ class GeminiProvider(AIProvider):
                 return response.parsed
             if isinstance(response.parsed, dict):
                 try:
-                    return CopilotAIResponse.model_validate(response.parsed)
+                    return CopilotAIResponse.model_validate(self._normalize_response_fields(response.parsed))
                 except Exception as p_err:
                     logger.warning("Failed to validate response.parsed dict: %s", p_err)
             elif hasattr(response.parsed, "model_dump"):
                 try:
-                    return CopilotAIResponse.model_validate(response.parsed.model_dump())
+                    return CopilotAIResponse.model_validate(self._normalize_response_fields(response.parsed.model_dump()))
                 except Exception as p_err:
                     logger.warning("Failed to validate response.parsed dump: %s", p_err)
+            elif hasattr(response.parsed, "__dict__"):
+                try:
+                    return CopilotAIResponse.model_validate(self._normalize_response_fields(vars(response.parsed)))
+                except Exception as p_err:
+                    logger.warning("Failed to validate response.parsed attributes: %s", p_err)
 
         # 2. Extract text and validate as JSON
         text = getattr(response, "text", "") or ""
@@ -260,6 +358,15 @@ class GeminiProvider(AIProvider):
             candidates = getattr(response, "candidates", None) or []
             finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
 
+            # Some model versions add a preamble or wrap the schema in a result object.
+            extracted = self._extract_json_object(cleaned)
+            if extracted:
+                try:
+                    parsed = self._normalize_response_fields(json.loads(extracted))
+                    return CopilotAIResponse.model_validate(parsed)
+                except Exception as extract_err:
+                    logger.debug("Embedded JSON recovery failed: %s", extract_err)
+
             # Attempt soft recovery for truncated or slightly malformed JSON
             try:
                 repaired = cleaned
@@ -273,14 +380,30 @@ class GeminiProvider(AIProvider):
 
                 parsed_dict = json.loads(repaired)
                 if isinstance(parsed_dict, dict):
-                    if "summary" not in parsed_dict:
-                        parsed_dict["summary"] = "Security analysis generated from CloudScope evidence."
-                    if "analysis" not in parsed_dict:
-                        parsed_dict["analysis"] = repaired[:500]
+                    parsed_dict = self._normalize_response_fields(parsed_dict)
                     logger.info("Successfully recovered truncated CopilotAIResponse JSON (finish_reason=%s)", finish_reason)
                     return CopilotAIResponse.model_validate(parsed_dict)
             except Exception as repair_err:
                 logger.error("Failed to recover Gemini response into schema: %s (finish_reason=%s)", repair_err, finish_reason)
+
+            # Keep a useful prose response instead of failing the alert detail panel.
+            if not cleaned.startswith(("{", "[")):
+                plain_text = cleaned[:12000]
+                summary = next((line.strip(" #-\t") for line in plain_text.splitlines() if line.strip()), "AI analysis")[:300]
+                return CopilotAIResponse(
+                    summary=summary,
+                    analysis=plain_text,
+                    limitations=["The model returned prose instead of the requested structured fields; verify impact and recommendations against the supplied event evidence."],
+                )
+
+            # Recover useful narrative fields if structured output was truncated mid-stream.
+            narrative = self._recover_narrative_fields(cleaned)
+            if narrative.get("analysis"):
+                return CopilotAIResponse(
+                    summary=narrative.get("summary") or "Cloud security alert analysis",
+                    analysis=narrative["analysis"],
+                    limitations=["The model response was incomplete; some structured impact or recommendation fields may be missing."],
+                )
 
             raise AIResponseValidationError(
                 f"Model output did not match expected structured schema: {initial_err}",

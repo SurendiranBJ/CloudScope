@@ -494,6 +494,36 @@ def get_latest_snapshot() -> Optional[Dict[str, Any]]:
         return None
 
 
+def get_snapshot_id_at_or_before(timestamp: str) -> Optional[str]:
+    """Find the newest global snapshot published no later than an event timestamp."""
+    try:
+        target = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        with get_db_session() as session:
+            snapshots = (
+                session.query(ScanSnapshotModel)
+                .filter(ScanSnapshotModel.project_id.is_(None))
+                .order_by(desc(ScanSnapshotModel.published_at))
+                .limit(50)
+                .all()
+            )
+            eligible = []
+            for snapshot in snapshots:
+                try:
+                    published = datetime.fromisoformat(str(snapshot.published_at).replace("Z", "+00:00"))
+                    if published.tzinfo is None:
+                        published = published.replace(tzinfo=timezone.utc)
+                    if published < target:
+                        eligible.append((published, snapshot.snapshot_id))
+                except (TypeError, ValueError):
+                    continue
+            return max(eligible, default=(None, None), key=lambda item: item[0] or datetime.min.replace(tzinfo=timezone.utc))[1]
+    except Exception as exc:
+        logger.warning("Could not resolve snapshot baseline for event: %s", exc)
+        return None
+
+
 def cleanup_old_snapshots(retention_count: int = 10, preserve_snapshot_id: Optional[str] = None) -> int:
     """Prune historical snapshot records exceeding retention count."""
     try:

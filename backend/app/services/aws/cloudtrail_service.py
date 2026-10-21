@@ -1,12 +1,39 @@
 from app.utils.time import to_utc_iso, utc_now
 import logging
 import concurrent.futures
+import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from app.services.aws.session import get_aws_session
 from app.services.aws.region_cache import get_all_regions, make_region_sessions
 
 logger = logging.getLogger("scanner")
+ALERT_LOOKBACK_DAYS = 7
+_SENSITIVE_EVENT_KEYS = {"accesskeyid", "secretaccesskey", "sessiontoken", "token"}
+
+
+def _is_automated_readonly_assume_role(event: dict) -> bool:
+    """Exclude routine AWS service role checks from security alert counts."""
+    identity = event.get("userIdentity") or {}
+    invoked_by = str(identity.get("invokedBy") or "")
+    return (
+        event.get("eventName") == "AssumeRole"
+        and event.get("readOnly") is True
+        and (identity.get("type") == "AWSService" or invoked_by.endswith(".amazonaws.com"))
+        and not event.get("errorCode")
+    )
+
+
+def _redact_cloudtrail_payload(value):
+    """Remove credential material from nested CloudTrail payloads before persistence."""
+    if isinstance(value, dict):
+        return {
+            key: ("[REDACTED]" if str(key).lower() in _SENSITIVE_EVENT_KEYS else _redact_cloudtrail_payload(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_cloudtrail_payload(item) for item in value]
+    return value
 
 
 def collect_recent_alerts() -> list:
@@ -20,6 +47,8 @@ def collect_recent_alerts() -> list:
 
         all_events = []
         start_time = time.time()
+        lookup_end = datetime.now(timezone.utc)
+        lookup_start = lookup_end - timedelta(days=ALERT_LOOKBACK_DAYS)
 
         def fetch_events_for_region(region_name):
             """Fetch CloudTrail events for all event names in a single region."""
@@ -33,6 +62,8 @@ def collect_recent_alerts() -> list:
                         events = []
                         for page in paginator.paginate(
                             LookupAttributes=[{'AttributeKey': 'EventName', 'AttributeValue': event_name}],
+                            StartTime=lookup_start,
+                            EndTime=lookup_end,
                             PaginationConfig={'MaxItems': 50, 'PageSize': 20}
                         ):
                             events.extend(page.get('Events', []))
@@ -60,6 +91,15 @@ def collect_recent_alerts() -> list:
         logger.info(f"CloudTrail collection step completed in {elapsed:.2f}s across {len(regions)} region(s)")
 
         for event in all_events:
+            try:
+                raw_payload = event.get("CloudTrailEvent", "{}")
+                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+            except (TypeError, ValueError):
+                payload = {}
+
+            if _is_automated_readonly_assume_role(payload):
+                continue
+
             event_id = event['EventId']
             event_time = event.get('EventTime', utc_now())
             username = event.get('Username', 'Unknown')
@@ -86,7 +126,7 @@ def collect_recent_alerts() -> list:
                 "resource": resource_name,
                 "description": f"CloudTrail Audit Alert: {name} action executed by {username}.",
                 "status": "open",
-                "details": event.get('CloudTrailEvent', '{}')
+                "details": json.dumps(_redact_cloudtrail_payload(payload), separators=(",", ":"))
             })
         logger.info(f"CloudTrail Collector: Discovered {len(alerts)} alerts")
     except Exception as e:

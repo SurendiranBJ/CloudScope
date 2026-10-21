@@ -12,7 +12,6 @@ This reference supports CloudScope's configuration analysis. It is defensive gui
 ## 2. Harden role assumption
 
 - Trust only the expected source principal or federation provider. Restrict which principals can pass/assume roles where relevant.
-- For CloudScope cross-account projects, require the unique project ExternalId in the target role trust relationship and verify the role before scanning.
 - Use short-lived role credentials and review CloudTrail for `AssumeRole` events. ExternalId mitigates the confused-deputy risk; it is not a secret credential or a replacement for principal restrictions.
 - Require MFA or other context conditions where compatible with the workload and AWS service behavior. Do not add a condition that breaks the intended noninteractive scanner role without validating the resulting assumption flow.
 

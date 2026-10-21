@@ -12,7 +12,12 @@ from app.services.scanner.current_snapshot import (
     has_published_snapshot,
 )
 from datetime import datetime
+from datetime import timedelta, timezone
 from app.security.dependencies import require_viewer
+from app.services.aws.cloudtrail_service import (
+    _is_automated_readonly_assume_role,
+    _redact_cloudtrail_payload,
+)
 
 router = APIRouter(tags=["Security Alerts & Activity"], dependencies=[Depends(require_viewer)])
 
@@ -38,12 +43,30 @@ def get_security_alerts(
         raise HTTPException(status_code=400, detail="page_size must be between 1 and 200.")
 
     raw_alerts = get_current_alerts()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     data = []
     if raw_alerts:
         import json
         for a in raw_alerts:
             if isinstance(a, dict):
                 norm = dict(a)
+                details_payload = norm.get("details")
+                try:
+                    payload = json.loads(details_payload) if isinstance(details_payload, str) else details_payload or {}
+                except (TypeError, ValueError):
+                    payload = {}
+                if _is_automated_readonly_assume_role(payload):
+                    continue
+                if payload:
+                    norm["details"] = json.dumps(_redact_cloudtrail_payload(payload))
+                try:
+                    event_time = datetime.fromisoformat(str(norm.get("timestamp", "")).replace("Z", "+00:00"))
+                    if event_time.tzinfo is None:
+                        event_time = event_time.replace(tzinfo=timezone.utc)
+                    if event_time < cutoff:
+                        continue
+                except (TypeError, ValueError):
+                    pass
                 if "details" not in norm or norm["details"] is None:
                     norm["details"] = "{}"
                 elif not isinstance(norm["details"], str):

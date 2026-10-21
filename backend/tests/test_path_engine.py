@@ -5,6 +5,7 @@ import pytest
 from app.services.attack.path_engine import (
     find_attack_paths,
     compute_effective_blast_radius,
+    _is_valid_lambda_workload_start,
     _validate_path_security_semantics,
 )
 
@@ -313,6 +314,25 @@ class TestFindAttackPaths:
         # Dormant Lambda must NOT be considered an attack start
         dormant_paths = [p for p in paths if p["source"] == "lambda-dormant"]
         assert len(dormant_paths) == 0
+
+    @pytest.mark.parametrize("trust_policy", [
+        None,
+        "not-json",
+        {"Statement": []},
+        {"Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
+        {"Statement": [{"Effect": "Allow", "Principal": {"Service": "notlambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
+        {"Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRoleWithWebIdentity"}]},
+        {"Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole", "Condition": {"StringEquals": {"aws:SourceAccount": "123456789012"}}}]},
+    ])
+    def test_lambda_workload_start_fails_closed_on_unresolved_trust(self, trust_policy):
+        G = nx.DiGraph()
+        G.add_node("lambda", type="Lambda")
+        G.add_node("role", type="Role", assume_role_policy=trust_policy)
+        G.add_node("policy", type="Policy")
+        G.add_edge("lambda", "role", label="EXECUTES_WITH")
+        G.add_edge("role", "policy", label="HAS_POLICY")
+
+        assert not _is_valid_lambda_workload_start("lambda", G)
 
     def test_lambda_execution_role_s3_not_attributed_to_invoking_user(self):
         """Preserve difference between direct access and execution-role access:

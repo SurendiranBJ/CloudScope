@@ -10,11 +10,11 @@ Protected APIs use backend JWT/OIDC validation and role dependencies when authen
 
 ## AWS access
 
-Use a dedicated read-only AWS principal. Project role verification uses an ExternalId and selected project role for manual scans. CloudScope code is not a substitute for IAM restrictions. Scheduled scans are not yet project-aware.
+Use a dedicated read-only AWS principal configured on the backend. CloudScope scans the account returned by that credential source. CloudScope code is not a substitute for IAM restrictions. Use separate deployments with separate credentials for separate AWS accounts.
 
 ## Data isolation and storage
 
-Project ownership and project context scope account data and durable simulation drafts. Snapshots, scan runs, findings, audit events, and cache keys include project scope. This implementation has focused tests but has not been independently reviewed across every endpoint/background job or validated at production scale. Do not enable shared customer hosting based only on these controls.
+All signed-in users of a deployment share the same configured AWS account data. Existing project records and columns may remain in older databases for compatibility, but do not select AWS credentials. Protect each deployment and its storage according to its user access boundary.
 
 SQL holds durable app state; Redis coordinates and caches; Neo4j holds graph data. Protect all stores and backups. Schema upgrades, cross-worker recovery, and restore behavior need deployment rehearsal.
 

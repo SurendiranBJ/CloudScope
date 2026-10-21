@@ -9,14 +9,17 @@ interface RegionSelectorProps {
   currentMode?: string;
   /** Currently selected region code from the health endpoint (null when in global mode) */
   currentRegion?: string | null;
-  /** Called after a successful region change so the parent can trigger a rescan poll */
+  /** Called after a successful region change so the parent can refresh scan-region status */
   onRegionChanged: () => void;
+  /** Region changes are rejected while a scan is active to prevent mixed-region inventories. */
+  disabled?: boolean;
 }
 
 export const RegionSelector: React.FC<RegionSelectorProps> = ({
   currentMode,
   currentRegion,
   onRegionChanged,
+  disabled = false,
 }) => {
   const [pendingCode, setPendingCode] = useState<string>('');
   const [showGlobalWarning, setShowGlobalWarning] = useState(false);
@@ -98,12 +101,13 @@ export const RegionSelector: React.FC<RegionSelectorProps> = ({
 
         <div className="relative flex items-center">
           <select
-            disabled={isChanging || isLoadingRegions}
+            disabled={isChanging || isLoadingRegions || disabled}
             value={pendingCode}
             onChange={(e) => handleSelectChange(e.target.value)}
             className="appearance-none bg-transparent pr-5 text-xs font-medium focus:outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
             style={{ color: 'inherit' }}
             aria-label="Scan region selector"
+            title={disabled ? 'Wait for the current scan to finish before changing regions.' : 'Choose the AWS region to scan.'}
           >
             {isLoadingRegions ? (
               <option value="">Loading regions…</option>

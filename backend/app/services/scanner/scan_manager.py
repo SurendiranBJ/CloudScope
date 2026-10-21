@@ -629,6 +629,9 @@ class ScanManager:
             from app.services.aws.region_cache import get_resolved_scan_mode
             scanned_regions = list(get_all_regions())
             resolved_scan_mode = get_resolved_scan_mode()
+            # Keep live status and dashboard region controls aligned with the
+            # exact region set used by this scan (including single-region runs).
+            self._scan_mode = resolved_scan_mode
             logger.info(f"[INFO] Scan mode: {resolved_scan_mode}, regions: {scanned_regions}")
             self._initialization_stage = "STARTING_COLLECTORS"
             self._last_progress_at = utc_now_iso()

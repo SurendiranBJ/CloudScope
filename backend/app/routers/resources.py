@@ -23,10 +23,15 @@ def get_cloud_resources():
         for d in raw_data:
             if isinstance(d, dict):
                 norm = dict(d)
+                norm.setdefault("name", norm.get("id") or norm.get("arn") or "Unnamed resource")
+                norm.setdefault("type", "Unknown")
+                norm.setdefault("region", "global")
+                norm.setdefault("status", norm.get("state") or (norm.get("details") or {}).get("state") or "configured")
                 if "owner" not in norm:
                     norm["owner"] = norm.get("account_id") or "AWS"
                 if "riskScore" not in norm:
-                    norm["riskScore"] = norm.get("risk_score") or 0
+                    norm["riskScore"] = norm.get("risk_score", 0)
+                norm.setdefault("arn", norm.get("id") or norm["name"])
                 data.append(CloudResource(**norm))
             else:
                 data.append(d)

@@ -2,11 +2,11 @@
 
 ## AWS access
 
-CloudScope application collection is designed to use AWS read APIs. Configure the AWS principal as read-only; code-level intent is not an IAM boundary. For cross-account projects, use a dedicated role with a restrictive trust policy and the generated per-project ExternalId. Avoid long-lived access keys where workload roles or short-lived profiles are available. Never commit AWS credentials.
+CloudScope application collection is designed to use AWS read APIs. Configure the backend's AWS principal as read-only; code-level intent is not an IAM boundary. The deployment scans the account returned by the configured profile or default AWS credential chain. Avoid long-lived access keys where workload roles or short-lived profiles are available. Never commit AWS credentials.
 
 ## What-if simulation
 
-Simulation drafts are persisted in relational storage and scoped by authenticated issuer, subject, and selected project. They are application-side what-if changes only. They are not executed against AWS and do not update the AWS graph. Protect the database and its backups because drafts can reveal intended permission changes.
+Simulation drafts are persisted in relational storage and scoped by authenticated issuer and subject. They are application-side what-if changes only. They are not executed against AWS and do not update the AWS graph. Protect the database and its backups because drafts can reveal intended permission changes.
 
 ## AI provider data
 

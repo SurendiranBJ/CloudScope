@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -29,10 +29,10 @@ import {
 } from 'lucide-react';
 import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import { RegionSelector } from '../components/RegionSelector';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { getReportsSummary } from '../api/reports';
-import { ScanTrigger, useScanTrigger } from '../components/ScanTrigger';
+import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import { LastScannedBadge } from '../components/LastScannedBadge';
 import { GlobalScanStatus } from '../components/GlobalScanStatus';
@@ -42,25 +42,22 @@ import { useScanLifecycle } from '../hooks/useScanLifecycle';
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [selectedNode, setSelectedNode] = useState<any>(null);
-  const { handleScanClick } = useScanTrigger();
+  const queryClient = useQueryClient();
   const { isScanning, hasCompletedSnapshot } = useScanLifecycle();
 
   // Health data for active region and scan mode
-  const [healthData, setHealthData] = useState<{
-    scan_mode?: string;
-    selected_region?: string | null;
-    scan_regions?: string[];
-    commit?: string;
-    version?: string;
-  } | null>(null);
-
-  useEffect(() => {
-    apiClient.get('/health')
-      .then(res => {
-        if (res.data?.success) setHealthData(res.data.data);
-      })
-      .catch(() => {});
-  }, []);
+  const { data: healthData } = useQuery({
+    queryKey: ['scanHealth'],
+    queryFn: async () => {
+      const res = await apiClient.get('/health');
+      return res.data?.success ? res.data.data : null;
+    },
+    refetchInterval: 5000,
+    staleTime: 2000,
+  });
+  const handleRegionChanged = () => {
+    void queryClient.invalidateQueries({ queryKey: ['scanHealth'] });
+  };
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['dashboardSummary'],
@@ -240,7 +237,8 @@ export const Dashboard: React.FC = () => {
               <RegionSelector
                 currentMode={healthData.scan_mode || 'single'}
                 currentRegion={healthData.selected_region || null}
-                onRegionChanged={handleScanClick}
+                onRegionChanged={handleRegionChanged}
+                disabled={isScanning}
               />
             )}
             <ScannedRegionBadge />

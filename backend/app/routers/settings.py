@@ -8,6 +8,7 @@ from app.utils.scheduler import reschedule_scan_job
 from app.utils.region_names import REGION_FRIENDLY_NAMES
 from app.services.aws import region_cache
 from app.services.scanner.scan_coordinator import scan_coordinator
+from app.services.scanner.scan_manager import scan_manager
 from app.cache import cache
 from app.security.dependencies import require_admin, require_viewer
 from app.security.models import AuthenticatedUser
@@ -130,9 +131,37 @@ def update_scan_region(
             detail="region is required when mode is 'single'"
         )
 
+    # Region selection is process-wide. Changing it while collectors are still
+    # running can make different services scan different region sets.
+    if scan_manager.is_running:
+        raise HTTPException(
+            status_code=409,
+            detail="A scan is already in progress. Wait for it to finish, then change the scan region.",
+        )
+
     try:
+        previous = region_cache.get_scan_mode_state()
         region_cache.set_scan_mode(body.mode, body.region)
+        scan_result = scan_coordinator.request_scan(
+            trigger_type="REGION_CHANGE",
+            created_by=current_user.subject,
+        )
+        if scan_result.get("status") != "STARTED":
+            previous_mode = previous.get("mode")
+            if previous_mode == "single" and previous.get("selected_region"):
+                region_cache.set_scan_mode("single", previous["selected_region"])
+            else:
+                restore_mode = previous_mode if previous_mode in {"global", "auto"} else "auto"
+                region_cache.set_scan_mode(restore_mode, None)
+            if scan_result.get("status") == "ALREADY_RUNNING":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Another scan started at the same time. Wait for it to finish, then change the scan region.",
+                )
+            raise HTTPException(status_code=503, detail=scan_result.get("message", "Could not start a scan for the selected region."))
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(status_code=500, detail=f"Failed to update scan mode: {str(e)}")
 
     client_ip = getattr(request.state, "client_ip", None) or (request.client.host if request.client else None)
@@ -146,9 +175,6 @@ def update_scan_region(
         ip_address=client_ip,
         metadata={"mode": body.mode, "region": body.region}
     )
-
-    # Kick off rescan via coordinator
-    scan_coordinator.request_scan(trigger_type="REGION_CHANGE", created_by=current_user.subject)
 
     resolved = region_cache.get_all_regions()
     return APIResponse(

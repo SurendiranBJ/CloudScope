@@ -1,12 +1,22 @@
 import { useState, useMemo, Fragment } from 'react';
 import type { FC } from 'react';
-import { Bell, AlertOctagon, Search, RefreshCw, ChevronDown, ChevronUp, Check, Copy } from 'lucide-react';
+import { Bell, AlertOctagon, Search, RefreshCw, ChevronDown, ChevronUp, Check, Copy, Sparkles } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { getSecurityAlerts } from '../api/alerts';
+import { explainSecurityAlert, getSecurityAlerts } from '../api/alerts';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import { LastScannedBadge } from '../components/LastScannedBadge';
 import { useScanDataRefresh } from '../hooks/useScanDataRefresh';
 import type { SecurityAlert } from '../types';
+import type { CopilotMessage } from '../api/copilot';
+
+const parseEventDetails = (details: string): Record<string, any> => {
+  try {
+    const value = JSON.parse(details);
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+};
 
 export const Alerts: FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -15,6 +25,9 @@ export const Alerts: FC = () => {
   // Client-side dismiss set — cleared on each new scan (component remounts via queryKey invalidation)
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
   const [copyAlertId, setCopyAlertId] = useState<string | null>(null);
+  const [aiLoadingAlertId, setAiLoadingAlertId] = useState<string | null>(null);
+  const [aiResults, setAiResults] = useState<Record<string, CopilotMessage>>({});
+  const [aiErrors, setAiErrors] = useState<Record<string, string>>({});
 
   const { isScanning, hasCompletedSnapshot } = useScanDataRefresh();
 
@@ -91,6 +104,22 @@ export const Alerts: FC = () => {
     setTimeout(() => setCopyAlertId(null), 2000);
   };
 
+  const handleExplainAlert = async (alert: SecurityAlert) => {
+    setAiLoadingAlertId(alert.id);
+    setAiErrors((current) => ({ ...current, [alert.id]: '' }));
+    try {
+      const explanation = await explainSecurityAlert(alert.id);
+      setAiResults((current) => ({ ...current, [alert.id]: explanation }));
+    } catch (error: any) {
+      setAiErrors((current) => ({
+        ...current,
+        [alert.id]: error?.response?.data?.detail || 'AI could not explain this alert. Check that the AI provider is configured and that your account has analyst access.',
+      }));
+    } finally {
+      setAiLoadingAlertId(null);
+    }
+  };
+
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
       {/* Header */}
@@ -98,11 +127,11 @@ export const Alerts: FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
             <Bell className="w-6 h-6 text-enterprise-warning" />
-            <span>CloudTrail Threat Alerts</span>
+            <span>Recent CloudTrail Security Alerts</span>
           </h1>
           <div className="flex flex-wrap items-center gap-2 mt-1">
             <p className="text-xs text-enterprise-subtext">
-              Real-time security log alerts listing permission drifts and credential assumption events.
+              Security sensitive activity observed in the last 7 days. Routine read-only AWS service role checks are hidden; possible attack paths are listed separately under Attack Paths.
             </p>
             {isScanning && (
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-400 text-[11px] animate-pulse">
@@ -178,6 +207,8 @@ export const Alerts: FC = () => {
               {filteredAlerts.length > 0 ? (
                 filteredAlerts.map((alert) => {
                   const isExpanded = expandedAlertId === alert.id;
+                  const event = parseEventDetails(alert.details);
+                  const alertAi = aiResults[alert.id];
                   return (
                     <Fragment key={alert.id}>
                       <tr className="hover:bg-gray-800/10 transition-colors">
@@ -203,7 +234,7 @@ export const Alerts: FC = () => {
                             onClick={() => toggleExpand(alert.id)}
                             className="flex items-center gap-1 ml-auto px-2.5 py-1.5 hover:bg-gray-800 text-enterprise-accent font-semibold rounded transition-colors text-[10px]"
                           >
-                            <span>{isExpanded ? 'Hide Payload' : 'Inspect JSON'}</span>
+                            <span>{isExpanded ? 'Hide Details' : 'Details & AI'}</span>
                             {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                           </button>
                         </td>
@@ -212,11 +243,53 @@ export const Alerts: FC = () => {
                       {isExpanded && (
                         <tr>
                           <td colSpan={6} className="bg-enterprise-bg/60 p-4 border-b border-enterprise-border">
-                            <div className="space-y-2">
+                            <div className="space-y-4">
+                              <section className="rounded-xl border border-enterprise-border bg-enterprise-card p-4 space-y-3">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div>
+                                    <h5 className="text-sm font-bold text-white">Event impact overview</h5>
+                                    <p className="mt-1 text-[11px] text-enterprise-subtext">CloudTrail records the request and outcome. The previous configuration is shown only when historical evidence is available.</p>
+                                  </div>
+                                  <button
+                                    onClick={() => void handleExplainAlert(alert)}
+                                    disabled={aiLoadingAlertId === alert.id}
+                                    className="inline-flex items-center gap-2 rounded-lg bg-enterprise-accent px-3 py-2 text-xs font-semibold text-white disabled:cursor-wait disabled:opacity-60"
+                                  >
+                                    <Sparkles className="h-4 w-4" />
+                                    {aiLoadingAlertId === alert.id ? 'Analyzing evidence…' : alertAi ? 'Explain again with AI' : 'Explain with AI'}
+                                  </button>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+                                  <div className="rounded-lg bg-enterprise-bg p-3"><span className="text-enterprise-subtext">AWS action</span><p className="mt-1 font-semibold text-white">{event.eventName || 'Unavailable'}</p></div>
+                                  <div className="rounded-lg bg-enterprise-bg p-3"><span className="text-enterprise-subtext">Actor</span><p className="mt-1 break-all font-semibold text-white">{event.userIdentity?.arn || event.userIdentity?.principalId || event.userIdentity?.userName || 'Not identified in event'}</p></div>
+                                  <div className="rounded-lg bg-enterprise-bg p-3"><span className="text-enterprise-subtext">Region / source</span><p className="mt-1 font-semibold text-white">{event.awsRegion || 'Unknown'} · {event.sourceIPAddress || 'Source IP unavailable'}</p></div>
+                                  <div className="rounded-lg bg-enterprise-bg p-3"><span className="text-enterprise-subtext">Recorded result</span><p className={`mt-1 font-semibold ${event.errorCode ? 'text-enterprise-critical' : 'text-enterprise-success'}`}>{event.errorCode ? `Failed: ${event.errorCode}` : 'No API error recorded'}</p></div>
+                                </div>
+                                <div className="grid gap-3 lg:grid-cols-2 text-xs">
+                                  <div className="rounded-lg border border-enterprise-border p-3"><h6 className="font-semibold text-white">Requested change</h6><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all text-[10px] text-enterprise-subtext">{JSON.stringify(event.requestParameters ?? 'Not included in the event', null, 2)}</pre></div>
+                                  <div className="rounded-lg border border-enterprise-border p-3"><h6 className="font-semibold text-white">AWS response</h6><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all text-[10px] text-enterprise-subtext">{JSON.stringify(event.responseElements ?? 'No response details included; this does not by itself prove what downstream access occurred.', null, 2)}</pre></div>
+                                </div>
+                                <div className="text-[11px] text-enterprise-subtext">Prior state: CloudTrail event history does not normally contain a before-image. Compare with the prior CloudScope snapshot or AWS Config history to confirm what changed.</div>
+                              </section>
+
+                              {aiErrors[alert.id] && <div role="alert" className="rounded-lg border border-enterprise-critical/30 bg-enterprise-critical/10 p-3 text-xs text-enterprise-critical">{aiErrors[alert.id]}</div>}
+                              {alertAi && (
+                                <section className="rounded-xl border border-enterprise-accent/30 bg-enterprise-accent/5 p-4 space-y-3">
+                                  <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-enterprise-accent" /><h5 className="text-sm font-bold text-white">AI administrator briefing</h5></div>
+                                  <p className="text-xs font-semibold text-white">{alertAi.summary || 'Alert analysis'}</p>
+                                  <p className="whitespace-pre-wrap text-xs leading-relaxed text-gray-200">{alertAi.analysis || alertAi.text}</p>
+                                  {alertAi.affectedEntities?.length ? <div><h6 className="mb-1 text-[11px] font-semibold text-white">Potentially affected resources</h6><ul className="list-disc space-y-1 pl-5 text-xs text-gray-300">{alertAi.affectedEntities.map((entity, index) => <li key={`${entity}-${index}`}>{entity}</li>)}</ul></div> : null}
+                                  {alertAi.evidence?.length ? <div><h6 className="mb-1 text-[11px] font-semibold text-white">Evidence considered</h6><ul className="list-disc space-y-1 pl-5 text-xs text-gray-300">{alertAi.evidence.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></div> : null}
+                                  {alertAi.recommendations?.length ? <div><h6 className="mb-1 text-[11px] font-semibold text-white">Recommended next steps</h6><ol className="list-decimal space-y-1 pl-5 text-xs text-gray-300">{alertAi.recommendations.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ol></div> : null}
+                                  {alertAi.limitations?.length ? <div className="rounded-lg bg-enterprise-bg p-3 text-[11px] text-enterprise-subtext"><strong className="text-white">Evidence limits: </strong>{alertAi.limitations.join(' ')}</div> : null}
+                                  <p className="text-[10px] text-enterprise-subtext">AI analysis is advisory. Verify resource state and event history in AWS before taking action.{alertAi.model ? ` Model: ${alertAi.model}.` : ''}</p>
+                                </section>
+                              )}
+
                               <div className="flex items-center justify-between">
                                 <h5 className="font-bold text-[10px] text-enterprise-accent flex items-center gap-1 uppercase">
                                   <AlertOctagon className="w-4 h-4 text-enterprise-accent shrink-0" />
-                                  <span>CloudTrail Log Payload Parameters</span>
+                                  <span>Sanitized CloudTrail event payload</span>
                                 </h5>
                                 <button
                                   onClick={() => handleCopyDetails(alert)}

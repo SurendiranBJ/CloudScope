@@ -7,8 +7,8 @@ This file summarizes the current implementation represented by the working tree.
 
 ## Current implementation areas
 
-- **Projects and AWS accounts:** owner-scoped project records, cross-account role verification with a generated ExternalId, selected-project request context, project-scoped snapshots and scan runs, and manual scans through the selected verified role.
-- **Durable analysis state:** project-scoped finding lifecycle/history, audit records, cache keys, and SQL-backed simulation drafts.
+- **AWS account selection:** the Projects interface, account-role API, and role-assumption credential flow have been removed. Scans use the AWS profile or default credential chain configured for the backend. Legacy project records/columns are retained in existing databases and do not select credentials.
+- **Durable analysis state:** finding lifecycle/history, audit records, cache keys, and SQL-backed simulation drafts remain persisted; legacy project columns are retained for stored-data compatibility.
 - **Simulation safety:** policy changes are analyzed as what-if state only; simulation does not apply IAM changes to AWS.
 - **Graph and attack-path UX:** Cloud Graph relationship labels remain visible; the dashboard separates its title and controls toolbar; Attack Path groups are sorted by severity/risk and sequentially numbered in the filtered view.
 - **Scan lifecycle UX:** elapsed time normalizes backend ISO timestamps with an offset and trailing Z and continues across status polling.
@@ -16,8 +16,8 @@ This file summarizes the current implementation represented by the working tree.
 
 ## Current limitations
 
-- Scheduled scans do not yet iterate over registered projects.
-- Project isolation, credential refresh/expiry behavior, database migrations, and production recovery need deployment-backed tests and independent review.
+- One CloudScope deployment analyzes one AWS account through its configured backend credentials. Use separate deployments for separate accounts.
+- Database migrations and production recovery need deployment-backed tests and independent review.
 - IAM evaluation, risk scoring, path enumeration, and CloudTrail correlation have coverage limits; none is a complete AWS authorization or threat-detection engine.
 - External AI explanations are advisory and send selected context to the configured provider.
 - Hosted CI for the final commit has not been established. Full local backend and frontend checks are green for the reviewed working tree; release SHA verification and deployment checks remain necessary.

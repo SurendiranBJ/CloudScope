@@ -8,7 +8,7 @@ CloudScope persists operational audit events for selected security-sensitive act
 
 The audit service records selected actions such as scan triggers, finding lifecycle updates, and simulation operations. Coverage is not claimed for every API read, background job, export, authentication event, or administrative operation; review event creation in code before relying on a complete activity history.
 
-Project-scoped events include a project identifier where the action runs in a selected project. Access to audit APIs is controlled by backend role dependencies. Verify route permissions for the deployed revision.
+Existing audit records may contain legacy project identifiers. New scans use the AWS credentials configured for the deployment. Access to audit APIs is controlled by backend role dependencies. Verify route permissions for the deployed revision.
 
 ## Sanitization
 

@@ -169,35 +169,47 @@ def _is_valid_lambda_workload_start(node_id: str, G: nx.DiGraph) -> bool:
             if not has_policies:
                 continue
 
-            # Verify trust policy allows lambda.amazonaws.com if present
-            trust_policy = role_attr.get("assume_role_policy") or role_attr.get("trustPolicy") or {}
-            trusts_lambda = True
-            if trust_policy:
-                try:
-                    import json
-                    if isinstance(trust_policy, str) and trust_policy.startswith("{"):
-                        trust_policy = json.loads(trust_policy)
-                    from app.services.attack.policy_evaluator import parse_policy_document
-                    stmts = parse_policy_document(trust_policy)
-                    if stmts:
-                        trusts_lambda = False
-                        for stmt in stmts:
-                            if stmt.get("Effect") == "Allow":
-                                princ = stmt.get("Principal", {})
-                                if princ == "*":
-                                    trusts_lambda = True
-                                    break
-                                if isinstance(princ, dict):
-                                    svc = princ.get("Service", "")
-                                    if svc == "*" or (trusted_service and trusted_service in svc) or (
-                                        isinstance(svc, list) and trusted_service and any(trusted_service in s for s in svc)
-                                    ):
-                                        trusts_lambda = True
-                                        break
-                except Exception:
-                    trusts_lambda = True
+            # Only use an explicit, unconditional service-principal grant as
+            # evidence that this workload can assume the role. Missing,
+            # malformed, wildcard, or conditional trust is unresolved and must
+            # not be promoted into a confirmed workload starting point.
+            trust_policy = role_attr.get("assume_role_policy") or role_attr.get("trustPolicy")
+            if not trust_policy:
+                continue
 
-            if trusts_lambda:
+            try:
+                import json
+                from app.services.attack.policy_evaluator import parse_policy_document
+
+                if isinstance(trust_policy, str):
+                    trust_policy = json.loads(trust_policy)
+                stmts = parse_policy_document(trust_policy)
+            except (TypeError, ValueError):
+                continue
+
+            for stmt in stmts:
+                if stmt.get("Effect") != "Allow" or stmt.get("Condition"):
+                    continue
+
+                # The workload must be named as a service principal and the
+                # statement must permit sts:AssumeRole. Wildcard principals or
+                # substring matches are too ambiguous to establish this pivot.
+                principal = stmt.get("Principal", {})
+                services = principal.get("Service", []) if isinstance(principal, dict) else []
+                if isinstance(services, str):
+                    services = [services]
+                if not isinstance(services, list) or trusted_service not in services:
+                    continue
+
+                actions = stmt.get("Action", [])
+                if isinstance(actions, str):
+                    actions = [actions]
+                if not isinstance(actions, list) or not any(
+                    fnmatchcase("sts:assumerole", str(action).strip().lower())
+                    for action in actions
+                ):
+                    continue
+
                 return True
 
     return False

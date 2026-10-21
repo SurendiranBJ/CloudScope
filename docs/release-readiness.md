@@ -20,8 +20,7 @@ This is a current status note, not a certification. Older real-account metrics a
 
 ## Release blockers
 
-- Project-aware scheduled scans are not implemented.
-- Tenant/project isolation needs a complete endpoint and background-worker review plus deployment-backed adversarial tests.
+- One deployment scans the single AWS account identified by its backend credentials. Use separately secured deployments for separate accounts.
 - Credential expiration/refresh during long scans and across worker restarts is not validated.
 - Database migrations are not managed through a versioned migration system; backup/restore and upgrade paths need rehearsal.
 - The custom IAM evaluator and graph/risk models do not cover every AWS authorization semantic.
@@ -29,4 +28,4 @@ This is a current status note, not a certification. Older real-account metrics a
 - External AI provider data handling needs a documented customer data policy.
 - Hosted CI must pass on the exact commit before release. Local backend/frontend checks are green for this working tree, but must be repeated or tied to the final release SHA.
 
-Do not tag or advertise a production release until the blockers above are addressed, full checks pass on the release SHA, deployment/restore rehearsals are recorded, and a security review approves the tenant boundaries and AWS authorization limitations.
+Do not tag or advertise a production release until the blockers above are addressed, full checks pass on the release SHA, deployment/restore rehearsals are recorded, and a security review approves the deployment boundaries and AWS authorization limitations.
