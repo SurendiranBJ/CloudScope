@@ -3,9 +3,33 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getConsolidatedAttackPathCount } from '../src/utils/attackPathGrouping.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+test('Dashboard path count uses the same consolidated group identity as Attack Paths', () => {
+  const makePath = (source, target) => ({
+    id: `${source}-${target}`,
+    name: `${source} to ${target}`,
+    nodes: [
+      { id: source, name: source, type: 'User' },
+      { id: target, name: target, type: 'S3' },
+    ],
+    orderedRelationships: ['ALLOWS'],
+    severity: 'high',
+    blastRadius: '',
+    mitreTechniques: [],
+    recommendation: '',
+    description: '',
+  });
+
+  assert.equal(getConsolidatedAttackPathCount([
+    makePath('user-a', 'bucket-a'),
+    makePath('user-b', 'bucket-a'),
+    makePath('user-a', 'bucket-b'),
+  ]), 2);
+});
 
 test('AttackPaths DAG Regression: Source entities render dynamic types and styling', () => {
   const filePath = path.join(__dirname, '../src/pages/AttackPaths.tsx');

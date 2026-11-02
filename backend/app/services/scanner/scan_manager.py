@@ -198,6 +198,27 @@ CRITICAL_COLLECTORS = {
     "S3", "EC2", "Lambda", "Secrets", "RDS", "DynamoDB", "ECS", "ECR", "CodeCommit"
 }
 
+
+def dashboard_security_findings(findings: list, lifecycle_states: dict | None = None) -> list:
+    """Keep dashboard finding metrics aligned with the findings page.
+
+    Attack-path records are investigated in the dedicated Attack Paths view,
+    so they must not inflate the security-findings severity breakdown.
+    """
+    lifecycle_states = lifecycle_states or {}
+    active_findings = []
+    for finding in findings:
+        state = lifecycle_states.get(getattr(finding, "id", ""), {})
+        status = state.get("status") or getattr(finding, "status", "OPEN")
+        if str(status).upper() != "OPEN":
+            continue
+        if str(getattr(finding, "source", "")).upper() == "ATTACK_PATH":
+            continue
+        if str(getattr(finding, "type", "")).upper() == "ATTACK_PATH_VULNERABILITY":
+            continue
+        active_findings.append(finding)
+    return active_findings
+
 ALL_COLLECTOR_NAMES = [
     "IAM_Users", "IAM_Groups", "IAM_Roles", "IAM_Policies",
     "EC2", "S3", "Lambda", "Secrets", "RDS", "DynamoDB",
@@ -1365,11 +1386,22 @@ class ScanManager:
                 scan_id if final_scan_status == "SUCCESS" else self._last_successful_scan_id
             )
 
-            open_canonical = [f for f in canonical_findings if f.status == "OPEN"]
-            crit_canonical = [f for f in open_canonical if f.severity == "critical"]
-            high_canonical = [f for f in open_canonical if f.severity == "high"]
-            med_canonical = [f for f in open_canonical if f.severity == "medium"]
-            low_canonical = [f for f in open_canonical if f.severity == "low"]
+            try:
+                from app.persistence.repository import get_all_finding_states
+                finding_lifecycle_states = get_all_finding_states()
+            except Exception as lifecycle_error:
+                logger.warning(f"Could not load finding lifecycle overrides for dashboard metrics: {lifecycle_error}")
+                finding_lifecycle_states = {}
+            open_canonical = [
+                finding for finding in canonical_findings
+                if str(finding_lifecycle_states.get(finding.id, {}).get("status") or finding.status).upper() == "OPEN"
+            ]
+            # Attack-path findings have a separate KPI and investigation page.
+            open_security_findings = dashboard_security_findings(canonical_findings, finding_lifecycle_states)
+            crit_canonical = [f for f in open_security_findings if f.severity == "critical"]
+            high_canonical = [f for f in open_security_findings if f.severity == "high"]
+            med_canonical = [f for f in open_security_findings if f.severity == "medium"]
+            low_canonical = [f for f in open_security_findings if f.severity == "low"]
 
             dashboard_summary = {
                 "securityScore": f"{security_score} / 100",
@@ -1377,7 +1409,7 @@ class ScanManager:
                     "users": len(working_inventory.users),
                     "roles": len(working_inventory.roles),
                     "policies": len(working_inventory.policies),
-                    "risks": len(open_canonical),
+                    "risks": len(open_security_findings),
                     "paths": len(attack_paths),
                     "resources": resources_count
                 },

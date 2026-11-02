@@ -29,7 +29,9 @@ class Settings(BaseSettings):
     COMMIT_SHA: Optional[str] = None
     IMAGE_TAG: Optional[str] = None
 
-    SCAN_LOCK_LEASE_SECONDS: int = 180
+    # Allow time for slow multi-region AWS collectors while the coordinator
+    # renews this lease in the background.
+    SCAN_LOCK_LEASE_SECONDS: int = 900
     SNAPSHOT_RETENTION_COUNT: int = 10
     AUDIT_RETENTION_DAYS: int = 90
 

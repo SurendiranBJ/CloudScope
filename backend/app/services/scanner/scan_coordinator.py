@@ -70,7 +70,7 @@ class ScanCoordinator:
                 }
 
             # 2. Distributed cross-worker lock check
-            owner_token = distributed_scan_lock.acquire(lease_seconds=180)
+            owner_token = distributed_scan_lock.acquire(lease_seconds=settings.SCAN_LOCK_LEASE_SECONDS)
             if not owner_token:
                 if (
                     settings.is_production
@@ -197,8 +197,9 @@ class ScanCoordinator:
         lease_lost = threading.Event()
 
         def heartbeat_loop():
-            while not stop_heartbeat.wait(timeout=30.0):
-                renewed = distributed_scan_lock.renew(owner_token, lease_seconds=180)
+            heartbeat_interval = max(5.0, min(15.0, settings.SCAN_LOCK_LEASE_SECONDS / 4))
+            while not stop_heartbeat.wait(timeout=heartbeat_interval):
+                renewed = distributed_scan_lock.renew(owner_token, lease_seconds=settings.SCAN_LOCK_LEASE_SECONDS)
                 if not renewed:
                     logger.warning(f"[COORDINATOR] Warning: Heartbeat lease renewal failed for {scan_id}")
                     lease_lost.set()
@@ -217,7 +218,7 @@ class ScanCoordinator:
             logger.info(f"[COORDINATOR] Worker starting scan pipeline execution (scan_id={scan_id})")
             scan_manager._scan_lease_valid = lambda: (
                 not lease_lost.is_set()
-                and distributed_scan_lock.renew(owner_token, lease_seconds=180)
+                and distributed_scan_lock.renew(owner_token, lease_seconds=settings.SCAN_LOCK_LEASE_SECONDS)
             )
             # Set scan manager attributes for the scan run
             scan_manager._scan_id = scan_id

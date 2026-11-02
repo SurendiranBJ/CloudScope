@@ -30,6 +30,10 @@ import { RegionSelector } from '../components/RegionSelector';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDashboardSummary } from '../api/dashboard';
 import { getReportsSummary } from '../api/reports';
+import { getAttackPaths } from '../api/attack';
+import { getSecurityFindings } from '../api/risks';
+import { getConsolidatedAttackPathCount } from '../utils/attackPathGrouping';
+import { summarizeDashboardFindings } from '../utils/dashboardMetrics';
 import { ScanTrigger } from '../components/ScanTrigger';
 import { ScannedRegionBadge } from '../components/ScannedRegionBadge';
 import { LastScannedBadge } from '../components/LastScannedBadge';
@@ -69,6 +73,18 @@ export const Dashboard: React.FC = () => {
     queryKey: ['reportsSummary'],
     queryFn: getReportsSummary,
     refetchInterval: 10000
+  });
+
+  const { data: attackPaths } = useQuery({
+    queryKey: ['attackPaths'],
+    queryFn: getAttackPaths,
+    refetchInterval: 10000,
+  });
+
+  const { data: securityFindings } = useQuery({
+    queryKey: ['securityFindings'],
+    queryFn: () => getSecurityFindings(),
+    refetchInterval: 10000,
   });
 
   if (isLoading || !data) {
@@ -115,8 +131,12 @@ export const Dashboard: React.FC = () => {
   const reportScore = Number(reportsData?.summary?.score);
   const scoreNum = Number.isFinite(parsedScore) ? parsedScore : Number.isFinite(reportScore) ? reportScore : 0;
   const riskDistribution = data?.riskDistribution || [];
-  const totalRiskFindings = riskDistribution.reduce((total, item) => total + (Number.isFinite(Number(item.value)) ? Math.max(0, Number(item.value)) : 0), 0);
-  const activeFindingCount = riskDistribution.length ? totalRiskFindings : Number(stats.risks || 0);
+  const findingSummary = summarizeDashboardFindings(securityFindings);
+  const dashboardRiskDistribution = securityFindings ? findingSummary.riskDistribution : riskDistribution;
+  const totalRiskFindings = dashboardRiskDistribution.reduce((total, item) => total + (Number.isFinite(Number(item.value)) ? Math.max(0, Number(item.value)) : 0), 0);
+  const activeFindingCount = securityFindings ? findingSummary.activeFindingCount : (totalRiskFindings || Number(stats.risks || 0));
+  const consolidatedAttackPathCount = getConsolidatedAttackPathCount(attackPaths || []);
+  const rawAttackPathCount = attackPaths ? attackPaths.length : Number(stats.paths || 0);
 
   const getScoreTheme = (score: number) => {
     if (score >= 80) return { text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', label: 'Healthy Posture', grade: 'Grade A' };
@@ -160,9 +180,9 @@ export const Dashboard: React.FC = () => {
     },
     {
       title: 'Attack Paths',
-      value: String(stats.paths),
-      badge: `${stats.paths} Vector${stats.paths === 1 ? '' : 's'}`,
-      subtext: 'Lateral Escalation Chains',
+      value: String(attackPaths ? consolidatedAttackPathCount : stats.paths),
+      badge: `${rawAttackPathCount} raw path${rawAttackPathCount === 1 ? '' : 's'}`,
+      subtext: 'Consolidated privilege vectors',
       color: 'border-l-4 border-amber-500',
       icon: GitMerge,
       iconColor: 'text-amber-400',
@@ -328,7 +348,7 @@ export const Dashboard: React.FC = () => {
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={riskDistribution.filter((entry) => Number.isFinite(entry.value) && entry.value > 0)}
+                    data={dashboardRiskDistribution.filter((entry) => Number.isFinite(entry.value) && entry.value > 0)}
                     cx="50%"
                     cy="45%"
                     innerRadius={54}
@@ -337,7 +357,7 @@ export const Dashboard: React.FC = () => {
                     dataKey="value"
                     nameKey="name"
                   >
-                    {riskDistribution.filter((entry) => Number.isFinite(entry.value) && entry.value > 0).map((entry) => (
+                    {dashboardRiskDistribution.filter((entry) => Number.isFinite(entry.value) && entry.value > 0).map((entry) => (
                       <Cell key={`severity-${entry.name}`} fill={entry.color} stroke="#0B1220" strokeWidth={2} />
                     ))}
                   </Pie>
