@@ -132,19 +132,64 @@ def collect_messaging_and_workflow_resources() -> Dict[str, RegionalCollectionRe
                 found.append({"id": arn, "name": arn.rsplit(":", 1)[-1], "type": kind, "arn": arn, "region": region, "owner": attrs.get("Owner", ""), "details": {"resource_policy": attrs.get("Policy"), "resource_policy_status": "COLLECTED" if attrs.get("Policy") else "NO_POLICY", "kms_master_key_id": attrs.get("KmsMasterKeyId")}})
         elif kind == "KMS":
             key_ids = [item["KeyId"] for page in client.get_paginator("list_keys").paginate() for item in page.get("Keys", [])]
+            aliases_by_key: Dict[str, List[str]] = {}
+            try:
+                alias_pages = client.get_paginator("list_aliases").paginate()
+                for page in alias_pages:
+                    for alias in page.get("Aliases", []):
+                        target_key_id = alias.get("TargetKeyId")
+                        alias_name = alias.get("AliasName")
+                        if target_key_id and alias_name:
+                            aliases_by_key.setdefault(target_key_id, []).append(alias_name)
+            except Exception as exc:
+                # Aliases improve readability but do not determine whether a
+                # key is part of the inventory. Preserve key discovery if the
+                # caller lacks ListAliases permission.
+                logger.warning("KMS alias inventory failed in %s: %s", region, exc)
             for key_id in key_ids:
                 meta = client.describe_key(KeyId=key_id).get("KeyMetadata", {})
-                if meta.get("KeyManager") != "CUSTOMER":
+                key_manager = meta.get("KeyManager")
+                if key_manager not in {"AWS", "CUSTOMER"}:
                     continue
                 arn = meta.get("Arn", "")
-                policy, policy_status = None, "ERROR"
-                try:
-                    policy = client.get_key_policy(KeyId=key_id, PolicyName="default").get("Policy")
-                    policy_status = "COLLECTED" if policy else "NO_POLICY"
-                except Exception as exc:
-                    code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
-                    policy_status = "ACCESS_DENIED" if code in {"AccessDeniedException", "AccessDenied"} else "ERROR"
-                found.append({"id": arn or key_id, "name": meta.get("Description") or key_id, "type": kind, "arn": arn, "region": region, "owner": meta.get("AWSAccountId", ""), "details": {"key_id": key_id, "key_state": meta.get("KeyState"), "key_usage": meta.get("KeyUsage"), "resource_policy": policy, "resource_policy_status": policy_status}})
+                aliases = sorted(aliases_by_key.get(key_id, []))
+                policy, policy_status = None, "AWS_MANAGED_KEY_POLICY"
+                if key_manager == "CUSTOMER":
+                    policy_status = "ERROR"
+                    try:
+                        policy = client.get_key_policy(KeyId=key_id, PolicyName="default").get("Policy")
+                        policy_status = "COLLECTED" if policy else "NO_POLICY"
+                    except Exception as exc:
+                        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+                        policy_status = "ACCESS_DENIED" if code in {"AccessDeniedException", "AccessDenied"} else "ERROR"
+                found.append({
+                    "id": arn or key_id,
+                    # The AWS console lists a key ID when a key has no alias;
+                    # keep that same identifier as the inventory name and
+                    # expose the description separately as metadata.
+                    "name": aliases[0] if aliases else key_id,
+                    "type": kind,
+                    "status": meta.get("KeyState", "UNKNOWN"),
+                    "arn": arn,
+                    "region": region,
+                    "owner": meta.get("AWSAccountId", ""),
+                    "details": {
+                        "key_id": key_id,
+                        "description": meta.get("Description"),
+                        "key_manager": key_manager,
+                        "key_manager_label": "AWS-managed" if key_manager == "AWS" else "Customer-managed",
+                        "aliases": aliases,
+                        "key_state": meta.get("KeyState"),
+                        "enabled": meta.get("Enabled"),
+                        "deletion_date": meta.get("DeletionDate").isoformat() if meta.get("DeletionDate") else None,
+                        "key_usage": meta.get("KeyUsage"),
+                        "key_spec": meta.get("KeySpec"),
+                        "origin": meta.get("Origin"),
+                        "multi_region": meta.get("MultiRegion"),
+                        "resource_policy": policy,
+                        "resource_policy_status": policy_status,
+                    },
+                })
         elif kind == "EKS":
             names = [name for page in client.get_paginator("list_clusters").paginate() for name in page.get("clusters", [])]
             for name in names:

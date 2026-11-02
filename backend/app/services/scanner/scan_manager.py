@@ -1335,7 +1335,8 @@ class ScanManager:
                 {"type": "CodeCommit Repositories", "count": len(working_inventory.codecommit)},
                 {"type": "SQS Queues", "count": len(working_inventory.sqs)},
                 {"type": "SNS Topics", "count": len(working_inventory.sns)},
-                {"type": "Customer Managed KMS Keys", "count": len(working_inventory.kms)},
+                {"type": "AWS-managed KMS Keys", "count": sum(1 for key in working_inventory.kms if key.get("details", {}).get("key_manager") == "AWS")},
+                {"type": "Customer-managed KMS Keys", "count": sum(1 for key in working_inventory.kms if key.get("details", {}).get("key_manager", "CUSTOMER") == "CUSTOMER")},
                 {"type": "EKS Clusters", "count": len(working_inventory.eks)},
                 {"type": "Step Functions State Machines", "count": len(working_inventory.stepfunctions)}
             ]

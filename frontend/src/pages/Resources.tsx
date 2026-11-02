@@ -76,13 +76,17 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
   };
 
   const getStatusBadgeClass = (status: CloudResource['status']) => {
-    switch (status) {
+    switch (String(status).toLowerCase().replace(/[\s_-]/g, '')) {
       case 'active':
       case 'configured':
+      case 'enabled':
         return 'bg-enterprise-success/15 text-enterprise-success border-enterprise-success/20';
       case 'stopped':
+      case 'disabled':
         return 'bg-gray-800 text-enterprise-subtext border-gray-700';
       case 'warning':
+      case 'pendingdeletion':
+      case 'pendingimport':
         return 'bg-enterprise-warning/15 text-enterprise-warning border-enterprise-warning/20';
       case 'critical':
         return 'bg-enterprise-critical/15 text-enterprise-critical border-enterprise-critical/20 animate-pulse';
@@ -319,9 +323,14 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
                         </div>
                       </td>
                       <td className="p-4">
-                        <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-bold border inline-flex ${typeCfg.color}`}>
-                          <typeCfg.icon className="w-3.5 h-3.5" />
-                          <span>{res.type}</span>
+                        <div className="flex flex-col items-start gap-1">
+                          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-bold border inline-flex ${typeCfg.color}`}>
+                            <typeCfg.icon className="w-3.5 h-3.5" />
+                            <span>{res.type}</span>
+                          </div>
+                          {res.type === 'KMS' && res.details?.key_manager_label && (
+                            <span className="text-[10px] text-enterprise-subtext">{res.details.key_manager_label}</span>
+                          )}
                         </div>
                       </td>
                       <td className="p-4 font-mono text-[10px] text-gray-300">{formatRegion(res.region)}</td>
@@ -343,8 +352,8 @@ export const Resources: React.FC<ResourcesProps> = ({ search = '' }) => {
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getStatusBadgeClass(res.status)}`}>
-                          {res.status}
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getStatusBadgeClass(res.type === 'KMS' ? (res.details?.key_state || res.status) : res.status)}`}>
+                          {res.type === 'KMS' ? (res.details?.key_state || res.status) : res.status}
                         </span>
                       </td>
                       <td className="p-4 text-enterprise-subtext font-medium">{res.owner}</td>
