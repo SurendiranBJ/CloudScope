@@ -15,6 +15,7 @@ import {
   Network,
   Waypoints,
   ClipboardList,
+  Gauge,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -34,6 +35,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, setCollapsed }) => 
     { name: 'Saved Changes', path: '/changes', icon: ClipboardList },
     { name: 'Alerts', path: '/alerts', icon: Bell },
     { name: 'Reports', path: '/reports', icon: FileBarChart },
+    { name: 'Scoring Guide', path: '/scoring', icon: Gauge },
     { name: 'Settings', path: '/settings', icon: Settings }
   ];
 

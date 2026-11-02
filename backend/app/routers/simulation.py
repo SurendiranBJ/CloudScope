@@ -104,12 +104,22 @@ def _get_current_inventory():
 
 
 def _get_policy_doc_map(policies: list[dict]) -> dict:
-    """Build policy document map from the policies in the pinned published snapshot."""
+    """Build policy document lookup by both ARN and name from the snapshot.
+
+    Attachments carry ARNs, and AWS-managed and customer-managed policies can
+    share names. ARN lookup must therefore be available to simulation before
+    falling back to a name-only lookup.
+    """
     doc_map = {}
     for p in policies:
         doc = p.get("document")
         if doc and doc != "{}":
-            doc_map[p["name"]] = doc
+            name = p.get("name")
+            arn = p.get("arn")
+            if arn:
+                doc_map[arn] = doc
+            if name:
+                doc_map[name] = doc
     return doc_map
 
 
@@ -142,23 +152,35 @@ def _build_analysis(owner_id: str):
 
 
 def _enrich_desired_policy_docs(desired_inv, doc_map: dict):
-    """Fetch missing policy documents for any policies added by simulation."""
+    """Resolve documents by exact policy ARN for simulated attachments."""
     for p in desired_inv.policies:
-        if p.get("name") and p.get("name") not in doc_map:
-            arn = p.get("arn", "")
-            if arn:
-                cached = cache.get(f"v1:policy_doc:{arn}")
-                if cached:
-                    doc_map[p["name"]] = cached
-                else:
-                    try:
-                        from app.services.aws.iam_service import fetch_policy_document_by_arn
-                        fetched = fetch_policy_document_by_arn(arn)
-                        if fetched:
-                            doc_map[fetched["name"]] = fetched["document"]
-                            cache.set(f"v1:policy_doc:{arn}", fetched["document"])
-                    except Exception as e:
-                        logger.warning(f"Could not fetch policy doc for {arn}: {e}")
+        name = p.get("name")
+        arn = p.get("arn", "")
+        if arn and arn in doc_map:
+            if name:
+                doc_map.setdefault(name, doc_map[arn])
+            continue
+        if not arn:
+            continue
+
+        cached = cache.get(f"v1:policy_doc:{arn}")
+        if cached:
+            doc_map[arn] = cached
+            if name:
+                doc_map.setdefault(name, cached)
+            continue
+
+        try:
+            from app.services.aws.iam_service import fetch_policy_document_by_arn
+            fetched = fetch_policy_document_by_arn(arn)
+            if fetched and fetched.get("document"):
+                doc_map[arn] = fetched["document"]
+                if name:
+                    doc_map.setdefault(name, fetched["document"])
+                doc_map.setdefault(fetched["name"], fetched["document"])
+                cache.set(f"v1:policy_doc:{arn}", fetched["document"])
+        except Exception as e:
+            logger.warning(f"Could not fetch policy doc for {arn}: {e}")
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────

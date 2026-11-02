@@ -24,6 +24,10 @@ type Finding = Record<string, any>;
 const readable = (value: unknown, fallback = 'Not provided') =>
   typeof value === 'string' && value.trim() ? value.trim() : fallback;
 
+const isAttackPathFinding = (finding: Finding) =>
+  String(finding.source ?? '').toUpperCase() === 'ATTACK_PATH'
+  || String(finding.type ?? '').toUpperCase() === 'ATTACK_PATH_VULNERABILITY';
+
 const severityStyles: Record<string, string> = {
   critical: 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300',
   high: 'border-orange-500/40 bg-orange-500/10 text-orange-800 dark:text-orange-300',
@@ -72,10 +76,18 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
     enabled: Boolean(selectedFinding?.id),
   });
 
-  const findings: Finding[] = useMemo(
+  const allFindings: Finding[] = useMemo(
     () => (findingsData?.length ? findingsData : risksData) || [],
     [findingsData, risksData],
   );
+  // Attack paths have a dedicated investigation view. Keep those path-only
+  // records out of this list so the same modeled route is not presented as a
+  // separate security finding as well.
+  const findings = useMemo(
+    () => allFindings.filter((finding) => !isAttackPathFinding(finding)),
+    [allFindings],
+  );
+  const excludedAttackPathCount = allFindings.length - findings.length;
   const effectiveSearch = (localSearch || search).trim().toLowerCase();
   const isLoadingFindings = isFindingsLoading || (!findingsData && isRisksLoading);
   const hasFindingsLoadError = !findingsData && !risksData && isFindingsError && isRisksError;
@@ -211,6 +223,15 @@ export const RiskAssessment: React.FC<RiskAssessmentProps> = ({ search = '' }) =
       {isScanning && (
         <div role="status" className="rounded-lg border border-enterprise-border bg-enterprise-card px-4 py-3 text-sm text-enterprise-subtext">
           Scan in progress. Findings will refresh when it finishes.
+        </div>
+      )}
+
+      {excludedAttackPathCount > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-enterprise-border bg-enterprise-card px-4 py-3 text-sm text-enterprise-subtext">
+          <span>{excludedAttackPathCount} modeled attack {excludedAttackPathCount === 1 ? 'path is' : 'paths are'} shown in the Attack Paths tab and omitted here to avoid duplicate entries.</span>
+          <a href="/attack-paths" className="inline-flex items-center gap-1 font-medium text-enterprise-accent hover:underline">
+            Open Attack Paths <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
+          </a>
         </div>
       )}
 

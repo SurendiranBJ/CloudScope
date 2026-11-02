@@ -139,6 +139,10 @@ class TestSnapshotDurabilityAndRecovery:
         assert recovered.collection_completeness == {"us-east-1": "SUCCESS"}
         assert list(recovered.correlated_risks) == [{"id": "correlated-1"}]
 
+        # The test verifies data retained by Snapshot A, not a live AWS policy
+        # catalog lookup from the machine running pytest.
+        cache.set("v1:complete_policy_catalog", [])
+
         # 5. Verify all read endpoints serve Snapshot A data with matching snapshot_id
         # Endpoint: /api/v1/policies
         resp_policies = client.get("/api/v1/policies", headers=headers)

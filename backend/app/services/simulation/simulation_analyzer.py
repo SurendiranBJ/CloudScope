@@ -305,9 +305,23 @@ def _all_resources(inventory: Any) -> List[Dict[str, Any]]:
 def _graph_elements(graph: Any) -> List[Dict[str, Any]]:
     elements = []
     for node_id, attr in graph.nodes(data=True):
-        elements.append({"data": {"id": str(node_id), "label": attr.get("label", str(node_id)), "type": attr.get("type", "Resource"), "riskScore": attr.get("riskScore", 0), "arn": attr.get("arn", ""), "description": attr.get("description", "")}})
+        elements.append({"data": {"id": str(node_id), "label": attr.get("label", str(node_id)), "type": attr.get("type", "Resource"), "riskScore": attr.get("riskScore", 0), "arn": attr.get("arn", ""), "region": attr.get("region", ""), "description": attr.get("description", "")}})
     for index, (source, target, attr) in enumerate(graph.edges(data=True)):
-        elements.append({"data": {"id": f"edge-{index}", "source": str(source), "target": str(target), "label": attr.get("label", "")}})
+        provenance = attr.get("provenance") if isinstance(attr.get("provenance"), dict) else {}
+        relationship = attr.get("relationship") or attr.get("label", "")
+        actions = attr.get("actions") or provenance.get("actions") or []
+        if isinstance(actions, str):
+            actions = [actions]
+        categories = attr.get("access_categories") or provenance.get("access_categories") or []
+        if isinstance(categories, str):
+            categories = [categories]
+        elements.append({"data": {
+            "id": f"edge-{index}", "source": str(source), "target": str(target),
+            "label": relationship, "relationship": relationship,
+            "action": attr.get("action") or provenance.get("action", ""),
+            "actions": actions, "access_categories": categories,
+            "policy_name": attr.get("policy_name") or provenance.get("policy_name", ""),
+        }})
     return elements
 
 
@@ -326,14 +340,22 @@ def _enrich_resource_diff(diff: Dict[str, Any], current_inventory: Any, desired_
 
     def access_map(records: List[Dict[str, Any]]) -> Dict[tuple, Dict[str, Any]]:
         result: Dict[tuple, Dict[str, Any]] = {}
+        from app.services.attack.policy_evaluator import classify_action_category
         for record in records:
             key = (f"{record.get('identity_type')}:{record.get('identity_name')}", str(record.get("target_resource_id")))
             entry = result.setdefault(key, {"policy_names": [], "access_details": []})
             entry["policy_names"] = sorted(set(entry["policy_names"]) | set(record.get("policy_names", [])))
             evidence = record.get("evidence") or {}
+            action = evidence.get("matched_action") or evidence.get("action")
+            if isinstance(action, list):
+                actions = action
+            else:
+                actions = [action] if action else []
+            categories = evidence.get("access_categories") or sorted({classify_action_category(value) for value in actions})
             detail = {
                 "policy": ", ".join(record.get("policy_names", [])),
-                "action": evidence.get("matched_action") or evidence.get("action"),
+                "action": action,
+                "access_categories": categories,
                 "reason": evidence.get("reason", ""),
                 "access_path": record.get("access_path", []),
             }

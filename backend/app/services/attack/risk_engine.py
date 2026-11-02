@@ -301,9 +301,18 @@ def compute_global_security_score(
     all_resources = (
         getattr(inventory, "s3", []) +
         getattr(inventory, "ec2", []) +
+        getattr(inventory, "lambdas", []) +
         getattr(inventory, "secrets", []) +
         getattr(inventory, "rds", []) +
-        getattr(inventory, "dynamodb", [])
+        getattr(inventory, "dynamodb", []) +
+        getattr(inventory, "ecs", []) +
+        getattr(inventory, "ecr", []) +
+        getattr(inventory, "codecommit", []) +
+        getattr(inventory, "sqs", []) +
+        getattr(inventory, "sns", []) +
+        getattr(inventory, "kms", []) +
+        getattr(inventory, "eks", []) +
+        getattr(inventory, "stepfunctions", [])
     )
     if all_resources:
         avg_res_risk = sum(res.get("riskScore", 0) for res in all_resources) / len(all_resources)

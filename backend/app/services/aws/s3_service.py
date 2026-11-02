@@ -18,6 +18,10 @@ logger = logging.getLogger("scanner")
 def collect_s3_buckets() -> list:
     buckets = []
     try:
+        from app.services.aws.region_cache import get_all_regions, get_resolved_scan_mode
+
+        scan_regions = set(get_all_regions())
+        scan_mode = get_resolved_scan_mode()
         session = get_aws_session()
         client = session.client('s3', config=get_boto_config())
         account_id = get_account_id()
@@ -37,6 +41,11 @@ def collect_s3_buckets() -> list:
                     region = "us-east-1"
             except Exception as loc_err:
                 logger.debug(f"Could not get region for S3 bucket {name}: {loc_err}")
+
+            # S3 list_buckets is account-wide even during a regional scan.
+            # Keep this collector aligned with the scan snapshot's region scope.
+            if scan_mode in {"single", "configured"} and region not in scan_regions:
+                continue
 
             # 1. Public Access Block Evaluation
             block_public_acls = False

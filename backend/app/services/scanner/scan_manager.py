@@ -1001,27 +1001,19 @@ class ScanManager:
             # 4. STEP 1 OF PIPELINE: Neo4j Configuration Sync (Idempotent MERGE, preserves ActivityEvent)
             self._set_active_phase("graph_construction")
             phase_t0 = time.perf_counter()
-            neo4j_success = False
             try:
                 graph_builder.build_graph_in_neo4j(
                     working_inventory,
                     successful_regions=reconcilable_regions
                 )
-                neo4j_success = True
             except Exception as db_err:
                 logger.warning(f"Neo4j database sync skipped/failed: {db_err}")
 
-            # 5. STEP 2 OF PIPELINE: Load Base NetworkX Graph
-            try:
-                if neo4j_success:
-                    G = graph_loader.load_graph_from_neo4j()
-                    if G.number_of_nodes() == 0:
-                        G = graph_loader.build_local_graph(working_inventory)
-                else:
-                    G = graph_loader.build_local_graph(working_inventory)
-            except Exception as loader_err:
-                logger.warning(f"Neo4j loader exception: {loader_err}. Building local NetworkX model.")
-                G = graph_loader.build_local_graph(working_inventory)
+            # 5. STEP 2 OF PIPELINE: Build the snapshot graph from this scan's
+            # inventory. Neo4j is a durable graph store and can contain nodes
+            # from regions outside a single-region scan; publishing that graph
+            # would leak unrelated regional resources into the active snapshot.
+            G = graph_loader.build_local_graph(working_inventory)
 
             graph_construction_duration = max(0.0, round(time.perf_counter() - phase_t0, 3))
             self._complete_phase("graph_construction", graph_construction_duration, status="COMPLETED")

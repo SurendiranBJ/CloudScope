@@ -7,7 +7,6 @@ import { NodeDetailsPanel } from '../components/NodeDetailsPanel';
 import type { NodeData, EdgeData } from '../components/NodeDetailsPanel';
 import { 
   Network, Search, Maximize, RefreshCw, 
-  AlertTriangle, Info, ChevronRight, Filter, 
   Target, Key, Sparkles, GitCompare, Database,
   Compass
 } from 'lucide-react';
@@ -41,9 +40,8 @@ export const IdentityGraphPage: FC = () => {
   // General display settings
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [showLabels, setShowLabels] = useState(true);
-  const [highlightRisky, setHighlightRisky] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [showLabels] = useState(true);
+  const [highlightRisky] = useState(false);
   const [graphMode, setGraphMode] = useState<'current' | 'desired' | 'diff'>('current');
 
   const pageRef = useRef<HTMLDivElement>(null);
@@ -571,75 +569,8 @@ export const IdentityGraphPage: FC = () => {
             </div>
           )}
 
-          {/* Toggle Button for Collapsible Right Sidebar */}
-          {!isFullscreen && (
-            <button
-              onClick={() => setIsSidebarOpen(prev => !prev)}
-              aria-expanded={isSidebarOpen}
-              className="absolute top-4 right-4 z-10 inline-flex items-center gap-2 p-2 bg-enterprise-card/95 hover:bg-enterprise-card text-enterprise-subtext hover:text-enterprise-text border border-enterprise-border rounded-lg shadow-xl backdrop-blur-md transition-colors"
-              title={isSidebarOpen ? "Hide insights and display controls" : "Show insights and display controls"}
-            >
-              {isSidebarOpen ? <ChevronRight className="w-4 h-4" /> : <Filter className="w-4 h-4" />}
-              <span className="text-xs font-medium">{isSidebarOpen ? 'Hide controls' : 'Insights & controls'}</span>
-            </button>
-          )}
         </div>
 
-        {/* COLLAPSIBLE RIGHT SIDEBAR */}
-        {!isFullscreen && isSidebarOpen && (
-          <aside className="w-80 bg-enterprise-card border-l border-enterprise-border flex flex-col overflow-y-auto shrink-0 custom-scrollbar z-10 animate-in slide-in-from-right duration-200">
-            {/* Recommended Fixes */}
-            <div className="p-5 border-b border-gray-800">
-              <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-amber-500" />
-                <span>Risk findings</span>
-              </h3>
-              <div className="space-y-3">
-                {risks?.map((risk: any, i: number) => (
-                  <div key={i} className="p-3 bg-gray-900 border border-gray-800 rounded-lg">
-                    <div className="flex items-start gap-2">
-                      {risk.severity === 'Critical' || risk.severity === 'High' ? (
-                        <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                      ) : (
-                        <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-                      )}
-                      <div>
-                        <h4 className="text-xs font-semibold text-gray-200">{risk.title || risk.identity || 'Security Finding'}</h4>
-                        <p className="text-[10px] text-gray-400 mt-1 leading-snug">{risk.description || risk.recommendation || risk.issue}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {(!risks || risks.length === 0) && (
-                  <p className="text-xs text-gray-500 italic">No risk findings are available in this snapshot.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Display Settings */}
-            <div className="p-5">
-              <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-                <Filter className="w-4 h-4 text-blue-400" />
-                <span>Display Settings</span>
-              </h3>
-              
-              <div className="space-y-3">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-600" />
-                  <span className="text-xs text-gray-300">Show Node Labels</span>
-                </label>
-                <div className="flex items-start gap-2 text-xs text-gray-300">
-                  <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded bg-emerald-500/15 text-emerald-400" aria-hidden="true">✓</span>
-                  <span>Relationship labels stay visible so access types such as READ and WRITE remain clear.</span>
-                </div>
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input type="checkbox" checked={highlightRisky} onChange={(e) => setHighlightRisky(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-600" />
-                  <span className="text-xs text-gray-300">Highlight Risky Paths</span>
-                </label>
-              </div>
-            </div>
-          </aside>
-        )}
       </main>
 
       {/* FOOTER STATS BAR */}

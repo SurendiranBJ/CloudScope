@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, Play, Plus, RefreshCw, Search, ShieldCheck, Trash2, Waypoints, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, Maximize2, Minimize2, Play, Plus, RefreshCw, Search, ShieldCheck, Trash2, Waypoints, X } from 'lucide-react';
 import { addSimulationChanges, getSimulationGroups, previewSimulationChange, type SimulationChangePayload } from '../api/simulation';
 import { getIAMUsers } from '../api/users';
 import { getIAMRoles } from '../api/roles';
@@ -9,6 +10,7 @@ import type { AttackPath, IAMRole, IAMUser, PolicyCatalogEntry, SimulationAnalys
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { ENTITY_STYLES, normalizeGraphType } from '../constants/graphStyles';
+import { useSnapshotView } from '../context/SnapshotViewContext';
 
 cytoscape.use(dagre);
 
@@ -48,6 +50,7 @@ const policyMatchesSearch = (policy: PolicyCatalogEntry, rawQuery: string) => {
 };
 
 export const AttackSimulation: React.FC = () => {
+  const { snapshotId } = useSnapshotView();
   const [users, setUsers] = useState<IAMUser[]>([]);
   const [roles, setRoles] = useState<IAMRole[]>([]);
   const [groups, setGroups] = useState<{ name: string; attachedPolicies?: string[]; attachedPolicyArns?: Record<string, string> }[]>([]);
@@ -66,6 +69,19 @@ export const AttackSimulation: React.FC = () => {
   const [runError, setRunError] = useState('');
   const [draftSaved, setDraftSaved] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
+  const [comparisonFullscreen, setComparisonFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!comparisonFullscreen) return;
+    const priorOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setComparisonFullscreen(false); };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = priorOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [comparisonFullscreen]);
 
   useEffect(() => {
     let active = true;
@@ -143,7 +159,7 @@ export const AttackSimulation: React.FC = () => {
   };
 
   const saveDraft = async () => {
-    if (!analysis || !queuedChanges.length) return;
+    if (snapshotId || !analysis || !queuedChanges.length) return;
     setSavingDraft(true);
     setRunError('');
     try {
@@ -182,6 +198,14 @@ export const AttackSimulation: React.FC = () => {
     });
     return names;
   }, [queuedChanges, users]);
+  const graphFocusIdentities = useMemo(() => {
+    const unique = new Map<string, { type: string; name: string }>();
+    queuedChanges.forEach((change) => {
+      const key = `${change.principal_type}:${change.principal_id}`;
+      unique.set(key, { type: change.principal_type, name: change.principal_id });
+    });
+    return [...unique.values()];
+  }, [queuedChanges]);
   const pathMatchesScope = (path: AttackPath) => {
     const candidates = [path.source, path.source_asset, path.destination, path.target, ...(path.ordered_nodes || path.nodes || []).flatMap((node) => [node.id, node.name])];
     return candidates.some((value) => {
@@ -268,10 +292,10 @@ export const AttackSimulation: React.FC = () => {
       {analysis && <section aria-live="polite" className="space-y-4">
         <div className="rounded-lg border border-blue-500/25 bg-blue-500/5 px-4 py-3 text-sm text-blue-100"><p>{analysis.summary || analysis.simulation_note || 'This is a non-persistent analysis of the proposed IAM changes.'}</p>{analysis.proposed_change?.map((change, index) => <p key={`${change.principal_type}:${change.principal_id}:${change.policy_arn}:${index}`} className="mt-2 text-xs text-blue-100/75">{change.action === 'ATTACH_POLICY' ? 'Add' : 'Remove'} <strong>{change.policy_name || change.policy_arn}</strong> on {change.principal_type.toLowerCase()} <strong>{change.principal_id}</strong>.</p>)}{analysis.analysis_warnings?.map((warning) => <p key={warning} className="mt-2 rounded-md border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">Analysis limitation: {warning}</p>)}</div>
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-enterprise-border bg-enterprise-card p-4">
-          <p className="text-sm text-enterprise-subtext">Review the impact below. Save this proposed change as a draft to compare it with other changes, or discard the preview.</p>
+          <p className="text-sm text-enterprise-subtext">Review the impact below. {snapshotId ? 'Historical snapshot previews cannot be saved as live drafts.' : 'Save this proposed change as a draft to compare it with other changes, or discard the preview.'}</p>
           <div className="flex shrink-0 gap-2">
             <button type="button" onClick={() => { setAnalysis(null); setRunError(''); setDraftSaved(false); }} disabled={savingDraft} className="inline-flex items-center gap-2 rounded-lg border border-enterprise-border px-3 py-2 text-sm font-semibold text-enterprise-subtext hover:text-white disabled:opacity-50"><Trash2 className="h-4 w-4" />Discard preview</button>
-            <button type="button" onClick={saveDraft} disabled={savingDraft || draftSaved} className="inline-flex items-center gap-2 rounded-lg bg-enterprise-accent px-3 py-2 text-sm font-semibold text-white hover:brightness-110 disabled:opacity-60">{savingDraft ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{draftSaved ? 'Saved to drafts' : savingDraft ? 'Saving…' : 'Save as draft'}</button>
+            <button type="button" onClick={saveDraft} disabled={!!snapshotId || savingDraft || draftSaved} title={snapshotId ? 'Exit snapshot view to save a live draft' : undefined} className="inline-flex items-center gap-2 rounded-lg bg-enterprise-accent px-3 py-2 text-sm font-semibold text-white hover:brightness-110 disabled:opacity-60">{savingDraft ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{draftSaved ? 'Saved to drafts' : savingDraft ? 'Saving…' : snapshotId ? 'Historical preview' : 'Save as draft'}</button>
           </div>
         </div>
         {draftSaved && <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300"><span className="flex items-center gap-2"><Check className="h-4 w-4" />Draft saved. It remains an analysis draft and has not changed AWS.</span><Link to="/changes" className="font-semibold underline underline-offset-2">Review saved changes</Link></div>}
@@ -282,11 +306,14 @@ export const AttackSimulation: React.FC = () => {
           <Metric title="Assets with changed access" value={String(newResources.length + removedResources.length)} detail={`${newResources.length} newly reachable · ${removedResources.length} no longer reachable`} delta={newResources.length - removedResources.length} />
         </div>
         <div className="rounded-xl border border-enterprise-accent/25 bg-enterprise-accent/5 px-4 py-3"><p className="text-xs font-bold uppercase tracking-wide text-enterprise-accent">Focused identity scope</p><p className="mt-1 break-words text-sm text-white">{Array.from(scopedIdentityNames).join(', ') || 'No selected identities'}</p><p className="mt-1 text-xs text-enterprise-subtext">The two graphs and access-change lists below are limited to paths and resources connected to these selected identities. Account-wide posture totals remain shown separately.</p></div>
-        <div className="grid gap-4 xl:grid-cols-2">
-          <AttackPathGraph title="Before proposed change" paths={scopedCurrentPaths} elements={analysis.current_elements || []} highlightedPaths={removedPaths} tone="current" />
-          <AttackPathGraph title="After proposed change" paths={scopedDesiredPaths} elements={analysis.desired_elements || []} highlightedPaths={newPaths} tone="projected" />
-        </div>
-        <div className="rounded-lg border border-enterprise-border bg-enterprise-card px-4 py-3 text-xs text-enterprise-subtext">These graphs show attack paths calculated from the current scan and the projected IAM policy change. “Newly reachable” and “no longer reachable” refer to effective access found in the scanned inventory; this preview does not create or delete AWS resources.</div>
+        <section aria-label="Before and after graph comparison" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-bold text-white">Access graph comparison</h2><p className="mt-1 text-xs text-enterprise-subtext">Read, write, execute, and admin badges show modeled permissions in each state.</p></div><button type="button" onClick={() => setComparisonFullscreen(true)} className="inline-flex items-center gap-2 rounded-lg border border-enterprise-border bg-enterprise-card px-3 py-2 text-xs font-semibold text-enterprise-subtext hover:text-white"><Maximize2 className="h-4 w-4" />Full screen comparison</button></div>
+          {!comparisonFullscreen && <div className="grid gap-4 xl:grid-cols-2">
+            <AttackPathGraph title="Before proposed change" paths={scopedCurrentPaths} elements={analysis.current_elements || []} highlightedPaths={removedPaths} focusedIdentities={graphFocusIdentities} tone="current" />
+            <AttackPathGraph title="After proposed change" paths={scopedDesiredPaths} elements={analysis.desired_elements || []} highlightedPaths={newPaths} focusedIdentities={graphFocusIdentities} tone="projected" />
+          </div>}
+        </section>
+        <div className="rounded-lg border border-enterprise-border bg-enterprise-card px-4 py-3 text-xs text-enterprise-subtext">Each graph keeps the selected identities and their policy-to-resource links visible, even when no attack path exists. “Newly reachable” and “no longer reachable” describe modeled effective access to scanned assets; this preview does not create or delete AWS resources.</div>
         <div className="grid gap-4 lg:grid-cols-2">
           <ResultList title="New attack paths" empty="No new paths were identified." items={newPaths.map((path, index) => ({ key: path.id || `${path.source}-${path.target}-${index}`, title: `${path.source || 'Identity'} → ${path.target || path.destination || 'Resource'} · ${(path.severity || 'unknown').toUpperCase()}${path.riskScore !== undefined ? ` · risk ${path.riskScore}` : ''}`, detail: [path.ordered_nodes?.map((node) => node.name || node.id).join(' → '), path.description, path.recommendation && `Suggested action: ${path.recommendation}`].filter(Boolean).join(' | ') || path.orderedRelationships?.join(' · ') || 'Path identified by the current authorization analysis.' }))} />
           <ResourceDeltaList title="Newly reachable assets" empty="No additional scanned assets became reachable." items={newResources} />
@@ -296,6 +323,14 @@ export const AttackSimulation: React.FC = () => {
           <ResultList title="Why the posture changed" empty="No main risk drivers were returned for this comparison." items={(risk?.top_reasons || []).map((reason, index) => ({ key: `${reason}-${index}`, title: reason, detail: 'Calculated from the simulated identity, permissions, attack paths, and scanned findings.' }))} />
         </div>
       </section>}
+      {analysis && comparisonFullscreen && createPortal(<div role="dialog" aria-modal="true" aria-label="Full-screen before and after simulation graphs" className="fixed inset-0 z-[100] flex flex-col overflow-hidden bg-enterprise-bg p-4 sm:p-6">
+        <header className="mb-4 flex shrink-0 items-center justify-between gap-3 border-b border-enterprise-border pb-4"><div><h2 className="text-lg font-bold text-white">Access graph comparison</h2><p className="mt-1 text-sm text-enterprise-subtext">Before and after the complete proposed change set · permission badges reflect each state</p></div><button type="button" autoFocus onClick={() => setComparisonFullscreen(false)} className="inline-flex items-center gap-2 rounded-lg border border-enterprise-border px-3 py-2 text-sm font-semibold text-enterprise-subtext hover:text-white"><Minimize2 className="h-4 w-4" />Exit full screen <span className="text-xs opacity-70">Esc</span></button></header>
+        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-2">
+          <AttackPathGraph title="Before proposed change" paths={scopedCurrentPaths} elements={analysis.current_elements || []} highlightedPaths={removedPaths} focusedIdentities={graphFocusIdentities} tone="current" expanded />
+          <AttackPathGraph title="After proposed change" paths={scopedDesiredPaths} elements={analysis.desired_elements || []} highlightedPaths={newPaths} focusedIdentities={graphFocusIdentities} tone="projected" expanded />
+        </div>
+        <p className="mt-3 shrink-0 text-xs text-enterprise-subtext">Red links indicate access paths removed by this change; green links indicate paths added. Permission badges are derived from the simulated policy evidence.</p>
+      </div>, document.body)}
     </main>
   );
 };
@@ -310,7 +345,27 @@ function ResultList({ title, empty, items }: { title: string; empty: string; ite
   return <article className="rounded-xl border border-enterprise-border bg-enterprise-card p-5"><h2 className="text-sm font-bold text-white">{title}<span className="ml-2 text-enterprise-subtext">{items.length}</span></h2>{items.length ? <ul className="mt-3 divide-y divide-enterprise-border">{items.map((item) => <li key={item.key} className="py-3"><p className="break-all text-sm font-medium text-gray-100">{item.title}</p><p className="mt-1 text-xs text-enterprise-subtext">{item.detail}</p></li>)}</ul> : <p className="mt-3 text-sm text-enterprise-subtext">{empty}</p>}</article>;
 }
 
-function AttackPathGraph({ title, paths, elements, highlightedPaths, tone }: { title: string; paths: AttackPath[]; elements: any[]; highlightedPaths: AttackPath[]; tone: 'current' | 'projected' }) {
+const accessBadgeLabels = (categories: unknown, actions: unknown): string[] => {
+  const categoryValues = Array.isArray(categories) ? categories : typeof categories === 'string' ? [categories] : [];
+  const actionValues = Array.isArray(actions) ? actions : typeof actions === 'string' ? [actions] : [];
+  const normalized = new Set(categoryValues.map((item) => String(item).trim().toUpperCase().replace(/_/g, ' ')).filter(Boolean));
+  for (const action of actionValues) {
+    const value = String(action).trim().toLowerCase();
+    if (value === '*' || value === '*:*' || value.includes('administratoraccess')) normalized.add('FULL ADMIN');
+    else if (value.endsWith(':*')) normalized.add('SERVICE ADMIN');
+    else if (value.includes('assumerole')) normalized.add('ASSUME ROLE');
+    else if (value.includes('rds-db:connect')) normalized.add('DB CONNECT');
+    else if (/:(get|list|describe|view|read|lookup|head|download|batchget)/.test(value)) normalized.add('READ');
+    else if (/:(put|create|update|modify|post|batchwrite|attach|set|write)/.test(value)) normalized.add('WRITE');
+    else if (/:(invoke|run|start|execute|trigger)/.test(value)) normalized.add('EXECUTE');
+    else if (/:(delete|remove|drop|purge|terminate|detach)/.test(value)) normalized.add('DELETE');
+    else if (value.startsWith('iam:')) normalized.add('ADMIN');
+  }
+  const priority = ['FULL ADMIN', 'SERVICE ADMIN', 'ADMIN', 'DELETE', 'WRITE', 'EXECUTE', 'DB CONNECT', 'READ', 'ASSUME ROLE', 'ACCESS'];
+  return priority.filter((label) => normalized.has(label)).slice(0, 3);
+};
+
+function AttackPathGraph({ title, paths, elements, highlightedPaths, focusedIdentities, tone, expanded = false }: { title: string; paths: AttackPath[]; elements: any[]; highlightedPaths: AttackPath[]; focusedIdentities: { type: string; name: string }[]; tone: 'current' | 'projected'; expanded?: boolean }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
   const [ready, setReady] = useState(false);
@@ -318,15 +373,36 @@ function AttackPathGraph({ title, paths, elements, highlightedPaths, tone }: { t
     const pathNodes = new Map<string, any>();
     const pathEdges = new Map<string, any>();
     const highlighted = new Set<string>();
+    const rawNodes = elements.filter((item) => item?.data?.id && !item.data.source && !item.data.target);
+    const sourceEdges = elements.filter((item) => item?.data?.source && item?.data?.target);
+    const nodeIdByArn = new Map<string, string>();
+    const idToCanonical = new Map<string, string>();
+    const nodeById = new Map<string, any>();
+    rawNodes.forEach((node) => {
+      const originalId = String(node.data.id);
+      const arn = String(node.data.arn || '');
+      const canonicalId = arn ? (nodeIdByArn.get(arn) || originalId) : originalId;
+      if (arn && !nodeIdByArn.has(arn)) nodeIdByArn.set(arn, canonicalId);
+      idToCanonical.set(originalId, canonicalId);
+      if (!nodeById.has(canonicalId)) nodeById.set(canonicalId, { ...node, data: { ...node.data, id: canonicalId } });
+    });
+    const rawEdges = sourceEdges.flatMap((edge) => {
+      const source = idToCanonical.get(String(edge.data.source)) || String(edge.data.source);
+      const target = idToCanonical.get(String(edge.data.target)) || String(edge.data.target);
+      return source === target ? [] : [{ ...edge, data: { ...edge.data, source, target } }];
+    });
     const includePaths = (items: AttackPath[], isHighlighted: boolean) => items.forEach((path) => {
       const nodes = path.ordered_nodes || path.nodes || [];
       nodes.forEach((node) => {
-        const id = String(node.id || node.name || '');
+        const originalId = String(node.id || node.name || '');
+        const id = (node.arn && nodeIdByArn.get(String(node.arn))) || idToCanonical.get(originalId) || originalId;
         if (id) pathNodes.set(id, { data: { id, label: node.name || id, type: normalizeGraphType(node.type) } });
       });
       for (let index = 0; index < nodes.length - 1; index += 1) {
-        const source = String(nodes[index].id || nodes[index].name || '');
-        const target = String(nodes[index + 1].id || nodes[index + 1].name || '');
+        const sourceRaw = String(nodes[index].id || nodes[index].name || '');
+        const targetRaw = String(nodes[index + 1].id || nodes[index + 1].name || '');
+        const source = (nodes[index].arn && nodeIdByArn.get(String(nodes[index].arn))) || idToCanonical.get(sourceRaw) || sourceRaw;
+        const target = (nodes[index + 1].arn && nodeIdByArn.get(String(nodes[index + 1].arn))) || idToCanonical.get(targetRaw) || targetRaw;
         if (!source || !target) continue;
         const relation = path.orderedRelationships?.[index] || path.ordered_relationships?.[index] || '';
         const key = `${source}\u0000${target}`;
@@ -336,19 +412,104 @@ function AttackPathGraph({ title, paths, elements, highlightedPaths, tone }: { t
     });
     includePaths(paths, false);
     includePaths(highlightedPaths, true);
-    const rawNodes = elements.filter((item) => item?.data?.id && !item.data.source && !item.data.target);
-    const rawEdges = elements.filter((item) => item?.data?.source && item?.data?.target);
-    const nodeById = new Map(rawNodes.map((node) => [String(node.data.id), node]));
-    const nodes = [...pathNodes.keys()].map((id) => {
-      const source = nodeById.get(id)?.data || pathNodes.get(id).data;
+    const selectedRoots = new Set<string>();
+    focusedIdentities.forEach((identity) => {
+      const type = identity.type.toLowerCase();
+      const id = `aws:${type}:${identity.name}`;
+      if (nodeById.has(id)) {
+        selectedRoots.add(id);
+        return;
+      }
+      const match = rawNodes.find((node) => normalizeGraphType(node.data.type) === normalizeGraphType(type)
+        && String(node.data.label || '').toLowerCase() === identity.name.toLowerCase());
+      selectedRoots.add(match ? String(match.data.id) : id);
+      if (!match) pathNodes.set(id, { data: { id, label: identity.name, type: normalizeGraphType(type) } });
+    });
+
+    // Preserve the focused identity's permission component even when it has
+    // no attack path (for example, after its last policy is detached). Follow
+    // authorization edges outward: identity → group/role/policy → asset.
+    const includedIds = new Set<string>(selectedRoots);
+    const traversableRelationships = new Set(['HAS_POLICY', 'MEMBER_OF', 'CAN_ASSUME', 'ASSUMED_ROLE', 'ALLOWS', 'DB_CONNECT', 'BELONGS_TO']);
+    let frontier = [...selectedRoots];
+    for (let depth = 0; depth < 6 && frontier.length; depth += 1) {
+      const next: string[] = [];
+      rawEdges.forEach((edge) => {
+        const source = String(edge.data.source);
+        const target = String(edge.data.target);
+        const relationship = String(edge.data.relationship || edge.data.label || '').toUpperCase();
+        if (!frontier.includes(source) || !traversableRelationships.has(relationship)) return;
+        includedIds.add(source);
+        includedIds.add(target);
+        const targetType = normalizeGraphType(nodeById.get(target)?.data?.type || pathNodes.get(target)?.data?.type || '');
+        if (['Group', 'Role', 'Policy', 'RDS'].includes(targetType) && !frontier.includes(target)) next.push(target);
+      });
+      frontier = [...new Set(next)];
+    }
+
+    // Show workloads attached to a selected role and users belonging to a
+    // selected group as context, without traversing into unrelated identities.
+    rawEdges.forEach((edge) => {
+      const source = String(edge.data.source);
+      const target = String(edge.data.target);
+      const relationship = String(edge.data.relationship || edge.data.label || '').toUpperCase();
+      if (selectedRoots.has(target) && ((relationship === 'ATTACHED_TO' || relationship === 'EXECUTES_WITH')
+        || (relationship === 'MEMBER_OF' && focusedIdentities.some((item) => item.type.toUpperCase() === 'GROUP')))) {
+        includedIds.add(source);
+        includedIds.add(target);
+      }
+    });
+    pathNodes.forEach((_node, id) => includedIds.add(id));
+
+    const nodeRows = [...includedIds].map((id) => {
+      const source = nodeById.get(id)?.data || pathNodes.get(id)?.data || { id, label: id, type: 'Resource' };
       return { data: { ...source, id, label: source.label || source.name || id, type: normalizeGraphType(source.type) } };
     });
+    const labelsByName = new Map<string, number>();
+    nodeRows.forEach((node) => labelsByName.set(String(node.data.label), (labelsByName.get(String(node.data.label)) || 0) + 1));
+    const nodes = nodeRows.map((node) => {
+      if ((labelsByName.get(String(node.data.label)) || 0) < 2) return node;
+      const region = String(node.data.region || '');
+      const arnTail = String(node.data.arn || '').split(':').pop()?.split('/').pop() || '';
+      const idTail = String(node.data.id).split(':').pop() || '';
+      const suffix = region || (arnTail && arnTail !== node.data.label ? arnTail : idTail.slice(-10));
+      return { ...node, data: { ...node.data, label: `${node.data.label} · ${suffix}` } };
+    });
     const nodeIds = new Set(nodes.map((node) => node.data.id));
-    const edges = rawEdges.filter((edge) => nodeIds.has(String(edge.data.source)) && nodeIds.has(String(edge.data.target)));
+    // A selected route can be present both in the inventory graph and in one
+    // or more path records. Collapse all copies of the same directed link into
+    // one visible edge, combining relationship names and permission evidence.
+    const combinedEdges = new Map<string, any>();
+    rawEdges.filter((edge) => nodeIds.has(String(edge.data.source)) && nodeIds.has(String(edge.data.target))).forEach((edge) => {
+      const source = String(edge.data.source);
+      const target = String(edge.data.target);
+      const key = `${source}\u0000${target}`;
+      const relationship = String(edge.data.relationship || edge.data.label || '').toUpperCase();
+      const edgeCategories = Array.isArray(edge.data.access_categories) ? edge.data.access_categories : edge.data.access_categories ? [edge.data.access_categories] : [];
+      const edgeActions = Array.isArray(edge.data.actions) ? edge.data.actions : edge.data.actions ? [edge.data.actions] : edge.data.action ? [edge.data.action] : [];
+      const existing = combinedEdges.get(key);
+      if (!existing) {
+        combinedEdges.set(key, { ...edge, data: { ...edge.data, source, target, relationships: [relationship], access_categories: edgeCategories, actions: edgeActions } });
+        return;
+      }
+      existing.data.relationships = [...new Set([...existing.data.relationships, relationship])];
+      existing.data.access_categories = [...new Set([...existing.data.access_categories, ...edgeCategories])];
+      existing.data.actions = [...new Set([...existing.data.actions, ...edgeActions])];
+    });
+    const edges = [...combinedEdges.values()].map((edge) => {
+      const relationships: string[] = edge.data.relationships;
+      const badges = accessBadgeLabels(edge.data.access_categories, edge.data.actions);
+      const accessLabel = badges.join(' · ');
+      const relationshipLabel = relationships.join(' · ');
+      const label = accessLabel && relationships.some((relationship) => relationship === 'ALLOWS' || relationship === 'DB_CONNECT')
+        ? accessLabel
+        : relationshipLabel;
+      return { ...edge, data: { ...edge.data, relationship: relationships[0] || '', label } };
+    });
     const edgeKeys = new Set(edges.map((edge) => `${edge.data.source}\u0000${edge.data.target}`));
     pathEdges.forEach((edge, key) => { if (!edgeKeys.has(key)) edges.push(edge); });
     return { nodes, edges, highlighted };
-  }, [elements, paths, highlightedPaths]);
+  }, [elements, paths, highlightedPaths, focusedIdentities]);
 
   useEffect(() => {
     setReady(false);
@@ -361,9 +522,13 @@ function AttackPathGraph({ title, paths, elements, highlightedPaths, tone }: { t
       maxZoom: 2.5,
       wheelSensitivity: 0.2,
       style: ([
-        { selector: 'node', style: { label: 'data(label)', 'font-family': 'Inter, sans-serif', 'font-size': 10, color: '#e2e8f0', 'text-valign': 'bottom', 'text-margin-y': 7, 'text-wrap': 'ellipsis', 'text-max-width': 120, 'text-background-color': '#0f172a', 'text-background-opacity': 0.86, 'text-background-padding': 2, 'background-color': '#64748b', 'border-width': 2, 'border-color': '#94a3b8', width: 38, height: 38 } },
+        { selector: 'node', style: { label: 'data(label)', 'font-family': 'Inter, sans-serif', 'font-size': 9, color: '#e2e8f0', 'text-valign': 'bottom', 'text-margin-y': 7, 'text-wrap': 'wrap', 'text-max-width': 180, 'text-background-color': '#0f172a', 'text-background-opacity': 0.9, 'text-background-padding': 2, 'background-color': '#64748b', 'border-width': 2, 'border-color': '#94a3b8', width: 38, height: 38 } },
         ...Object.values(ENTITY_STYLES).map((style) => ({ selector: `node[type = "${style.type}"]`, style: { 'background-color': style.backgroundColor, 'border-color': style.borderColor, shape: style.shape as any, width: style.width, height: style.height } })),
-        { selector: 'edge', style: { width: 1.5, 'line-color': '#64748b', 'target-arrow-color': '#94a3b8', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', opacity: 0.72, label: 'data(label)', 'font-size': 7, color: '#94a3b8', 'text-background-color': '#0f172a', 'text-background-opacity': 0.8, 'text-background-padding': 1 } },
+        { selector: 'edge', style: { width: 1.5, 'line-color': '#64748b', 'target-arrow-color': '#94a3b8', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', opacity: 0.82, label: 'data(label)', 'font-size': 8, 'font-weight': 700, color: '#bfdbfe', 'text-background-color': '#0f172a', 'text-background-opacity': 0.94, 'text-background-padding': 2 } },
+        { selector: 'edge[label *= "READ"]', style: { color: '#7dd3fc' } },
+        { selector: 'edge[label *= "WRITE"], edge[label *= "DELETE"]', style: { color: '#fbbf24' } },
+        { selector: 'edge[label *= "ADMIN"]', style: { color: '#fca5a5' } },
+        { selector: 'edge[label *= "EXECUTE"]', style: { color: '#c4b5fd' } },
         { selector: '.changed-edge', style: { width: '3px', 'line-color': tone === 'current' ? '#ef4444' : '#22c55e', 'target-arrow-color': tone === 'current' ? '#ef4444' : '#22c55e', opacity: 1, 'z-index': 10 } },
       ] as any),
       layout: { name: 'dagre', rankDir: 'LR', nodeSep: 32, rankSep: 72, edgeSep: 12, padding: 28, animate: false } as any,
@@ -375,9 +540,10 @@ function AttackPathGraph({ title, paths, elements, highlightedPaths, tone }: { t
   }, [merged, tone]);
 
   const zoom = (factor: number) => { const cy = cyRef.current; if (cy) cy.zoom({ level: cy.zoom() * factor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); };
-  return <article className="min-w-0 rounded-xl border border-enterprise-border bg-enterprise-card p-4">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-bold text-white">{title}</h2><p className="mt-1 text-xs text-enterprise-subtext">All scoped identity paths merged into one connected map.</p></div><div className="flex items-center gap-2"><span className="rounded-full border border-enterprise-border px-2 py-1 text-[11px] text-enterprise-subtext">{paths.length} paths · {merged.nodes.length} nodes</span><button type="button" onClick={() => zoom(1.2)} aria-label="Zoom in" className="rounded border border-enterprise-border px-2 py-1 text-xs text-enterprise-subtext hover:text-white">+</button><button type="button" onClick={() => zoom(0.83)} aria-label="Zoom out" className="rounded border border-enterprise-border px-2 py-1 text-xs text-enterprise-subtext hover:text-white">−</button><button type="button" onClick={() => cyRef.current?.fit(undefined, 30)} className="rounded border border-enterprise-border px-2 py-1 text-xs text-enterprise-subtext hover:text-white">Fit</button></div></div>
-    {!merged.nodes.length ? <p className="mt-4 rounded-lg border border-enterprise-border bg-enterprise-bg/60 p-4 text-sm text-enterprise-subtext">No attack paths were identified in this state. Reachable assets may still be listed because access checks and attack path rules are separate.</p> : <div ref={containerRef} role="img" aria-label={`${title}: merged graph with ${paths.length} attack paths`} className="mt-3 h-[420px] w-full overflow-hidden rounded-lg border border-enterprise-border bg-enterprise-bg/60" />}
+  return <article className={`min-w-0 rounded-xl border border-enterprise-border bg-enterprise-card p-4 ${expanded ? 'flex h-full min-h-0 flex-col' : ''}`}>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-bold text-white">{title}</h2><p className="mt-1 text-xs text-enterprise-subtext">Selected identities, their policy links, reachable assets, and attack paths.</p></div><div className="flex items-center gap-2"><span className="rounded-full border border-enterprise-border px-2 py-1 text-[11px] text-enterprise-subtext">{paths.length} paths · {merged.nodes.length} nodes</span><button type="button" onClick={() => zoom(1.2)} aria-label="Zoom in" className="rounded border border-enterprise-border px-2 py-1 text-xs text-enterprise-subtext hover:text-white">+</button><button type="button" onClick={() => zoom(0.83)} aria-label="Zoom out" className="rounded border border-enterprise-border px-2 py-1 text-xs text-enterprise-subtext hover:text-white">−</button><button type="button" onClick={() => cyRef.current?.fit(undefined, 30)} className="rounded border border-enterprise-border px-2 py-1 text-xs text-enterprise-subtext hover:text-white">Fit</button></div></div>
+    {!merged.nodes.length ? <p className="mt-4 rounded-lg border border-enterprise-border bg-enterprise-bg/60 p-4 text-sm text-enterprise-subtext">No connected identity or resource data is available in this state.</p> : <div ref={containerRef} role="img" aria-label={`${title}: focused identity relationships with ${paths.length} attack paths`} className={`mt-3 w-full overflow-hidden rounded-lg border border-enterprise-border bg-enterprise-bg/60 ${expanded ? 'min-h-0 flex-1' : 'h-[420px]'}`} />}
+    <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]" aria-label="Permission badge legend">{['READ', 'WRITE', 'EXECUTE', 'ADMIN'].map((label) => <span key={label} className="rounded-full border border-enterprise-border bg-enterprise-bg px-2 py-0.5 font-semibold text-enterprise-subtext">{label}</span>)}</div>
     {merged.highlighted.size > 0 && <p className={`mt-2 text-xs ${tone === 'current' ? 'text-red-300' : 'text-emerald-300'}`}>{tone === 'current' ? 'Red links are paths removed by this change.' : 'Green links are paths added by this change.'}</p>}
     {!ready && !!merged.nodes.length && <span className="sr-only">Preparing graph…</span>}
   </article>;
@@ -388,6 +554,6 @@ function ResourceDeltaList({ title, empty, items }: { title: string; empty: stri
     <p className="break-all text-sm font-semibold text-gray-100">{item.name || item.resource_id || item.id || 'AWS resource'} <span className="font-normal text-enterprise-subtext">· {item.type || 'Resource'}</span></p>
     <p className="mt-1 text-xs text-enterprise-subtext">{item.identity_type || 'Identity'} <strong className="text-gray-200">{item.identity || 'Unknown'}</strong>{item.region ? ` · ${item.region}` : ''}{item.policy_names?.length ? ` · via ${item.policy_names.join(', ')}` : ''}</p>
     {item.arn && <p className="mt-1 break-all font-mono text-[11px] text-enterprise-subtext">{item.arn}</p>}
-    {item.access_details?.map((detail, detailIndex) => <div key={`${detail.policy}-${detailIndex}`} className="mt-2 rounded-md bg-enterprise-bg/70 px-2.5 py-2 text-[11px] text-enterprise-subtext">{detail.action && <p><span className="font-semibold text-gray-200">Matching action:</span> {Array.isArray(detail.action) ? detail.action.join(', ') : detail.action}</p>}{detail.access_path?.length ? <p className="mt-1 break-words"><span className="font-semibold text-gray-200">Access chain:</span> {detail.access_path.join(' → ')}</p> : null}{detail.reason && <p className="mt-1">Why: {detail.reason}</p>}</div>)}
+    {item.access_details?.map((detail, detailIndex) => <div key={`${detail.policy}-${detailIndex}`} className="mt-2 rounded-md bg-enterprise-bg/70 px-2.5 py-2 text-[11px] text-enterprise-subtext">{accessBadgeLabels(detail.access_categories, detail.action).map((label) => <span key={label} className={`mb-1 mr-1 inline-flex rounded-full border px-2 py-0.5 font-bold ${label.includes('ADMIN') ? 'border-red-400/30 bg-red-400/10 text-red-200' : label === 'WRITE' || label === 'DELETE' ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : label === 'READ' ? 'border-sky-400/30 bg-sky-400/10 text-sky-200' : 'border-enterprise-border text-enterprise-subtext'}`}>{label}</span>)}<p><span className="font-semibold text-gray-200">Policy:</span> {detail.policy}</p>{detail.action && <p className="mt-1"><span className="font-semibold text-gray-200">Matching action:</span> {Array.isArray(detail.action) ? detail.action.join(', ') : detail.action}</p>}{detail.access_path?.length ? <p className="mt-1 break-words"><span className="font-semibold text-gray-200">Access chain:</span> {detail.access_path.join(' → ')}</p> : null}{detail.reason && <p className="mt-1">Why: {detail.reason}</p>}</div>)}
   </li>)}</ul> : <p className="mt-3 text-sm text-enterprise-subtext">{empty}</p>}</article>;
 }

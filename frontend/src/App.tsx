@@ -22,6 +22,7 @@ const SettingsPage = lazy(async () => ({ default: (await import('./pages/Setting
 const Policies = lazy(async () => ({ default: (await import('./pages/Policies')).Policies }));
 const AttackSimulation = lazy(async () => ({ default: (await import('./pages/AttackSimulation')).AttackSimulation }));
 const Changes = lazy(async () => ({ default: (await import('./pages/Changes')).Changes }));
+const ScoringGuide = lazy(async () => ({ default: (await import('./pages/ScoringGuide')).ScoringGuide }));
 
 const queryClient = new QueryClient();
 
@@ -65,6 +66,7 @@ function App() {
                       <Route path="/policies" element={<Policies />} />
                       <Route path="/simulation" element={<AttackSimulation />} />
                       <Route path="/changes" element={<Changes />} />
+                      <Route path="/scoring" element={<ScoringGuide />} />
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                   </ErrorBoundary>

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 interface SnapshotViewValue {
@@ -13,17 +13,17 @@ const STORAGE_KEY = 'cloudscope_snapshot_view';
 export const SnapshotViewProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const queryClient = useQueryClient();
   const [snapshotId, setSnapshotId] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
-  const changeSnapshot = (next: string | null) => {
+  const changeSnapshot = useCallback((next: string | null) => {
     if (next) localStorage.setItem(STORAGE_KEY, next);
     else localStorage.removeItem(STORAGE_KEY);
     queryClient.clear();
     setSnapshotId(next);
-  };
+  }, [queryClient]);
   const value = useMemo(() => ({
     snapshotId,
     selectSnapshot: (id: string) => changeSnapshot(id),
     exitSnapshot: () => changeSnapshot(null),
-  }), [snapshotId]);
+  }), [snapshotId, changeSnapshot]);
   return <SnapshotViewContext.Provider value={value}>{children}</SnapshotViewContext.Provider>;
 };
 

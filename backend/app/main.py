@@ -147,15 +147,20 @@ async def published_snapshot_middleware(request: Request, call_next):
     # Otherwise the middleware rejects the history request itself, preventing
     # users from selecting a retained snapshot or exiting historical mode.
     selected_id = "" if request.url.path == "/api/v1/snapshots/history" else request.headers.get("X-CloudScope-Snapshot-ID", "").strip()
-    if selected_id and request.method not in {"GET", "HEAD", "OPTIONS"}:
+    # What-If previews and Copilot explanations only analyze the pinned
+    # snapshot; they do not mutate AWS or saved workspace drafts. Keep them
+    # available in historical view while blocking all state-changing actions.
+    is_snapshot_read_only_analysis = request.method == "POST" and request.url.path in {
+        "/api/v1/simulation/preview",
+        "/api/v1/copilot",
+        "/api/v1/copilot/explain-finding",
+        "/api/v1/copilot/explain-attack-path",
+        "/api/v1/copilot/explain-alert",
+    }
+    if selected_id and request.method not in {"GET", "HEAD", "OPTIONS"} and not is_snapshot_read_only_analysis:
         return JSONResponse(
             status_code=409,
             content={"success": False, "detail": "Historical snapshot view is read-only. Exit snapshot view to make changes."},
-        )
-    if selected_id and request.url.path.startswith("/api/v1/simulation/"):
-        return JSONResponse(
-            status_code=409,
-            content={"success": False, "detail": "What-If analysis uses the active scan. Exit historical view before opening simulation data."},
         )
     from app.services.scanner.current_snapshot import pin_request_snapshot, reset_request_snapshot
     token = pin_request_snapshot(selected_id) if selected_id else pin_request_snapshot()

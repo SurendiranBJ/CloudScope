@@ -52,6 +52,10 @@ def _clean_scan_manager():
 @pytest.fixture(autouse=True)
 def reset_state():
     cache.clear()
+    # A cached empty catalog is an explicit offline fixture: these endpoint
+    # tests validate snapshot/cache behavior and must never call the developer's
+    # live AWS account for its managed-policy catalog.
+    cache.set("v1:complete_policy_catalog", [])
     snapshot_store.clear()
     _clean_scan_manager()
     try:

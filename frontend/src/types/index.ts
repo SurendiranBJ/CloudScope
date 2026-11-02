@@ -58,6 +58,8 @@ export interface AttackPathNode {
   name: string;
   type: 'User' | 'Role' | 'EC2' | 'S3' | 'Lambda' | 'Secrets' | 'Policy' | string;
   riskScore?: number;
+  arn?: string;
+  region?: string;
 }
 
 export interface DownstreamReachableAsset {
@@ -362,6 +364,8 @@ export interface PolicyCatalogEntry {
   documentParsed?: object | null;
   documentUnavailable?: boolean;
   riskScore: number;
+  riskAvailable?: boolean;
+  riskPending?: boolean;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'unknown';
   findings: PolicyFinding[];
   attachedTo?: { type: string; name: string; arn: string }[];
@@ -490,7 +494,7 @@ export interface SimulationResourceDelta {
   identity?: string; identity_type?: string; resource_id?: string;
   arn?: string; region?: string; policy_names?: string[]; access_path?: string[];
   decision?: string; matched_action?: string; access_reason?: string;
-  access_details?: { policy: string; action?: string | string[]; reason?: string; access_path?: string[] }[];
+  access_details?: { policy: string; action?: string | string[]; access_categories?: string[]; reason?: string; access_path?: string[] }[];
 }
 
 // ─── Relationships ────────────────────────────────────────────────────────────

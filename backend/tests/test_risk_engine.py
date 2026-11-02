@@ -234,3 +234,26 @@ class TestGlobalSecurityScore:
         result = compute_global_security_score(Inventory(), [], [])
         assert result["categories"]["monitoring_coverage"]["score"] == 0
         assert result["coverage"]["monitoring_coverage"] is False
+
+    def test_regional_container_resource_risk_contributes_to_posture(self):
+        class Inventory:
+            users = [_make_user(mfa=True)]
+            roles = [_make_role()]
+            s3 = []
+            ec2 = []
+            lambdas = []
+            secrets = []
+            rds = []
+            dynamodb = []
+            ecs = [{"type": "ECS", "riskScore": 40}]
+            ecr = []
+            codecommit = []
+            sqs = []
+            sns = []
+            kms = []
+            eks = []
+            stepfunctions = []
+
+        result = compute_global_security_score(Inventory(), [], [])
+        assert result["coverage"]["resource_security"] is True
+        assert result["categories"]["resource_security"]["score"] == 60

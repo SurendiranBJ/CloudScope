@@ -346,6 +346,8 @@ class PolicyCatalogEntry(BaseModel):
     updateDate: Optional[str] = None
     document: Optional[str] = None   # None until Level-2 fetch
     riskScore: int = 0
+    riskAvailable: bool = False
+    riskPending: bool = False
     severity: str = "low"
     findings: List[PolicyFinding] = []
     attachedTo: List[dict] = []

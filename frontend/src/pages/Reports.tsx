@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import {
   FileBarChart,
-  FileText,
   Download,
   CheckCircle,
   RefreshCw,
@@ -13,7 +12,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { getReportsSummary } from '../api/reports';
 import { getGraphElements } from '../api/graph';
-import { jsPDF } from 'jspdf';
 
 export const Reports: React.FC = () => {
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -32,9 +30,7 @@ export const Reports: React.FC = () => {
   });
 
   const reportTypes = [
-    { id: 'pdf', title: 'Security Audit Summary', format: 'PDF Document', desc: 'Management-level security score and measured control coverage with supporting evidence details.', icon: FileText },
-    { id: 'csv', title: 'Security Control Coverage', format: 'CSV spreadsheet', desc: 'Tabular export of measured controls, coverage scores, and evidence details.', icon: Download },
-    { id: 'json', title: 'Security Assessment Data', format: 'JSON Dataset', desc: 'Structured findings, control coverage, and graph nodes and relationships for integrations.', icon: FileJson },
+    { id: 'json', title: 'Security Assessment Data', format: 'JSON Dataset', desc: 'Snapshot-scoped findings, severity totals, posture score, and graph relationships.', icon: FileJson },
     { id: 'svg', title: 'Identity Graph Architecture', format: 'SVG Graphic', desc: 'Vector drawing exporting the current visual state, groups, and connections in the Explorer canvas.', icon: Network }
   ];
 
@@ -121,13 +117,6 @@ export const Reports: React.FC = () => {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const csvCell = (value: unknown) => {
-    let text = String(value ?? '');
-    // Prevent spreadsheet formula execution for untrusted exported values.
-    if (/^[\s]*[=+@-]/.test(text)) text = `'${text}`;
-    return `"${text.replace(/"/g, '""')}"`;
-  };
-
   const handleDownload = async (id: string) => {
     if (reportsLoading || reportsError || ((id === 'json' || id === 'svg') && (graphLoading || graphError))) {
       setDownloadError('Report data is still loading or unavailable. Retry after the report summary and graph finish loading.');
@@ -138,112 +127,16 @@ export const Reports: React.FC = () => {
     setDownloadError(null);
 
     try {
-      if (id === 'pdf') {
-        const doc = new jsPDF();
-        const now = new Date().toLocaleString();
-
-        doc.setFillColor(11, 17, 32);
-        doc.rect(0, 0, 210, 297, 'F');
-
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(20);
-        doc.setFont('helvetica', 'bold');
-        doc.text('CloudScope Security Audit Report', 14, 22);
-
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(156, 163, 175);
-        doc.text(`Generated: ${now}`, 14, 30);
-        doc.text('Platform: CloudScope AWS Security Analysis', 14, 36);
-
-        // Line separator
-        doc.setDrawColor(71, 85, 105);
-        doc.line(14, 42, 196, 42);
-
-        // Security Score Box
-        doc.setFillColor(30, 41, 59);
-        doc.roundedRect(14, 48, 182, 32, 3, 3, 'F');
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(12);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Security Control Coverage Summary', 20, 58);
-
-        const scoreText = reportsData?.summary?.score !== null && reportsData?.summary?.score !== undefined
-          ? `${reportsData.summary.score}% (${reportsData.summary.grade || 'Evaluated'})`
-          : 'No scan data available';
-        const findingsText = reportsData?.summary?.findings_count !== undefined
-          ? `${reportsData.summary.findings_count} Open Findings`
-          : 'Not available';
-
-        doc.setFontSize(10);
-        doc.setTextColor(59, 130, 246);
-        doc.text(`Overall AWS Security Score: ${scoreText}`, 20, 68);
-        doc.setTextColor(239, 68, 68);
-        doc.text(`Active Findings: ${findingsText}`, 120, 68);
-
-        // Security Control Coverage Standards
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(255, 255, 255);
-        doc.text('Verified Security Control Coverage', 14, 95);
-
-        let yPos = 105;
-        const standards = reportsData?.compliance || [];
-        if (standards.length === 0) {
-          doc.setFontSize(10);
-          doc.setFont('helvetica', 'normal');
-          doc.setTextColor(156, 163, 175);
-          doc.text('No scan data available. Trigger a discovery scan to evaluate security control coverage.', 20, yPos);
-        } else {
-          standards.forEach((std: any) => {
-            const detailLines = doc.splitTextToSize(String(std.details || ''), 170);
-            const cardHeight = Math.max(22, 13 + detailLines.length * 4.5);
-            if (yPos + cardHeight > 280) {
-              doc.addPage();
-              doc.setFillColor(11, 17, 32);
-              doc.rect(0, 0, 210, 297, 'F');
-              yPos = 20;
-            }
-            doc.setFillColor(15, 23, 42);
-            doc.roundedRect(14, yPos, 182, cardHeight, 2, 2, 'F');
-
-            doc.setFontSize(11);
-            doc.setFont('helvetica', 'bold');
-            doc.setTextColor(255, 255, 255);
-            doc.text(String(std.name || 'Unnamed control'), 20, yPos + 8);
-
-            doc.setFontSize(10);
-            doc.setTextColor(245, 158, 11);
-            doc.text(`${std.score}% Coverage`, 155, yPos + 8);
-
-            doc.setFontSize(9);
-            doc.setFont('helvetica', 'normal');
-            doc.setTextColor(156, 163, 175);
-            doc.text(detailLines, 20, yPos + 15);
-
-            yPos += cardHeight + 5;
-          });
-        }
-
-        doc.save('cloudscope-security-assessment.pdf');
-      } else if (id === 'csv') {
-        let content = 'Security Control,Coverage Score,Status Details\r\n';
-        const standards = reportsData?.compliance || [];
-        standards.forEach((s: any) => {
-          content += `${csvCell(s.name)},${csvCell(s.score)},${csvCell(s.details)}\r\n`;
-        });
-        downloadBlob(new Blob(['\uFEFF', content], { type: 'text/csv;charset=utf-8;' }), 'cloudscope-control-coverage.csv');
-      } else if (id === 'json') {
+      if (id === 'json') {
         const content = JSON.stringify({
           exportedAt: new Date().toISOString(),
           platform: 'CloudScope AWS IAM Security Analysis',
-          hasData: reportsData?.has_data ?? ((reportsData?.compliance || []).length > 0),
+          hasData: reportsData?.has_data ?? Boolean(reportsData?.summary),
           securityScore: reportsData?.summary?.score ?? null,
           grade: reportsData?.summary?.grade ?? 'No scan data available',
           findingsCount: reportsData?.summary?.findings_count ?? 0,
           findingsBySeverity: reportsData?.findings_by_severity || {},
           findingsByCategory: reportsData?.findings_by_category || {},
-          controlCoverage: reportsData?.compliance || [],
           canonicalFindings: reportsData?.findings || [],
           graph: {
             nodes: (graphData || []).filter(e => !e.data.source),
@@ -267,75 +160,21 @@ export const Reports: React.FC = () => {
     }
   };
 
-  const getColor = (score: number) => {
-    if (score >= 80) return 'border-l-4 border-enterprise-success bg-enterprise-success/5 text-enterprise-success';
-    if (score >= 60) return 'border-l-4 border-enterprise-warning bg-enterprise-warning/5 text-enterprise-warning';
-    return 'border-l-4 border-enterprise-critical bg-enterprise-critical/5 text-enterprise-critical';
-  };
-
-  const complianceStandards = (reportsData?.compliance || []).map((standard: any) => ({
-    name: standard.name,
-    status: `${standard.score}% Coverage`,
-    details: standard.details,
-    color: getColor(standard.score)
-  }));
-
-  const hasData = reportsData?.has_data ?? (complianceStandards.length > 0);
-
   return (
     <div className="flex-1 p-6 space-y-6 overflow-y-auto bg-enterprise-bg">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
           <FileBarChart className="w-6 h-6 text-enterprise-accent" />
-          <span>Security Reports & Audits</span>
+          <span>Security Assessment</span>
         </h1>
         <p className="text-xs text-enterprise-subtext mt-1">
-          Export verified configuration logs and review evidence-based security control coverage across your AWS environment.
+          Review the selected snapshot’s posture, findings, and graph evidence, then export the assessment data.
         </p>
       </div>
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Security Control Coverage */}
-        <div className="lg:col-span-2 space-y-4">
-          <h2 className="text-xs font-bold text-white uppercase tracking-wider">
-            Security Control Coverage
-          </h2>
-          {reportsLoading ? (
-            <div className="p-8 bg-enterprise-card border border-enterprise-border rounded-xl text-center text-xs text-enterprise-subtext" role="status">
-              Loading published security report…
-            </div>
-          ) : reportsError ? (
-            <div className="p-8 bg-enterprise-card border border-enterprise-border rounded-xl text-center text-xs text-enterprise-critical" role="alert">
-              Could not load report data. Refresh the page and try again.
-            </div>
-          ) : !hasData ? (
-            <div className="p-8 bg-enterprise-card border border-enterprise-border rounded-xl text-center space-y-2">
-              <p className="text-xs font-semibold text-gray-300">No scan data available</p>
-              <p className="text-[11px] text-enterprise-subtext">Trigger a scan from the Control Center to evaluate verified AWS security controls.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {complianceStandards.map((std: any) => (
-                <div
-                  key={std.name}
-                  className={`p-4 bg-enterprise-card border border-enterprise-border rounded-xl flex flex-col justify-between gap-3 ${std.color}`}
-                >
-                  <div>
-                    <h3 className="text-xs font-bold text-gray-200 leading-tight">{std.name}</h3>
-                    <p className="text-[10px] text-enterprise-subtext mt-1">{std.details}</p>
-                  </div>
-                  <div className="flex justify-between items-center text-xs font-black">
-                    <span>Control Score:</span>
-                    <span>{std.status}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
         {/* Security Summary overview */}
         <div className="bg-enterprise-card border border-enterprise-border p-5 rounded-xl space-y-4 flex flex-col justify-between">
           <div className="space-y-4">

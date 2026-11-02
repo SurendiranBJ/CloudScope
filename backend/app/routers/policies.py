@@ -13,6 +13,8 @@ Two-level design (matching iam_service):
 import json
 import logging
 import threading
+from contextvars import copy_context
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Optional
 from datetime import datetime
@@ -38,8 +40,56 @@ from app.security.dependencies import require_viewer
 logger = logging.getLogger("scanner")
 _complete_catalog_lock = threading.Lock()
 _COMPLETE_CATALOG_TTL_SECONDS = 60 * 60
+_policy_risk_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="policy-risk")
+_policy_risk_lock = threading.Lock()
+_policy_risk_pending: set[str] = set()
 
 router = APIRouter(tags=["Policies"], dependencies=[Depends(require_viewer)])
+
+
+def _warm_policy_risk(arn: str) -> None:
+    """Fetch and score one policy document without blocking catalog navigation."""
+    try:
+        from app.services.aws.iam_service import fetch_policy_document_by_arn
+
+        fetched = fetch_policy_document_by_arn(arn)
+        doc = fetched.get("document") if fetched else None
+        if not doc or doc == "{}":
+            cache.set(f"v1:policy_risk_unavailable:{arn}", True, 300)
+            return
+        cache.set(f"v1:policy_doc:{arn}", doc)
+        cache.set(f"v1:policy_risk:{arn}", _score_policy(doc), 60 * 60)
+        cache.delete(f"v1:policy_risk_unavailable:{arn}")
+    except Exception:
+        cache.set(f"v1:policy_risk_unavailable:{arn}", True, 300)
+        raise
+
+
+def _clear_policy_risk_pending(arn: str, future) -> None:
+    try:
+        future.result()
+    except Exception as exc:
+        logger.warning("Background policy risk analysis failed for %s: %s", arn, exc)
+    finally:
+        with _policy_risk_lock:
+            _policy_risk_pending.discard(arn)
+
+
+def _schedule_policy_risk(arn: str) -> bool:
+    with _policy_risk_lock:
+        if arn in _policy_risk_pending:
+            return True
+        _policy_risk_pending.add(arn)
+    try:
+        context = copy_context()
+        future = _policy_risk_executor.submit(context.run, _warm_policy_risk, arn)
+        future.add_done_callback(lambda completed: _clear_policy_risk_pending(arn, completed))
+        return True
+    except Exception:
+        with _policy_risk_lock:
+            _policy_risk_pending.discard(arn)
+        logger.exception("Could not schedule policy risk analysis for %s", arn)
+        return False
 
 
 @router.get("/policies", response_model=APIResponse[PaginatedPolicyCatalog])
@@ -49,6 +99,7 @@ def get_policy_catalog(
     type_filter: Optional[str] = Query(None, description="Filter by type: aws-managed | customer-managed | inline"),
     search: Optional[str] = Query(None, description="Search by policy name or ARN"),
     limit: Optional[int] = Query(None, ge=1, le=2000, description="Legacy limit override"),
+    include_risk: bool = Query(False, description="Evaluate policy documents for risk on the returned page"),
 ):
     """Return the paginated policy catalog from cache (Level 1 — metadata without documents).
 
@@ -62,14 +113,14 @@ def get_policy_catalog(
     # it is not a complete list of policies that an administrator can attach.
     # Load and cache IAM's full AWS + account managed-policy catalog on demand.
     catalog_cached = cache.get("v1:complete_policy_catalog")
-    if not catalog_cached:
+    if catalog_cached is None:
         with _complete_catalog_lock:
             catalog_cached = cache.get("v1:complete_policy_catalog")
-            if not catalog_cached:
+            if catalog_cached is None:
                 try:
-                    catalog_cached = fetch_policy_catalog()
+                    catalog_cached = fetch_policy_catalog() or []
+                    cache.set("v1:complete_policy_catalog", catalog_cached, _COMPLETE_CATALOG_TTL_SECONDS)
                     if catalog_cached:
-                        cache.set("v1:complete_policy_catalog", catalog_cached, _COMPLETE_CATALOG_TTL_SECONDS)
                         # Keep existing consumers (e.g. simulation name resolution) aligned.
                         cache.set("v1:policy_catalog", catalog_cached, _COMPLETE_CATALOG_TTL_SECONDS)
                         logger.info("Loaded complete IAM policy catalog with %d attachable and non-attachable entries", len(catalog_cached))
@@ -214,30 +265,50 @@ def get_policy_catalog(
     end_idx = start_idx + effective_page_size
     page_items = catalog[start_idx:end_idx]
 
-    # Return risk-scored entries (use cached scores if present)
-    # Never fetch documents from AWS in list view
-    result = []
-    for p in page_items:
-        entry = dict(p)
-        # Compute risk ONLY if document already in entry or cached
-        if entry.get("riskScore", 0) == 0 and entry.get("document"):
-            risk = _score_policy(entry.get("document", "{}"))
+    # Score policy permissions independently of attachment count. IAM's list
+    # operation returns metadata only, so fetch the current document on demand
+    # for the visible page and cache its score for later views.
+    def prepare_entry(policy: dict) -> dict:
+        entry = dict(policy)
+        arn = entry.get("arn", "")
+        doc = entry.get("document")
+        if not doc and arn:
+            doc = cache.get(f"v1:policy_doc:{arn}")
+        cached_risk = cache.get(f"v1:policy_risk:{arn}") if arn else None
+
+        if cached_risk:
+            entry["riskScore"] = cached_risk["score"]
+            entry["severity"] = cached_risk["severity"]
+            entry["findings"] = cached_risk["findings"]
+            entry["riskAvailable"] = True
+        elif doc and doc != "{}":
+            risk = _score_policy(doc)
             entry["riskScore"] = risk["score"]
             entry["severity"] = risk["severity"]
             entry["findings"] = risk["findings"]
-        elif entry.get("riskScore", 0) == 0:
-            entry["severity"] = "unknown"
-        else:
+            entry["riskAvailable"] = True
+            if arn:
+                cache.set(f"v1:policy_risk:{arn}", risk, 60 * 60)
+        elif entry.get("riskAvailable") or entry.get("riskScore", 0) > 0:
+            entry["riskAvailable"] = True
             entry["severity"] = _score_to_severity(entry.get("riskScore", 0))
+        else:
+            entry["riskAvailable"] = False
+            entry["severity"] = "unknown"
+            unavailable = bool(arn and cache.get(f"v1:policy_risk_unavailable:{arn}"))
+            entry["riskPending"] = bool(
+                include_risk and arn and entry.get("type") != "inline"
+                and not unavailable
+                and _schedule_policy_risk(arn)
+            )
 
-        # Ensure required frontend fields exist with valid defaults
         entry.setdefault("attachmentCount", 0)
         entry.setdefault("isAttachable", entry.get("type") != "inline")
         entry.setdefault("findings", [])
-
-        # Omit document in list view to enforce Level 1 metadata-only
         entry.pop("document", None)
-        result.append(entry)
+        return entry
+
+    result = [prepare_entry(policy) for policy in page_items]
 
     data = {
         "items": result,
@@ -318,6 +389,7 @@ def get_policy_detail(policy_id: str):
         raise HTTPException(status_code=404, detail=f"Policy '{policy_id}' not found in catalog")
 
     entry = dict(entry)
+    pol_arn = entry.get("arn", "")
 
     # Level 2: Fetch document if not already available
     doc = entry.get("document")
@@ -349,6 +421,9 @@ def get_policy_detail(policy_id: str):
         entry["riskScore"] = risk["score"]
         entry["severity"] = risk["severity"]
         entry["findings"] = risk["findings"]
+        entry["riskAvailable"] = True
+        if pol_arn:
+            cache.set(f"v1:policy_risk:{pol_arn}", risk, 60 * 60)
         # Parse document for display
         try:
             entry["documentParsed"] = json.loads(doc)
@@ -358,6 +433,7 @@ def get_policy_detail(policy_id: str):
         entry["riskScore"] = entry.get("riskScore", 0)
         entry["severity"] = _score_to_severity(entry.get("riskScore", 0))
         entry["findings"] = []
+        entry["riskAvailable"] = bool(entry.get("riskAvailable") or entry.get("riskScore", 0) > 0)
         entry["documentParsed"] = None
         entry["documentUnavailable"] = True
 
@@ -368,7 +444,6 @@ def get_policy_detail(policy_id: str):
     roles = get_current_roles()
     groups = get_current_groups()
     pol_name = entry.get("name", "")
-    pol_arn = entry.get("arn", "")
     clean_pol_name = pol_name.replace("[inline] ", "")
 
     attached_to: List[dict] = []
@@ -538,7 +613,7 @@ def _score_policy(doc_str: str) -> dict:
     try:
         result = evaluate_policy_document_risk([doc_str])
         score = min(100, sum(f.get("points", 0) for f in result.get("factors", [])))
-        severity = _score_to_severity(score)
+        severity = _score_to_severity(score) if score > 0 else "low"
         findings = [{"code": f["code"], "points": f["points"], "reason": f["reason"]} for f in result.get("factors", [])]
         return {"score": score, "severity": severity, "findings": findings}
     except Exception as e:

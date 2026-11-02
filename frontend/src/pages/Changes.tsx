@@ -14,6 +14,7 @@ import { getIAMRoles } from '../api/roles';
 import { getPolicyCatalog } from '../api/policies';
 import type { SimulationAnalysis, SimulationChange } from '../types';
 import { useState } from 'react';
+import { useSnapshotView } from '../context/SnapshotViewContext';
 
 function getErrorText(error: unknown): string {
   const value = error as { response?: { data?: { detail?: unknown } }; message?: string };
@@ -94,6 +95,7 @@ function ChangeRow({ change, onRemove }: { change: SimulationChange; onRemove: (
 }
 
 export const Changes: React.FC = () => {
+  const { snapshotId } = useSnapshotView();
   const qc = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState<SimulationChangePayload | null>(null);
@@ -114,7 +116,7 @@ export const Changes: React.FC = () => {
       const [users, roles, groups] = await Promise.all([getIAMUsers(), getIAMRoles(), getSimulationGroups()]);
       return { policies: [...first.items, ...rest.flatMap((page) => page.items)].filter((p) => p.isAttachable && p.arn), users, roles, groups };
     },
-    enabled: !!editingId || adding,
+    enabled: !snapshotId && (!!editingId || adding),
     staleTime: 60_000,
   });
 
@@ -127,7 +129,7 @@ export const Changes: React.FC = () => {
   const { data: riskData } = useQuery({
     queryKey: ['simulation-risk'],
     queryFn: getSimulationRisk,
-    enabled: !!(simState?.simulation_active),
+    enabled: !snapshotId && !!(simState?.simulation_active),
     staleTime: 10_000,
   });
 
@@ -190,6 +192,21 @@ export const Changes: React.FC = () => {
       setAnalysisError(typeof detail === 'string' ? detail : value.message || 'The saved change set could not be analyzed.');
     } finally { setAnalysisLoading(false); }
   };
+
+  if (snapshotId) {
+    return (
+      <div className="flex h-full items-center justify-center overflow-y-auto bg-enterprise-bg p-6">
+        <section className="max-w-xl rounded-2xl border border-enterprise-border bg-enterprise-card p-6 text-center">
+          <Shield className="mx-auto h-9 w-9 text-enterprise-accent" />
+          <h1 className="mt-4 text-xl font-bold text-white">Saved changes are workspace drafts</h1>
+          <p className="mt-2 text-sm leading-6 text-enterprise-subtext">
+            Draft changes are not part of a scan snapshot, so they are hidden while viewing snapshot <span className="font-mono text-white">{snapshotId}</span>. Use What‑If Analysis to preview changes against this historical scan, or exit snapshot view to manage saved drafts.
+          </p>
+          <Link to="/simulation" className="mt-5 inline-flex rounded-lg bg-enterprise-accent px-4 py-2 text-sm font-semibold text-white">Preview against this snapshot</Link>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

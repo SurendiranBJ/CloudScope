@@ -19,9 +19,7 @@ import {
   Activity,
   ArrowRight,
   Download,
-  Layers,
   ChevronRight,
-  ExternalLink,
   CheckCircle2,
   Sparkles,
   Server,
@@ -38,12 +36,14 @@ import { LastScannedBadge } from '../components/LastScannedBadge';
 import { GlobalScanStatus } from '../components/GlobalScanStatus';
 import { apiClient } from '../api/client';
 import { useScanLifecycle } from '../hooks/useScanLifecycle';
+import { useSnapshotView } from '../context/SnapshotViewContext';
 
 export const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const queryClient = useQueryClient();
   const { isScanning, hasCompletedSnapshot } = useScanLifecycle();
+  const { snapshotId } = useSnapshotView();
 
   // Health data for active region and scan mode
   const { data: healthData } = useQuery({
@@ -110,7 +110,13 @@ export const Dashboard: React.FC = () => {
   }
 
   const stats = data.stats || { users: 0, roles: 0, policies: 0, risks: 0, paths: 0, resources: 0 };
-  const scoreNum = parseInt(data.securityScore, 10) || (reportsData?.summary?.score ? Number(reportsData.summary.score) : 42);
+  const scoreText = String(data.securityScore ?? '').match(/-?\d+(?:\.\d+)?/);
+  const parsedScore = scoreText ? Number(scoreText[0]) : Number.NaN;
+  const reportScore = Number(reportsData?.summary?.score);
+  const scoreNum = Number.isFinite(parsedScore) ? parsedScore : Number.isFinite(reportScore) ? reportScore : 0;
+  const riskDistribution = data?.riskDistribution || [];
+  const totalRiskFindings = riskDistribution.reduce((total, item) => total + (Number.isFinite(Number(item.value)) ? Math.max(0, Number(item.value)) : 0), 0);
+  const activeFindingCount = riskDistribution.length ? totalRiskFindings : Number(stats.risks || 0);
 
   const getScoreTheme = (score: number) => {
     if (score >= 80) return { text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', label: 'Healthy Posture', grade: 'Grade A' };
@@ -144,8 +150,8 @@ export const Dashboard: React.FC = () => {
     },
     {
       title: 'Active Findings',
-      value: String(stats.risks),
-      badge: `${stats.risks > 0 ? 'Needs Action' : 'Resolved'}`,
+      value: String(activeFindingCount),
+      badge: `${activeFindingCount > 0 ? 'Needs Action' : 'Resolved'}`,
       subtext: 'Canonical Security Findings',
       color: 'border-l-4 border-rose-500',
       icon: ShieldAlert,
@@ -184,26 +190,9 @@ export const Dashboard: React.FC = () => {
     }
   ];
 
-  const riskDistribution = data?.riskDistribution || [
-    { name: 'Critical', value: 0, color: '#EF4444' },
-    { name: 'High', value: 0, color: '#F59E0B' },
-    { name: 'Medium', value: 0, color: '#3B82F6' },
-    { name: 'Low', value: 0, color: '#10B981' }
-  ];
-  const totalRiskFindings = riskDistribution.reduce((total, item) => total + (Number.isFinite(item.value) ? Math.max(0, item.value) : 0), 0);
-
   const paths = data.criticalPaths || [];
   const topRisky = data.topRiskyIdentities || [];
   const resourceBreakdown = data.resourceBreakdown || [];
-
-  // Compliance Standards derived from verified reports data
-  const complianceItems = reportsData?.compliance || [
-    { name: 'MFA Enforcement Coverage', score: 0, details: 'Multi-factor authentication coverage on users' },
-    { name: 'IAM Least Privilege Scoping', score: 91, details: 'Privilege restriction & zero-wildcard policies' },
-    { name: 'Public Resource Access Block', score: 50, details: 'S3 & public access isolation controls' },
-    { name: 'AssumeRole Trust Boundaries', score: 88, details: 'Cross-account trust policy restriction' },
-    { name: 'Attack Path Defense & Isolation', score: 0, details: 'Lateral attack path prevention' }
-  ];
 
   return (
     <div className="flex-1 min-h-0 p-6 space-y-6 overflow-y-auto bg-enterprise-bg select-none">
@@ -233,7 +222,7 @@ export const Dashboard: React.FC = () => {
         {/* Keep scan controls and actions in a dedicated toolbar so they wrap cleanly. */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            {healthData && (
+            {healthData && !snapshotId && (
               <RegionSelector
                 currentMode={healthData.scan_mode || 'single'}
                 currentRegion={healthData.selected_region || null}
@@ -246,7 +235,7 @@ export const Dashboard: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <ScanTrigger />
+            {!snapshotId && <ScanTrigger />}
             <button
               onClick={() => navigate('/reports')}
               className="px-3 py-1.5 rounded-lg bg-gray-800/80 hover:bg-gray-700/80 border border-enterprise-border text-xs font-medium text-gray-200 hover:text-white transition-all flex items-center gap-1.5 shadow-sm"
@@ -268,10 +257,10 @@ export const Dashboard: React.FC = () => {
       </div>
 
       {/* Dedicated Full-Width Scan Progress & Status Banner */}
-      <GlobalScanStatus />
+      {!snapshotId && <GlobalScanStatus />}
 
       {/* Initial Empty State / Running State */}
-      {!hasCompletedSnapshot && isScanning && stats.resources === 0 && (
+      {!snapshotId && !hasCompletedSnapshot && isScanning && stats.resources === 0 && (
         <div className="p-6 bg-blue-950/20 border border-blue-500/30 rounded-2xl flex items-center gap-4 shadow-xl">
           <Cloud className="w-6 h-6 text-blue-400 animate-pulse shrink-0" />
           <div>
@@ -312,182 +301,6 @@ export const Dashboard: React.FC = () => {
           );
         })}
       </div>
-
-      {/* Enterprise Compliance & Governance Benchmark Section */}
-      <section className="bg-enterprise-card p-5 rounded-2xl border border-enterprise-border shadow-xl space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>Enterprise Compliance & Security Benchmarks</span>
-            </h2>
-            <p className="text-xs text-enterprise-subtext mt-0.5">
-              Live audit of regulatory frameworks mapped directly to verified AWS inventory controls.
-            </p>
-          </div>
-          <button
-            onClick={() => navigate('/reports')}
-            className="text-xs text-enterprise-accent hover:underline font-semibold flex items-center gap-1"
-          >
-            <span>Detailed Regulatory Report</span>
-            <ExternalLink className="w-3 h-3" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3.5 pt-1">
-          {complianceItems.map((c, i) => {
-            const isPassing = c.score >= 75;
-            const isWarning = c.score >= 50 && c.score < 75;
-            return (
-              <div
-                key={i}
-                className="p-3.5 rounded-xl bg-enterprise-bg/70 border border-enterprise-border/80 hover:border-gray-700 transition-all flex flex-col justify-between space-y-2.5"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span className="text-xs font-semibold text-gray-200 leading-snug line-clamp-1" title={c.name}>
-                    {c.name}
-                  </span>
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono shrink-0 ${
-                    isPassing ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' :
-                    isWarning ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30' :
-                    'bg-rose-500/15 text-rose-300 border border-rose-500/30'
-                  }`}>
-                    {c.score}%
-                  </span>
-                </div>
-
-                <div className="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${
-                      isPassing ? 'bg-emerald-400' : isWarning ? 'bg-amber-400' : 'bg-rose-500'
-                    }`}
-                    style={{ width: `${Math.max(4, c.score)}%` }}
-                  />
-                </div>
-
-                <p className="text-[10px] text-gray-400 truncate leading-relaxed" title={c.details}>
-                  {c.details}
-                </p>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* 4-Tier Security State Correlation Model (Streamlined SOC Matrix) */}
-      <section className="bg-enterprise-card p-5 rounded-2xl border border-enterprise-border shadow-xl space-y-4">
-        <div className="flex justify-between items-center flex-wrap gap-2">
-          <div>
-            <h2 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-              <Layers className="w-4 h-4 text-enterprise-accent" />
-              <span>4-Tier Threat & Capability Correlation Model</span>
-            </h2>
-            <p className="text-xs text-enterprise-subtext mt-0.5">
-              Explicitly differentiates static policy entitlements from confirmed runtime CloudTrail execution steps.
-            </p>
-          </div>
-          {data?.lastScan?.duration_seconds && (
-            <div className="text-xs text-gray-400 font-mono flex items-center gap-2 bg-gray-900/80 px-2.5 py-1 rounded-lg border border-gray-800">
-              <span className="text-enterprise-subtext">Scan Latency:</span>
-              <strong className="text-white">{data.lastScan.duration_seconds}s</strong>
-            </div>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Tier 1: POSSIBLE_CAPABILITY */}
-          <div
-            onClick={() => navigate('/attack-paths')}
-            className="p-4 rounded-xl bg-gray-900/50 border border-blue-500/20 hover:border-blue-500/50 cursor-pointer transition-all flex flex-col justify-between space-y-2 group shadow-sm"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wider">Tier 1: Static Capability</span>
-              <span className="text-[9px] px-2 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-500/30 font-semibold uppercase">
-                IAM Entitlement
-              </span>
-            </div>
-            <div className="text-2xl font-black text-white font-mono my-1">
-              {data?.activityMetrics?.staticAttackPaths ?? stats.paths}
-            </div>
-            <p className="text-[10px] text-gray-400 leading-relaxed">
-              Escalation paths & lateral movements permitted by IAM policy configurations.
-            </p>
-            <div className="text-[10px] text-blue-400 flex items-center gap-1 pt-1 font-semibold group-hover:translate-x-1 transition-transform">
-              <span>Inspect Attack Vectors</span>
-              <ArrowRight className="w-3 h-3" />
-            </div>
-          </div>
-
-          {/* Tier 2: OBSERVED_ACTIVITY */}
-          <div
-            onClick={() => navigate('/alerts')}
-            className="p-4 rounded-xl bg-gray-900/50 border border-purple-500/20 hover:border-purple-500/50 cursor-pointer transition-all flex flex-col justify-between space-y-2 group shadow-sm"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-purple-400 uppercase tracking-wider">Tier 2: Runtime Events</span>
-              <span className="text-[9px] px-2 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-500/30 font-semibold uppercase">
-                CloudTrail Logs
-              </span>
-            </div>
-            <div className="text-2xl font-black text-white font-mono my-1">
-              {data?.activityMetrics?.observedSecurityEvents ?? (data?.recentAlerts?.length || 0)}
-            </div>
-            <p className="text-[10px] text-gray-400 leading-relaxed">
-              Raw runtime events recorded in CloudTrail audit streams across monitored regions.
-            </p>
-            <div className="text-[10px] text-purple-400 flex items-center gap-1 pt-1 font-semibold group-hover:translate-x-1 transition-transform">
-              <span>View Security Alerts</span>
-              <ArrowRight className="w-3 h-3" />
-            </div>
-          </div>
-
-          {/* Tier 3: CORRELATED_ACTIVITY */}
-          <div
-            onClick={() => navigate('/risks')}
-            className="p-4 rounded-xl bg-gray-900/50 border border-amber-500/20 hover:border-amber-500/50 cursor-pointer transition-all flex flex-col justify-between space-y-2 group shadow-sm"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">Tier 3: Correlated Activity</span>
-              <span className="text-[9px] px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/30 font-semibold uppercase">
-                Verified Risk
-              </span>
-            </div>
-            <div className="text-2xl font-black text-white font-mono my-1">
-              {data?.activityMetrics?.correlatedFindings ?? 0}
-            </div>
-            <p className="text-[10px] text-gray-400 leading-relaxed">
-              Events where actor possesses verified static authorization to target resource.
-            </p>
-            <div className="text-[10px] text-amber-400 flex items-center gap-1 pt-1 font-semibold group-hover:translate-x-1 transition-transform">
-              <span>Explore Correlated Risks</span>
-              <ArrowRight className="w-3 h-3" />
-            </div>
-          </div>
-
-          {/* Tier 4: OBSERVED_ATTACK_ACTIVITY */}
-          <div
-            onClick={() => navigate('/attack-paths')}
-            className="p-4 rounded-xl bg-gray-900/50 border border-rose-500/20 hover:border-rose-500/50 cursor-pointer transition-all flex flex-col justify-between space-y-2 group shadow-sm"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-rose-400 uppercase tracking-wider">Tier 4: Active Attack Chain</span>
-              <span className="text-[9px] px-2 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-500/30 font-semibold uppercase">
-                Active Threat
-              </span>
-            </div>
-            <div className="text-2xl font-black text-white font-mono my-1">
-              {data?.activityMetrics?.observedAttackActivity ?? 0}
-            </div>
-            <p className="text-[10px] text-gray-400 leading-relaxed">
-              Confirmed runtime activity executing an exact transition step along an attack path.
-            </p>
-            <div className="text-[10px] text-rose-400 flex items-center gap-1 pt-1 font-semibold group-hover:translate-x-1 transition-transform">
-              <span>Inspect Threat Graph</span>
-              <ArrowRight className="w-3 h-3" />
-            </div>
-          </div>
-        </div>
-      </section>
 
       {/* Visual Analytics Grid: Severity Distribution, Inventory, High-Risk Identities */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

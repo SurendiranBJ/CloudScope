@@ -48,6 +48,29 @@ function SeverityBadge({ severity }: { severity: string }) {
   );
 }
 
+function getPolicyTypeLabel(policy: PolicyCatalogEntry): string {
+  const type = String(policy.type ?? '').trim().toLowerCase().replaceAll('_', '-');
+  const arn = String(policy.arn ?? '').toLowerCase();
+  const name = String(policy.name ?? '').toLowerCase();
+
+  if (type.includes('inline') || name.startsWith('[inline] ')) return 'Inline';
+  if (type.includes('aws-managed') || type === 'managed' || arn.includes(':aws:policy/')) return 'AWS-managed';
+  if (type.includes('customer') || type === 'custom' || type === 'local' || /:policy\//.test(arn)) return 'Customer-managed';
+  return 'Unknown';
+}
+
+function PolicyTypeBadge({ policy }: { policy: PolicyCatalogEntry }) {
+  const label = getPolicyTypeLabel(policy);
+  const styles = label === 'AWS-managed'
+    ? 'bg-blue-500/10 text-blue-300 border-blue-500/25'
+    : label === 'Customer-managed'
+      ? 'bg-violet-500/10 text-violet-300 border-violet-500/25'
+      : label === 'Inline'
+        ? 'bg-amber-500/10 text-amber-300 border-amber-500/25'
+        : 'bg-gray-500/10 text-gray-400 border-gray-500/25';
+  return <span className={`inline-flex max-w-full truncate rounded-full border px-2 py-0.5 text-[10px] font-medium ${styles}`}>{label}</span>;
+}
+
 function RiskBar({ score }: { score: number }) {
   const color = score >= 80 ? '#EF4444' : score >= 60 ? '#F59E0B' : score >= 40 ? '#3B82F6' : '#10B981';
   return (
@@ -64,7 +87,7 @@ export const Policies: React.FC = () => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterType>('all');
   const [page, setPage] = useState(1);
-  const [pageSize] = useState(100);
+  const [pageSize] = useState(25);
   const [sortField, setSortField] = useState<SortField>('riskScore');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selected, setSelected] = useState<PolicyCatalogEntry | null>(null);
@@ -87,9 +110,11 @@ export const Policies: React.FC = () => {
       search: search || undefined,
       page,
       page_size: pageSize,
+      include_risk: true,
     }),
     staleTime: 30_000,
     placeholderData: (previousData) => previousData,
+    refetchInterval: (query) => query.state.data?.items.some((policy) => policy.riskPending) ? 2000 : false,
   });
 
   const policies = useMemo(() => catalogData?.items ?? [], [catalogData?.items]);
@@ -151,7 +176,7 @@ export const Policies: React.FC = () => {
                 Policy Catalog
               </h1>
               <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                <p className="text-xs text-enterprise-subtext">Review IAM policies, risk ratings, and attached identities.</p>
+                <p className="text-xs text-enterprise-subtext">Risk is scored from policy permissions, separately from attachments. Unattached policies are scored too, but a score alone does not mean an identity can use them.</p>
                 {isScanning && (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-400 text-[11px] animate-pulse">
                     <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
@@ -223,7 +248,7 @@ export const Policies: React.FC = () => {
         </div>
 
         {/* Sort header */}
-        <div className="shrink-0 grid grid-cols-[1fr_120px_100px_80px] gap-2 px-6 py-2 text-[10px] uppercase tracking-wider text-enterprise-subtext border-b border-enterprise-border">
+        <div className="shrink-0 grid grid-cols-[1fr_100px_85px_130px] gap-2 px-6 py-2 text-[10px] uppercase tracking-wider text-enterprise-subtext border-b border-enterprise-border">
           <button onClick={() => handleSort('name')} className="text-left flex items-center gap-1 hover:text-white">
             Policy Name {sortField === 'name' && (sortDir === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
           </button>
@@ -294,7 +319,7 @@ export const Policies: React.FC = () => {
                 key={policy.arn || policy.name}
                 onClick={() => handleSelectPolicy(policy)}
                 whileHover={{ backgroundColor: 'rgba(255,255,255,0.03)' }}
-                className={`w-full grid grid-cols-[1fr_120px_100px_80px] gap-2 items-center px-6 py-3 border-b border-enterprise-border/50 text-left transition-colors ${
+                className={`w-full grid grid-cols-[1fr_100px_85px_130px] gap-2 items-center px-6 py-3 border-b border-enterprise-border/50 text-left transition-colors ${
                   selected?.arn === policy.arn ? 'bg-enterprise-accent/5 border-l-2 border-l-enterprise-accent' : ''
                 }`}
               >
@@ -307,10 +332,12 @@ export const Policies: React.FC = () => {
                   {policy.attachmentCount}
                 </div>
                 <div>
-                  <RiskBar score={policy.riskScore} />
+                  {policy.riskAvailable
+                    ? <RiskBar score={policy.riskScore} />
+                    : <span className="text-[10px] text-enterprise-subtext" title={policy.riskPending ? 'Risk is being calculated from the policy document.' : 'The policy document could not be loaded, so its permissions have not been assessed.'}>{policy.riskPending ? 'Scoring…' : 'Not analyzed'}</span>}
                 </div>
                 <div>
-                  <SeverityBadge severity={policy.severity} />
+                  <PolicyTypeBadge policy={policy} />
                 </div>
               </motion.button>
             ))
@@ -381,13 +408,15 @@ export const Policies: React.FC = () => {
               {/* Meta */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <SeverityBadge severity={selected.severity} />
-                  <span className="text-xs font-mono text-enterprise-subtext">{selected.riskScore}/100 risk</span>
+                  {selected.riskAvailable
+                    ? <SeverityBadge severity={selected.severity} />
+                    : <span className="rounded-full border border-gray-500/30 bg-gray-500/10 px-2 py-0.5 text-[10px] font-semibold text-gray-400">Not analyzed</span>}
+                  <span className="text-xs font-mono text-enterprise-subtext">{selected.riskAvailable ? `${selected.riskScore}/100 risk` : 'Risk score unavailable'}</span>
                 </div>
                 <div className="text-[10px] text-enterprise-subtext font-mono break-all">{selected.arn}</div>
                 <div className="flex gap-2 flex-wrap">
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-gray-800 text-gray-400 border border-gray-700">
-                    <Tag className="w-2.5 h-2.5" /> {selected.type}
+                    <Tag className="w-2.5 h-2.5" /> {getPolicyTypeLabel(selected)}
                   </span>
                   <button type="button" onClick={() => setShowAttachments((visible) => !visible)} aria-expanded={showAttachments} aria-controls="policy-attachments" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-gray-800 text-gray-300 border border-gray-700 hover:border-enterprise-accent hover:text-white focus:outline-none focus:ring-2 focus:ring-enterprise-accent/50">
                     <Users className="w-2.5 h-2.5" /> {selected.attachmentCount} attachment{selected.attachmentCount !== 1 ? 's' : ''}

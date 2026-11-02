@@ -212,14 +212,19 @@ def test_alerts_and_correlated_risks_endpoints():
         "is_correlated": True
     }])
 
-    res_alerts = client.get("/api/v1/alerts")
-    assert res_alerts.status_code == 200
-    assert len(res_alerts.json()["data"]) == 1
+    # Route tests should control the authoritative snapshot accessors instead
+    # of relying on whatever snapshot another test left in the local database.
+    with patch("app.routers.alerts.get_current_alerts", return_value=cache.get("v1:alerts")), \
+         patch("app.routers.alerts.get_current_correlated_risks", return_value=cache.get("v1:correlated_risks")), \
+         patch("app.routers.alerts.get_current_snapshot_published_at", return_value=None):
+        res_alerts = client.get("/api/v1/alerts")
+        assert res_alerts.status_code == 200
+        assert len(res_alerts.json()["data"]) == 1
 
-    res_corr = client.get("/api/v1/correlated-risks")
-    assert res_corr.status_code == 200
-    assert len(res_corr.json()["data"]) == 1
-    assert res_corr.json()["data"][0]["type"] == "OBSERVED_ATTACK_ACTIVITY"
+        res_corr = client.get("/api/v1/correlated-risks")
+        assert res_corr.status_code == 200
+        assert len(res_corr.json()["data"]) == 1
+        assert res_corr.json()["data"][0]["type"] == "OBSERVED_ATTACK_ACTIVITY"
 
 
 def test_scan_status_endpoint():

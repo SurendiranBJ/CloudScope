@@ -7,6 +7,7 @@ export interface PolicyListParams {
   type_filter?: 'aws-managed' | 'customer-managed' | 'inline';
   search?: string;
   limit?: number;
+  include_risk?: boolean;
 }
 
 export const getPolicyCatalog = async (params?: PolicyListParams): Promise<PaginatedPolicyCatalog> => {
