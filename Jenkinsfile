@@ -39,15 +39,15 @@ pipeline {
                     def key = sh(
                         script: '''
 .venv/bin/python -m pytest \
-tests/test_api_endpoints.py \
-tests/test_aws_session.py \
-tests/test_region_cache.py \
-tests/test_phase2_audit_logging.py \
-tests/test_phase2_authentication_rbac.py \
-tests/test_phase2_distributed_lock.py \
-tests/test_phase2_durability_multi_instance.py \
-tests/test_phase2_health_endpoints.py \
-tests/test_phase2_rate_limiting.py \
+backend/tests/test_api_endpoints.py \
+backend/tests/test_aws_session.py \
+backend/tests/test_region_cache.py \
+backend/tests/test_phase2_audit_logging.py \
+backend/tests/test_phase2_authentication_rbac.py \
+backend/tests/test_phase2_distributed_lock.py \
+backend/tests/test_phase2_durability_multi_instance.py \
+backend/tests/test_phase2_health_endpoints.py \
+backend/tests/test_phase2_rate_limiting.py \
 -v --tb=short \
 --junitxml=test-results/backend-core.xml
                         ''',
@@ -71,12 +71,12 @@ tests/test_phase2_rate_limiting.py \
                     def found = sh(
                         script: '''
 .venv/bin/python -m pytest \
-tests/test_policy_evaluator.py \
-tests/test_resource_boundary_and_conditions.py \
-tests/test_trust_assumption.py \
-tests/test_phase2_iam_hardening.py \
-tests/test_cloudtrail_correlation.py \
-tests/test_phase4_cloudtrail_correlation.py \
+backend/tests/test_policy_evaluator.py \
+backend/tests/test_resource_boundary_and_conditions.py \
+backend/tests/test_trust_assumption.py \
+backend/tests/test_phase2_iam_hardening.py \
+backend/tests/test_cloudtrail_correlation.py \
+backend/tests/test_phase4_cloudtrail_correlation.py \
 -v --tb=short \
 --junitxml=test-results/backend-security-engines.xml
                         ''',
@@ -100,16 +100,16 @@ tests/test_phase4_cloudtrail_correlation.py \
                     def op = sh(
                         script: '''
 .venv/bin/python -m pytest \
-tests/test_graph_construction.py \
-tests/test_duplicate_nodes.py \
-tests/test_graph_reconciliation.py \
-tests/test_identity_graph_resources.py \
-tests/test_path_engine.py \
-tests/test_attack_path_grouping.py \
-tests/test_carol_lambda_effective_access.py \
-tests/test_effective_access_multihop.py \
-tests/test_role_target_downstream_assets.py \
-tests/test_phase3_provenance_attack_paths.py \
+backend/tests/test_graph_construction.py \
+backend/tests/test_duplicate_nodes.py \
+backend/tests/test_graph_reconciliation.py \
+backend/tests/test_identity_graph_resources.py \
+backend/tests/test_path_engine.py \
+backend/tests/test_attack_path_grouping.py \
+backend/tests/test_carol_lambda_effective_access.py \
+backend/tests/test_effective_access_multihop.py \
+backend/tests/test_role_target_downstream_assets.py \
+backend/tests/test_phase3_provenance_attack_paths.py \
 -v --tb=short \
 --junitxml=test-results/backend-graph-and-attack-paths.xml
                         ''',
