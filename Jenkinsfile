@@ -23,7 +23,12 @@ pipeline {
         stage('Requirement Install') {
             steps {
                 echo 'pip the installs'
-                sh 'python3 -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt'
+                sh '''
+                    python3 -m venv .venv
+                    .venv/bin/python -m pip install --upgrade pip
+                    .venv/bin/python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+                    mkdir -p test-results
+                '''
             }
         }
 
@@ -33,7 +38,7 @@ pipeline {
                 script {
                     def key = sh(
                         script: '''
-python3 -m pytest \
+.venv/bin/python -m pytest \
 tests/test_api_endpoints.py \
 tests/test_aws_session.py \
 tests/test_region_cache.py \
@@ -65,7 +70,7 @@ tests/test_phase2_rate_limiting.py \
                 script {
                     def found = sh(
                         script: '''
-python3 -m pytest \
+.venv/bin/python -m pytest \
 tests/test_policy_evaluator.py \
 tests/test_resource_boundary_and_conditions.py \
 tests/test_trust_assumption.py \
@@ -94,7 +99,7 @@ tests/test_phase4_cloudtrail_correlation.py \
                 script {
                     def op = sh(
                         script: '''
-python3 -m pytest \
+.venv/bin/python -m pytest \
 tests/test_graph_construction.py \
 tests/test_duplicate_nodes.py \
 tests/test_graph_reconciliation.py \
